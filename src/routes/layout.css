@@ -1,0 +1,133 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+
+@theme {
+	--color-shell: var(--surface-background);
+	--color-shell-elevated: var(--surface-elevated);
+	--color-shell-muted: var(--surface-muted);
+	--color-shell-border: var(--surface-border);
+	--color-shell-foreground: var(--surface-foreground);
+	--color-shell-subtle: var(--surface-subtle);
+	--color-shell-primary: var(--surface-primary);
+	--color-shell-secondary: var(--surface-secondary);
+	--color-shell-warning: var(--surface-warning);
+	--color-boundary-background: var(--boundary-background);
+	--color-boundary-warning: var(--boundary-warning);
+	--color-boundary-secondary: var(--boundary-secondary);
+	--color-boundary-primary: var(--boundary-primary);
+	--color-boundary-text: var(--boundary-text);
+	--font-sans:
+		'Anthropic Sans',
+		'Styrene A Web',
+		'Styrene A',
+		'SF Pro Display',
+		'Segoe UI',
+		'Helvetica Neue',
+		Arial,
+		sans-serif;
+	--font-serif:
+		'Anthropic Serif',
+		'Ivar Text',
+		'Source Serif 4',
+		'Times New Roman',
+		serif;
+	--font-mono:
+		'JetBrains Mono',
+		'SFMono-Regular',
+		'SF Mono',
+		'Roboto Mono',
+		monospace;
+}
+
+@layer base {
+	:root {
+		color-scheme: dark;
+		--boundary-background: hsl(0 0% 15%);
+		--boundary-warning: hsl(8 49% 51%);
+		--boundary-secondary: hsl(34 75% 73%);
+		--boundary-primary: hsl(246 38% 66%);
+		--boundary-text: hsl(220 39% 92%);
+		--surface-background: var(--boundary-background);
+		--surface-elevated: color-mix(in oklab, var(--boundary-background) 82%, black);
+		--surface-muted: color-mix(in oklab, var(--boundary-background) 68%, var(--boundary-primary));
+		--surface-border: color-mix(in oklab, var(--boundary-text) 14%, transparent);
+		--surface-foreground: var(--boundary-text);
+		--surface-subtle: color-mix(in oklab, var(--boundary-text) 56%, transparent);
+		--surface-primary: color-mix(in oklab, var(--boundary-primary) 88%, white);
+		--surface-secondary: color-mix(in oklab, var(--boundary-secondary) 84%, white);
+		--surface-warning: color-mix(in oklab, var(--boundary-warning) 92%, white);
+		--color-shell: var(--surface-background);
+		--color-shell-elevated: var(--surface-elevated);
+		--color-shell-muted: var(--surface-muted);
+		--color-shell-border: var(--surface-border);
+		--color-shell-foreground: var(--surface-foreground);
+		--color-shell-subtle: var(--surface-subtle);
+		--color-shell-primary: var(--surface-primary);
+		--color-shell-secondary: var(--surface-secondary);
+		--color-shell-warning: var(--surface-warning);
+		--color-boundary-background: var(--boundary-background);
+		--color-boundary-warning: var(--boundary-warning);
+		--color-boundary-secondary: var(--boundary-secondary);
+		--color-boundary-primary: var(--boundary-primary);
+		--color-boundary-text: var(--boundary-text);
+	}
+
+	html {
+		background-color: var(--boundary-background);
+		background: var(--color-shell);
+		color: var(--boundary-text);
+		color: var(--color-shell-foreground);
+		font-family: var(--font-sans);
+		overflow: hidden;
+		scroll-behavior: auto;
+		text-rendering: optimizeLegibility;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	body {
+		min-height: 100dvh;
+		background-color: var(--boundary-background);
+		background:
+			radial-gradient(
+				circle at 18% 18%,
+				color-mix(in oklab, var(--surface-primary) 16%, transparent),
+				transparent 24%
+			),
+			radial-gradient(
+				circle at 82% 12%,
+				color-mix(in oklab, var(--surface-secondary) 12%, transparent),
+				transparent 20%
+			),
+			radial-gradient(
+				circle at top,
+				color-mix(in oklab, var(--boundary-text) 6%, transparent),
+				transparent 32%
+			),
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--color-shell) 84%, var(--boundary-primary)) 0%,
+				var(--color-shell) 38%,
+				color-mix(in oklab, var(--color-shell) 86%, black) 100%
+			);
+		color: var(--boundary-text);
+		color: var(--color-shell-foreground);
+		overflow: hidden;
+	}
+
+	html,
+	body {
+		margin: 0;
+		width: 100%;
+		height: 100%;
+	}
+
+	body > div {
+		height: 100%;
+	}
+
+	* {
+		box-sizing: border-box;
+	}
+}
