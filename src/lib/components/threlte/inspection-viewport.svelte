@@ -4,16 +4,30 @@
 	import { GLTF, OrbitControls } from '@threlte/extras';
 	import * as THREE from 'three';
 	import type { OrbitControls as ThreeOrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+	import type { CameraConfig, Vec3Tuple } from '$lib/components/inspector/types';
+	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
+	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
-	type Props = { class?: string };
-	let { class: className = '' }: Props = $props();
+	type Props = {
+		assetId: VehicleAssetId;
+		assetUrl: string;
+		class?: string;
+		lightIntensity?: number;
+		onCameraChange?: (config: CameraConfig) => void;
+	};
+	let {
+		assetId,
+		assetUrl,
+		class: className = '',
+		lightIntensity = 1,
+		onCameraChange
+	}: Props = $props();
 
-	type Vec3Tuple = [number, number, number];
 	const DOT_FADE_RADIUS = 50;
 	const DOT_FIELD_PADDING = 12;
 	const CAMERA_AZIMUTH_DEG = 40;
-	const CAMERA_ELEVATION_DEG = 24;
-	const CAMERA_DISTANCE = 32;
+	const CAMERA_ELEVATION_DEG = 20;
+	const CAMERA_DISTANCE = 6;
 
 	let camera = $state<THREE.PerspectiveCamera | undefined>();
 	let controls = $state<ThreeOrbitControls | undefined>();
@@ -45,14 +59,19 @@
 
 			void main() {
 				float radialDistance = length(vWorldXZ);
-				float normalizedDistance = clamp(radialDistance / max(uFadeRadius, 0.001), 0.0, 1.0);
-				float fade = exp(-3.25 * normalizedDistance * normalizedDistance);
+				if (radialDistance >= uFadeRadius) discard;
 
-				vec2 gridUv = fract(vWorldXZ * 1.55);
+				float normalizedDistance = clamp(radialDistance / max(uFadeRadius, 0.001), 0.0, 1.0);
+				float fade = exp(-8.5 * normalizedDistance * normalizedDistance);
+
+				float gridScale = mix(3.2, 1.15, normalizedDistance);
+				vec2 gridUv = fract(vWorldXZ * gridScale);
 				vec2 centeredUv = gridUv - 0.5;
-				float dotRadius = mix(0.055, 0.014, normalizedDistance);
-				float dotMask = 1.0 - smoothstep(dotRadius, dotRadius + 0.012, length(centeredUv));
-				float alpha = dotMask * fade * 1.05;
+				float dotRadius = mix(0.0075, 0.0018, normalizedDistance);
+				float distToDot = length(centeredUv);
+				float aa = max(fwidth(distToDot), 0.0018);
+				float dotMask = 1.0 - smoothstep(dotRadius - aa, dotRadius + aa, distToDot);
+				float alpha = dotMask * fade * 0.42;
 
 				if (alpha <= 0.001) discard;
 
@@ -64,6 +83,20 @@
 	$effect(() => {
 		floorDotMaterial.uniforms.uFloorSize.value = floorSize;
 	});
+
+	function emitCameraConfig(): void {
+		if (!camera || !controls || !onCameraChange) return;
+
+		const target: Vec3Tuple = [controls.target.x, controls.target.y, controls.target.z];
+		const position: Vec3Tuple = [camera.position.x, camera.position.y, camera.position.z];
+
+		onCameraChange({
+			position,
+			target,
+			distance: camera.position.distanceTo(controls.target),
+			fov: camera.fov
+		});
+	}
 
 	function getCameraPresetPosition(): Vec3Tuple {
 		const azimuthRadians = THREE.MathUtils.degToRad(CAMERA_AZIMUTH_DEG);
@@ -110,11 +143,7 @@
 	function frameVehicle(gltf: ThrelteGltf): void {
 		enforceOpaqueExterior(gltf.scene);
 
-		const bounds = new THREE.Box3().setFromObject(gltf.scene);
-		const size = new THREE.Vector3();
-		const center = new THREE.Vector3();
-		bounds.getSize(size);
-		bounds.getCenter(center);
+		const { size, center } = normalizeVehicleScene(gltf.scene, assetId);
 
 		modelPosition = [-center.x, -center.y, -center.z];
 		cameraPosition = getCameraPresetPosition();
@@ -130,7 +159,25 @@
 			controls.target.set(0, 0, 0);
 			controls.update();
 		}
+
+		emitCameraConfig();
 	}
+
+	$effect(() => {
+		if (!camera || !controls) return;
+		const currentControls = controls;
+
+		const syncCameraConfig = () => {
+			emitCameraConfig();
+		};
+
+		currentControls.addEventListener('change', syncCameraConfig);
+		syncCameraConfig();
+
+		return () => {
+			currentControls.removeEventListener('change', syncCameraConfig);
+		};
+	});
 </script>
 
 <div
@@ -158,16 +205,16 @@
 				maxDistance={200}
 			/>
 		</T.PerspectiveCamera>
-		<T.AmbientLight intensity={1.15} />
-		<T.HemisphereLight args={['#e8ecf3', '#08090c', 1.2]} />
-		<T.DirectionalLight position={[6, 9, 5]} intensity={2.1} />
-		<T.DirectionalLight position={[-4, 3, -5]} intensity={0.45} />
+		<T.AmbientLight intensity={1.15 * lightIntensity} />
+		<T.HemisphereLight args={['#e8ecf3', '#08090c', 1.2 * lightIntensity]} />
+		<T.DirectionalLight position={[6, 9, 5]} intensity={2.1 * lightIntensity} />
+		<T.DirectionalLight position={[-4, 3, -5]} intensity={0.45 * lightIntensity} />
 		<T.Mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorY + 0.003, 0]}>
-			<T.PlaneGeometry args={[floorSize, floorSize, 1, 1]} />
+			<T.CircleGeometry args={[floorSize / 2, 160]} />
 			<T is={floorDotMaterial} />
 		</T.Mesh>
 		<T.Group position={modelPosition}>
-			<GLTF url="/audi_r8.glb" onload={frameVehicle} />
+			<GLTF url={assetUrl} onload={frameVehicle} />
 		</T.Group>
 	</Canvas>
 </div>

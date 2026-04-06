@@ -44,6 +44,7 @@ In `Done`:
 - [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 - [ ] T-008 | Delete placeholder scene helpers after the first vertical slice lands | next: remove procedural stand-in scene code after asset-driven scene is live
 - [ ] T-013 | Reduce oversized client chunk from viewer route | next: re-measure after the first real asset and split any viewer-only code if still needed
+- [x] T-017 | Wire frontend viewer to registry-backed asset selection | completed: 2026-04-05
 
 ## In Progress
 
@@ -67,6 +68,8 @@ In `Done`:
 - [x] T-011 | Define dark-first Tailwind 4 surface tokens and color boundary | completed: 2026-04-04
 - [x] T-012 | Add reusable Threlte inspection viewport placeholder | completed: 2026-04-04
 - [x] T-015 | Load Audi R8 asset into the inspection viewport | completed: 2026-04-05
+- [x] T-018 | Build server-side vehicle asset registry scaffold | completed: 2026-04-05
+- [x] T-017 | Wire frontend viewer to registry-backed asset selection | completed: 2026-04-05
 
 ## Updates
 
@@ -81,3 +84,6 @@ In `Done`:
 - 2026-04-05 12:45 PT | Marked `T-007` and `T-009` done after removing unused auth, demo, and wrapper paths from the active codebase
 - 2026-04-05 12:31 PT | Marked `T-015` done after replacing the placeholder vehicle with the `audi_r8.glb` asset in the main inspection viewport
 - 2026-04-05 12:33 PT | Marked `T-016` done after creating a self-contained Three.js shader voice blob asset and leaving it disabled in the footer
+- 2026-04-05 20:30 PT | Marked `T-018` done after adding a server-side vehicle asset registry with local-to-remote URL resolution and minimal REST endpoints
+- 2026-04-05 20:30 PT | Added `T-017` to `Backlog` to connect the active viewer to the new registry instead of hardcoded asset URLs
+- 2026-04-05 20:48 PT | Marked `T-017` done after switching the viewer to asset metadata from the registry and serving local GLBs through a private download route

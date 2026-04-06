@@ -47,7 +47,7 @@
 @layer base {
 	:root {
 		color-scheme: dark;
-		--boundary-background: hsl(0 0% 15%);
+		--boundary-background: rgba(20, 20, 20, 1);
 		--boundary-warning: hsl(8 49% 51%);
 		--boundary-secondary: hsl(34 75% 73%);
 		--boundary-primary: hsl(246 38% 66%);

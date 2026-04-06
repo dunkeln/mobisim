@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import VehicleCatalogDropdown from '$lib/components/future/vehicle-catalog-dropdown.svelte';
 
 	let { children }: { children: import('svelte').Snippet } = $props();
 </script>
@@ -12,11 +13,11 @@
 		<section
 			class="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden px-6 py-6 sm:px-10 sm:py-8"
 		>
-			<header class="flex min-h-10 items-center justify-between gap-4">
-				<div class="space-y-1">
-					<p class="text-[0.68rem] tracking-[0.28em] text-shell-subtle uppercase">mobisim</p>
+			<header class="flex min-h-3 items-center justify-between gap-2">
+				<div class="space-y-0">
+					<p class="text-[0.68rem] tracking-[0.28em] text-shell-subtle lowercase">mobisim</p>
 				</div>
-				<div>placeholder</div>
+				<VehicleCatalogDropdown />
 			</header>
 
 			<div class="flex min-h-0 py-6">

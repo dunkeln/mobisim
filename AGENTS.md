@@ -23,7 +23,7 @@ If any two priorities conflict, stop, identify the conflict, explain the tradeof
 
 Use this palette as the project color boundary for layout/debug surfaces and any new UI unless explicitly overridden:
 
-- background: `hsl(0 0% 15%)`
+- background: `rgba(20, 20, 20, 1)`
 - error/warning: `hsl(8 49% 51%)`
 - secondary: `hsl(34 75% 73%)`
 - primary: `hsl(246 38% 66%)`
