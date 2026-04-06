@@ -5,4 +5,6 @@ export type CameraConfig = {
 	target: Vec3Tuple;
 	distance: number;
 	fov: number;
+	azimuthDegrees: number;
+	elevationDegrees: number;
 };

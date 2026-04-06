@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import InspectionViewport from '$lib/components/threlte/inspection-viewport.svelte';
-	import type { PageData } from './$types';
+	import { resolveVehicleAssetId } from '$lib/vehicles/catalog';
 
-	let { data }: { data: PageData } = $props();
+	const assetId = $derived.by(() => resolveVehicleAssetId(page.url.searchParams.get('asset')));
+	const assetUrl = $derived(`/api/vehicle-assets/${assetId}/download`);
 </script>
 
 <svelte:head>
@@ -13,10 +15,8 @@
 	class="relative flex min-h-0 flex-1 overflow-visible px-5 py-5 sm:px-7 sm:py-7 lg:px-9 lg:py-9"
 >
 	<div class="flex min-h-0 flex-1 overflow-visible">
-		<InspectionViewport
-			assetId={data.vehicleAsset.id}
-			assetUrl={data.vehicleAsset.downloadUrl}
-			class="min-h-0 flex-1"
-		/>
+		{#key assetId}
+			<InspectionViewport {assetUrl} class="min-h-0 flex-1" />
+		{/key}
 	</div>
 </div>

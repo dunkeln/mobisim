@@ -1,7 +1,6 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
-	import VehicleCatalogDropdown from '$lib/components/future/vehicle-catalog-dropdown.svelte';
 
 	let { children }: { children: import('svelte').Snippet } = $props();
 </script>
@@ -17,7 +16,6 @@
 				<div class="space-y-0">
 					<p class="text-[0.68rem] tracking-[0.28em] text-shell-subtle lowercase">mobisim</p>
 				</div>
-				<VehicleCatalogDropdown />
 			</header>
 
 			<div class="flex min-h-0 py-0">

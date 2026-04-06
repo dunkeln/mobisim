@@ -1,54 +1,31 @@
 <script lang="ts">
 	import type { CameraConfig } from '$lib/components/inspector/types';
+	import Axis3D from 'lucide-svelte/icons/axis-3d';
 
 	type Props = {
 		config?: CameraConfig | null;
+		moving?: boolean;
 		class?: string;
 	};
 
-	let { config = null, class: className = '' }: Props = $props();
-
-	function formatTuple(tuple: CameraConfig['position']): string {
-		return tuple.map((value) => value.toFixed(2)).join(', ');
-	}
+	let { config = null, moving = false, class: className = '' }: Props = $props();
 </script>
 
 <section
 	class={[
-		'w-[min(18rem,100%)] rounded-[1.5rem] border border-[color:color-mix(in_oklab,var(--color-boundary-text)_10%,transparent)]',
-		'bg-[color:color-mix(in_oklab,var(--color-boundary-background)_78%,black)] px-4 py-4',
-		'shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_4%,transparent),0_14px_28px_color-mix(in_oklab,var(--color-boundary-background)_28%,black)]',
-		'backdrop-blur',
+		'flex min-h-9 w-auto items-center rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_10%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_54%,transparent)] px-3.5 py-1.5 shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_9%,transparent),0_10px_24px_color-mix(in_oklab,var(--color-boundary-background)_24%,black)] backdrop-blur-xl',
 		className
 	]}
 >
-	<div class="grid gap-3">
-		<div class="flex items-center justify-between gap-3">
-			<p class="text-[0.68rem] font-medium tracking-[0.18em] text-shell-subtle uppercase">
-				Camera
-			</p>
-			{#if config}
-				<span class="text-xs text-boundary-text/72">{config.distance.toFixed(2)}m</span>
-			{/if}
+	{#if config}
+		<div class="flex flex-wrap items-center gap-2 text-[0.68rem]">
+			<Axis3D class="h-4 w-4 shrink-0 text-boundary-text/58" />
+			<span class={moving ? 'text-boundary-secondary' : 'text-boundary-text/72'}>
+				{config.azimuthDegrees.toFixed(1)}&deg &middot; {config.elevationDegrees.toFixed(1)}&deg
+				&middot; {config.distance.toFixed(2)} units
+			</span>
 		</div>
-
-		{#if config}
-			<div class="grid gap-2 text-xs text-boundary-text/72">
-				<div class="grid gap-1">
-					<p class="tracking-[0.16em] text-shell-subtle uppercase">Position</p>
-					<p>{formatTuple(config.position)}</p>
-				</div>
-				<div class="grid gap-1">
-					<p class="tracking-[0.16em] text-shell-subtle uppercase">Target</p>
-					<p>{formatTuple(config.target)}</p>
-				</div>
-				<div class="grid gap-1">
-					<p class="tracking-[0.16em] text-shell-subtle uppercase">FOV</p>
-					<p>{config.fov.toFixed(1)} deg</p>
-				</div>
-			</div>
-		{:else}
-			<p class="text-xs text-shell-subtle">Waiting for viewport camera sync.</p>
-		{/if}
-	</div>
+	{:else}
+		<p class="text-xs text-shell-subtle">Waiting for viewport camera sync.</p>
+	{/if}
 </section>

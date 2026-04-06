@@ -1,10 +1,18 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
-@source "../lib";
-@source "../routes";
-@source not "../../static";
-@source not "../../docs";
+@source '../lib';
+@source '../routes';
+@source not '../../static';
+@source not '../../docs';
+
+@font-face {
+	font-family: 'Anthropic Sans';
+	src: url('/fonts/Serifa.ttf') format('truetype');
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+}
 
 @theme {
 	--color-shell: var(--surface-background);
@@ -22,26 +30,10 @@
 	--color-boundary-primary: var(--boundary-primary);
 	--color-boundary-text: var(--boundary-text);
 	--font-sans:
-		'Anthropic Sans',
-		'Styrene A Web',
-		'Styrene A',
-		'SF Pro Display',
-		'Segoe UI',
-		'Helvetica Neue',
-		Arial,
-		sans-serif;
-	--font-serif:
-		'Anthropic Serif',
-		'Ivar Text',
-		'Source Serif 4',
-		'Times New Roman',
-		serif;
-	--font-mono:
-		'JetBrains Mono',
-		'SFMono-Regular',
-		'SF Mono',
-		'Roboto Mono',
-		monospace;
+		'Anthropic Sans', 'Styrene A Web', 'Styrene A', 'SF Pro Display', 'Segoe UI', 'Helvetica Neue',
+		Arial, sans-serif;
+	--font-serif: 'Anthropic Serif', 'Ivar Text', 'Source Serif 4', 'Times New Roman', serif;
+	--font-mono: 'JetBrains Mono', 'SFMono-Regular', 'SF Mono', 'Roboto Mono', monospace;
 }
 
 @layer base {

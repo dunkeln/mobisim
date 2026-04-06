@@ -14,7 +14,3 @@ export type VehicleRegistryAsset = {
 export type VehicleRegistryListResponse = {
 	items: VehicleRegistryAsset[];
 };
-
-export type VehicleRegistryDetailResponse = {
-	item: VehicleRegistryAsset;
-};

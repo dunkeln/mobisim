@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 const CANONICAL_FIT_BOX = new THREE.Vector3(4.8, 2.2, 7.2);
 
@@ -9,10 +8,7 @@ export type NormalizedVehicleScene = {
 	scaleFactor: number;
 };
 
-export function normalizeVehicleScene(
-	scene: THREE.Object3D,
-	_assetId: VehicleAssetId
-): NormalizedVehicleScene {
+export function normalizeVehicleScene(scene: THREE.Object3D): NormalizedVehicleScene {
 	scene.updateMatrixWorld(true);
 
 	const initialBounds = new THREE.Box3().setFromObject(scene);

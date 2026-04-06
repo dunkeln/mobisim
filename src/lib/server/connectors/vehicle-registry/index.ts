@@ -1,14 +1,6 @@
 import { env } from '$env/dynamic/private';
-import {
-	VEHICLE_CATALOG,
-	VEHICLE_CATALOG_LIST,
-	type VehicleAssetId
-} from '$lib/vehicles/catalog';
-import type {
-	VehicleRegistryAsset,
-	VehicleRegistryDetailResponse,
-	VehicleRegistryListResponse
-} from './types';
+import { VEHICLE_CATALOG, VEHICLE_CATALOG_LIST, type VehicleAssetId } from '$lib/vehicles/catalog';
+import type { VehicleRegistryAsset, VehicleRegistryListResponse } from './types';
 
 function stripTrailingSlash(value: string): string {
 	return value.endsWith('/') ? value.slice(0, -1) : value;
@@ -31,7 +23,9 @@ function toRegistryAsset(assetId: VehicleAssetId): VehicleRegistryAsset {
 		description: asset.description,
 		fileName: asset.fileName,
 		lengthMeters: asset.lengthMeters,
-		downloadUrl: baseUrl ? `${baseUrl}/${asset.fileName}` : `/api/vehicle-assets/${asset.id}/download`,
+		downloadUrl: baseUrl
+			? `${baseUrl}/${asset.fileName}`
+			: `/api/vehicle-assets/${asset.id}/download`,
 		storage: baseUrl ? 'remote-public' : 'local-private'
 	};
 }
@@ -39,17 +33,5 @@ function toRegistryAsset(assetId: VehicleAssetId): VehicleRegistryAsset {
 export function listVehicleRegistryAssets(): VehicleRegistryListResponse {
 	return {
 		items: VEHICLE_CATALOG_LIST.map((asset) => toRegistryAsset(asset.id))
-	};
-}
-
-export function getVehicleRegistryAsset(assetId: VehicleAssetId): VehicleRegistryDetailResponse {
-	const asset = VEHICLE_CATALOG[assetId];
-
-	if (!asset) {
-		throw new Error(`Unknown vehicle asset: ${assetId}`);
-	}
-
-	return {
-		item: toRegistryAsset(assetId)
 	};
 }
