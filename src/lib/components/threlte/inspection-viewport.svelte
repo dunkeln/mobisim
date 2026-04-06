@@ -27,7 +27,7 @@
 	const DOT_FIELD_PADDING = 12;
 	const CAMERA_AZIMUTH_DEG = 40;
 	const CAMERA_ELEVATION_DEG = 20;
-	const CAMERA_DISTANCE = 6;
+	const CAMERA_DISTANCE = 9;
 
 	let camera = $state<THREE.PerspectiveCamera | undefined>();
 	let controls = $state<ThreeOrbitControls | undefined>();
@@ -182,39 +182,44 @@
 
 <div
 	class={[
-		'relative h-full min-h-0 w-full overflow-hidden rounded-[2rem]',
-		'border border-[color:color-mix(in_oklab,var(--color-boundary-text)_9%,transparent)]',
-		'bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)]',
-		'shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_6%,transparent),inset_0_-18px_36px_color-mix(in_oklab,var(--color-boundary-background)_68%,black),0_24px_60px_color-mix(in_oklab,var(--color-boundary-background)_34%,black)]',
+		'relative h-full min-h-0 w-full overflow-visible rounded-4xl',
+		'drop-shadow-[0_18px_30px_color-mix(in_oklab,var(--color-boundary-background)_16%,black)]',
+		'drop-shadow-[0_4px_10px_color-mix(in_oklab,var(--color-boundary-background)_10%,black)]',
 		className
 	]}
 >
 	<div
-		class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_14%,transparent_84%,color-mix(in_oklab,var(--color-boundary-background)_24%,black))]"
-	></div>
-	<div
-		class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_50%)]"
-	></div>
-	<Canvas>
-		<T.PerspectiveCamera bind:ref={camera} makeDefault position={cameraPosition} fov={34}>
-			<OrbitControls
-				bind:ref={controls}
-				enablePan={false}
-				enableDamping
-				minDistance={4}
-				maxDistance={200}
-			/>
-		</T.PerspectiveCamera>
-		<T.AmbientLight intensity={1.15 * lightIntensity} />
-		<T.HemisphereLight args={['#e8ecf3', '#08090c', 1.2 * lightIntensity]} />
-		<T.DirectionalLight position={[6, 9, 5]} intensity={2.1 * lightIntensity} />
-		<T.DirectionalLight position={[-4, 3, -5]} intensity={0.45 * lightIntensity} />
-		<T.Mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorY + 0.003, 0]}>
-			<T.CircleGeometry args={[floorSize / 2, 160]} />
-			<T is={floorDotMaterial} />
-		</T.Mesh>
-		<T.Group position={modelPosition}>
-			<GLTF url={assetUrl} onload={frameVehicle} />
-		</T.Group>
-	</Canvas>
+		class="relative h-full min-h-0 w-full overflow-hidden rounded-[2rem] border border-[color:color-mix(in_oklab,var(--color-boundary-text)_9%,transparent)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_6%,transparent),inset_0_-18px_36px_color-mix(in_oklab,var(--color-boundary-background)_68%,black)]"
+	>
+		<div
+			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_14%,transparent_84%,color-mix(in_oklab,var(--color-boundary-background)_24%,black))]"
+		></div>
+		<div
+			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_40%,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_50%)]"
+		></div>
+		<div class="h-full min-h-0 w-full overflow-hidden rounded-[inherit]">
+			<Canvas>
+				<T.PerspectiveCamera bind:ref={camera} makeDefault position={cameraPosition} fov={34}>
+					<OrbitControls
+						bind:ref={controls}
+						enablePan={false}
+						enableDamping
+						minDistance={4}
+						maxDistance={200}
+					/>
+				</T.PerspectiveCamera>
+				<T.AmbientLight intensity={1.15 * lightIntensity} />
+				<T.HemisphereLight args={['#e8ecf3', '#08090c', 1.2 * lightIntensity]} />
+				<T.DirectionalLight position={[6, 9, 5]} intensity={2.1 * lightIntensity} />
+				<T.DirectionalLight position={[-4, 3, -5]} intensity={0.45 * lightIntensity} />
+				<T.Mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorY + 0.003, 0]}>
+					<T.CircleGeometry args={[floorSize / 2, 160]} />
+					<T is={floorDotMaterial} />
+				</T.Mesh>
+				<T.Group position={modelPosition}>
+					<GLTF url={assetUrl} onload={frameVehicle} />
+				</T.Group>
+			</Canvas>
+		</div>
+	</div>
 </div>

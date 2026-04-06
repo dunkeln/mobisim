@@ -1,52 +1,42 @@
 import * as THREE from 'three';
-import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
+import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
-type VehicleAssetSpec = {
-	url: string;
-	lengthMeters: number;
-};
-
-export const VEHICLE_ASSETS: Record<VehicleAssetId, VehicleAssetSpec> = Object.fromEntries(
-	Object.values(VEHICLE_CATALOG).map((asset) => [
-		asset.id,
-		{
-			url: `/${asset.fileName}`,
-			lengthMeters: asset.lengthMeters
-		}
-	])
-) as Record<VehicleAssetId, VehicleAssetSpec>;
+const CANONICAL_FIT_BOX = new THREE.Vector3(4.8, 2.2, 7.2);
 
 export type NormalizedVehicleScene = {
-  center: THREE.Vector3;
-  size: THREE.Vector3;
-  scaleFactor: number;
+	center: THREE.Vector3;
+	size: THREE.Vector3;
+	scaleFactor: number;
 };
 
 export function normalizeVehicleScene(
-  scene: THREE.Object3D,
-  assetId: VehicleAssetId
+	scene: THREE.Object3D,
+	_assetId: VehicleAssetId
 ): NormalizedVehicleScene {
-  scene.updateMatrixWorld(true);
+	scene.updateMatrixWorld(true);
 
-  const initialBounds = new THREE.Box3().setFromObject(scene);
-  const initialSize = new THREE.Vector3();
-  initialBounds.getSize(initialSize);
+	const initialBounds = new THREE.Box3().setFromObject(scene);
+	const initialSize = new THREE.Vector3();
+	initialBounds.getSize(initialSize);
 
-  const measuredLength = Math.max(initialSize.x, initialSize.z) || 1;
-  const scaleFactor = VEHICLE_ASSETS[assetId].lengthMeters / measuredLength;
+	const scaleFactor = Math.min(
+		CANONICAL_FIT_BOX.x / Math.max(initialSize.x, 0.001),
+		CANONICAL_FIT_BOX.y / Math.max(initialSize.y, 0.001),
+		CANONICAL_FIT_BOX.z / Math.max(initialSize.z, 0.001)
+	);
 
-  scene.scale.multiplyScalar(scaleFactor);
-  scene.updateMatrixWorld(true);
+	scene.scale.multiplyScalar(scaleFactor);
+	scene.updateMatrixWorld(true);
 
-  const normalizedBounds = new THREE.Box3().setFromObject(scene);
-  const size = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  normalizedBounds.getSize(size);
-  normalizedBounds.getCenter(center);
+	const normalizedBounds = new THREE.Box3().setFromObject(scene);
+	const size = new THREE.Vector3();
+	const center = new THREE.Vector3();
+	normalizedBounds.getSize(size);
+	normalizedBounds.getCenter(center);
 
-  return {
-    center,
-    size,
-    scaleFactor
-  };
+	return {
+		center,
+		size,
+		scaleFactor
+	};
 }

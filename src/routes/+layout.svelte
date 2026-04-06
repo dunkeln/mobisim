@@ -11,16 +11,16 @@
 <div class="h-dvh overflow-hidden bg-boundary-background text-boundary-text">
 	<main class="h-full overflow-hidden">
 		<section
-			class="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden px-6 py-6 sm:px-10 sm:py-8"
+			class="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden px-6 py-6 sm:px-15 sm:py-8"
 		>
-			<header class="flex min-h-3 items-center justify-between gap-2">
+			<header class="flex min-h-3 items-center justify-between gap-0">
 				<div class="space-y-0">
 					<p class="text-[0.68rem] tracking-[0.28em] text-shell-subtle lowercase">mobisim</p>
 				</div>
 				<VehicleCatalogDropdown />
 			</header>
 
-			<div class="flex min-h-0 py-6">
+			<div class="flex min-h-0 py-0">
 				{@render children()}
 			</div>
 
