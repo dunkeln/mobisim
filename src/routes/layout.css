@@ -1,6 +1,10 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
+@source "../lib";
+@source "../routes";
+@source not "../../static";
+@source not "../../docs";
 
 @theme {
 	--color-shell: var(--surface-background);

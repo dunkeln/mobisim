@@ -15,23 +15,17 @@
 			<header class="flex min-h-10 items-center justify-between gap-4">
 				<div class="space-y-1">
 					<p class="text-[0.68rem] tracking-[0.28em] text-shell-subtle uppercase">mobisim</p>
-					<p class="text-sm text-shell-subtle sm:text-base">
-						Single-scene inspection shell with no extra control surfaces.
-					</p>
 				</div>
-				<div class="rounded-full border border-shell-border px-3 py-1 text-[0.68rem] tracking-[0.18em] text-shell-subtle uppercase">
-					Viewer Baseline
-				</div>
+				<div>placeholder</div>
 			</header>
 
 			<div class="flex min-h-0 py-6">
 				{@render children()}
 			</div>
 
-			<footer class="flex min-h-8 items-end justify-between gap-4 pt-4 text-xs text-shell-subtle">
-				<p>Current slice: orbit inspection viewport only.</p>
-				<p class="tracking-[0.18em] uppercase">Chrome-first</p>
-			</footer>
+			<footer
+				class="flex min-h-8 items-end justify-between gap-4 pt-4 text-xs text-shell-subtle"
+			></footer>
 		</section>
 	</main>
 </div>

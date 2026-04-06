@@ -66,6 +66,7 @@ In `Done`:
 - [x] T-010 | Lock document and app shell to no-scroll viewport behavior | completed: 2026-04-04
 - [x] T-011 | Define dark-first Tailwind 4 surface tokens and color boundary | completed: 2026-04-04
 - [x] T-012 | Add reusable Threlte inspection viewport placeholder | completed: 2026-04-04
+- [x] T-015 | Load Audi R8 asset into the inspection viewport | completed: 2026-04-05
 
 ## Updates
 
@@ -78,3 +79,5 @@ In `Done`:
 - 2026-04-04 22:30 PT | Added `T-013` for viewer bundle follow-up and `T-014` for no-scroll regression review
 - 2026-04-05 12:45 PT | Moved auth, demo, and scaffold cleanup into execution and kept `T-004` focused on the next real API slice
 - 2026-04-05 12:45 PT | Marked `T-007` and `T-009` done after removing unused auth, demo, and wrapper paths from the active codebase
+- 2026-04-05 12:31 PT | Marked `T-015` done after replacing the placeholder vehicle with the `audi_r8.glb` asset in the main inspection viewport
+- 2026-04-05 12:33 PT | Marked `T-016` done after creating a self-contained Three.js shader voice blob asset and leaving it disabled in the footer
