@@ -10,8 +10,10 @@ export type FooterChatMessage = {
 
 export type FooterChatRequest = {
 	message: string;
-	history?: FooterChatMessage[];
 	assetId?: VehicleAssetId;
+	selectedNodeId?: string;
+	selectedNodeName?: string;
+	selectedNodePath?: string;
 };
 
 export type FooterChatVehiclePatchOperation = VehicleInspectionPatchOperation;
@@ -20,5 +22,6 @@ export type FooterChatResponse = {
 	message: FooterChatMessage;
 	model: string;
 	vehiclePatchAssetId?: VehicleAssetId;
+	vehiclePatchLabel?: string;
 	vehiclePatchOperations?: FooterChatVehiclePatchOperation[];
 };

@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
+import { getVehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay';
 import { isVehicleAssetId } from '$lib/vehicles/catalog';
 
 type InspectionSection = 'all' | 'scenes' | 'controls' | 'wireframes' | 'uv' | 'materials';
@@ -24,6 +25,10 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 	}
 
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
+	const semanticOverlayStatus = await getVehicleSemanticOverlayStatus(
+		assetId,
+		capabilities.generatedAt
+	);
 
 	switch (section) {
 		case 'scenes':
@@ -31,6 +36,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				items: capabilities.scenes
 			};
 		case 'controls':
@@ -38,6 +44,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				items: capabilities.controlCandidates
 			};
 		case 'wireframes':
@@ -45,6 +52,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				items: capabilities.wireframeMeshes
 			};
 		case 'uv':
@@ -52,6 +60,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				items: capabilities.uvDebugMeshes
 			};
 		case 'materials':
@@ -59,6 +68,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				items: capabilities.materials
 			};
 		case 'all':
@@ -66,6 +76,7 @@ export async function _getVehicleInspectionSection(assetId: string, section: Ins
 				assetId,
 				section,
 				generatedAt: capabilities.generatedAt,
+				semanticOverlayStatus,
 				item: capabilities
 			};
 	}

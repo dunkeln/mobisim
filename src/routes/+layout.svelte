@@ -12,7 +12,7 @@
 <div class="h-dvh overflow-hidden bg-boundary-background text-boundary-text">
 	<main class="h-full overflow-hidden">
 		<section
-			class="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden px-6 py-6 sm:px-15 sm:py-8"
+			class="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden px-4 py-4 sm:px-10 sm:py-5"
 		>
 			<header class="flex min-h-3 items-center justify-between gap-0">
 				<div class="space-y-0">
@@ -24,7 +24,7 @@
 				{@render children()}
 			</div>
 
-			<footer class="flex min-h-8 items-end justify-center gap-4 pt-4 text-xs text-shell-subtle">
+			<footer class="flex min-h-8 items-end justify-center gap-4 pt-2 text-xs text-shell-subtle">
 				<FooterChatbox />
 			</footer>
 		</section>

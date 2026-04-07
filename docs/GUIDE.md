@@ -16,6 +16,19 @@
 - A new abstraction must have at least two real callers; otherwise keep the logic inline in the current module.
 - A task is not complete until obvious temporary code and duplicate paths introduced by that task are removed.
 
+## Semantic Overlay
+
+- Structural GLB manifests remain canonical for node IDs, mesh IDs, material IDs, paths, and patch validation.
+- Semantic enrichment must be stored as a separate overlay artifact and must never rewrite the structural manifest in place.
+- The one-pass semantic overlay endpoint is `POST /api/vehicle-assets/[assetId]/semantic-overlay`.
+- Semantic overlays are shared cached artifacts across sessions and are not rebuilt automatically during normal inspection or chat requests.
+- Explicit refresh requests still rebuild the overlay through the semantic overlay endpoint or the footer assistant refresh tool.
+- For dev rewrites, flush cached overlays with:
+  - `npm run semantic:flush -- --all`
+  - `npm run semantic:flush -- --asset 2017_lexus_lc_500`
+- Accepted overlay records are confidence-filtered material annotations used by planners before legacy name heuristics.
+- Rejected semantic suggestions stay outside planner execution and remain review-only data.
+
 ---
 
 You are able to use the Svelte MCP server, where you have access to comprehensive Svelte 5 and SvelteKit documentation. Here's how to use the available tools effectively:

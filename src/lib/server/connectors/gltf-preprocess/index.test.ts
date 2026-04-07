@@ -104,6 +104,18 @@ describe('deriveVehicleInspectionCapabilities', () => {
 		).toBe(true);
 	});
 
+	it('adds finish operations for expressive body paint requests', async () => {
+		const plan = await planVehicleBodyPaint(
+			'audi_r8',
+			[0.22, 0.12, 0.34, 1],
+			{ metalness: 1, roughness: 0.08, envMapIntensity: 1.85 }
+		);
+
+		expect(plan.operations.some((operation) => operation.op === 'set_metalness_factor')).toBe(true);
+		expect(plan.operations.some((operation) => operation.op === 'set_roughness_factor')).toBe(true);
+		expect(plan.operations.some((operation) => operation.op === 'set_env_map_intensity')).toBe(true);
+	});
+
 	it('plans window tint operations for configured glass materials', async () => {
 		const plan = await planVehicleWindowTint('audi_r8', '5% dark tint', [0.04, 0.04, 0.05, 0.94]);
 

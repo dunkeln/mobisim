@@ -1,11 +1,14 @@
-import { access, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { getBounds, NodeIO } from '@gltf-transform/core';
-import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, prune } from '@gltf-transform/functions';
-import type { Node, Material, Mesh, Primitive, Scene } from '@gltf-transform/core';
 import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
-import { resolveLocalAssetPath } from '$lib/server/connectors/vehicle-registry/storage';
+import {
+	deriveStructuralAssetSnapshot,
+	type StructuralMaterial,
+	type StructuralMesh,
+	type StructuralNode
+} from '$lib/server/connectors/gltf-structure';
+import {
+	listSemanticMaterialsByQuery,
+	listSemanticMaterialsByTags
+} from '$lib/server/connectors/vehicle-semantic-overlay';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type {
 	VehicleBodyPaintPlan,
@@ -16,255 +19,10 @@ import type {
 	VehicleInspectionPatchManifest,
 	VehiclePartHighlightPlan,
 	VehicleInspectionPatchValidationResult,
-	VehicleInspectionSceneSummary,
 	VehicleWindowTintPlan
 } from './types';
 
-type GltfPreprocessNode = {
-	id: string;
-	name: string;
-	path: string;
-	childCount: number;
-	meshId: string | null;
-	translation: [number, number, number];
-	rotation: [number, number, number, number];
-	scale: [number, number, number];
-};
-
-type GltfPreprocessMesh = {
-	id: string;
-	name: string;
-	primitiveCount: number;
-	attributeSemantics: string[];
-	materialNames: string[];
-	hasTexcoord0: boolean;
-	hasTexcoord1: boolean;
-	wireframeCapable: boolean;
-	uvDebugCapable: boolean;
-};
-
-type GltfPreprocessMaterial = {
-	id: string;
-	name: string;
-	alphaMode: 'OPAQUE' | 'MASK' | 'BLEND';
-	doubleSided: boolean;
-	textureSlots: string[];
-};
-
-type GltfPreprocessManifest = {
-	assetId: VehicleAssetId;
-	assetPath: string;
-	generatedAt: string;
-	scenes: VehicleInspectionSceneSummary[];
-	nodes: GltfPreprocessNode[];
-	meshes: GltfPreprocessMesh[];
-	materials: GltfPreprocessMaterial[];
-};
-
-type CacheEntry = {
-	cacheKey: string;
-	manifest: GltfPreprocessManifest;
-};
-
-const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
-const preprocessCache = new Map<VehicleAssetId, CacheEntry>();
-
-function toVec3(values: number[]): [number, number, number] {
-	return [values[0] ?? 0, values[1] ?? 0, values[2] ?? 0];
-}
-
-function toQuat(values: number[]): [number, number, number, number] {
-	return [values[0] ?? 0, values[1] ?? 0, values[2] ?? 0, values[3] ?? 1];
-}
-
-function createNodeId(index: number): string {
-	return `node-${index}`;
-}
-
-function createMeshId(index: number): string {
-	return `mesh-${index}`;
-}
-
-function createMaterialId(index: number): string {
-	return `material-${index}`;
-}
-
-function formatNodeName(node: Node, fallbackIndex: number): string {
-	return node.getName().trim() || `Node ${fallbackIndex}`;
-}
-
-function formatMeshName(mesh: Mesh, fallbackIndex: number): string {
-	return mesh.getName().trim() || `Mesh ${fallbackIndex}`;
-}
-
-function formatMaterialName(material: Material, fallbackIndex: number): string {
-	return material.getName().trim() || `Material ${fallbackIndex}`;
-}
-
-function collectTextureSlots(material: Material): string[] {
-	const slots: string[] = [];
-
-	if (material.getBaseColorTexture()) slots.push('baseColorTexture');
-	if (material.getEmissiveTexture()) slots.push('emissiveTexture');
-	if (material.getMetallicRoughnessTexture()) slots.push('metallicRoughnessTexture');
-	if (material.getNormalTexture()) slots.push('normalTexture');
-	if (material.getOcclusionTexture()) slots.push('occlusionTexture');
-
-	return slots;
-}
-
-function collectPrimitiveSemantics(primitive: Primitive): string[] {
-	return primitive
-		.listSemantics()
-		.slice()
-		.sort((left, right) => left.localeCompare(right));
-}
-
-function collectSceneSummaries(scenes: Scene[]): VehicleInspectionSceneSummary[] {
-	return scenes.map((scene, index) => {
-		const bounds = getBounds(scene);
-
-		return {
-			id: `scene-${index}`,
-			name: scene.getName().trim() || `Scene ${index}`,
-			rootNodeNames: scene
-				.listChildren()
-				.map((child, childIndex) => formatNodeName(child, childIndex)),
-			bounds: {
-				min: toVec3(bounds.min),
-				max: toVec3(bounds.max)
-			}
-		};
-	});
-}
-
-function collectNodeSummaries(
-	scenes: Scene[],
-	meshIds: WeakMap<Mesh, string>
-): GltfPreprocessNode[] {
-	const nodes: GltfPreprocessNode[] = [];
-	const seenNodes = new Set<Node>();
-
-	const visitNode = (node: Node, parentPath: string, index: number): void => {
-		if (seenNodes.has(node)) return;
-		seenNodes.add(node);
-
-		const name = formatNodeName(node, index);
-		const path = parentPath ? `${parentPath}/${name}` : name;
-		nodes.push({
-			id: createNodeId(nodes.length),
-			name,
-			path,
-			childCount: node.listChildren().length,
-			meshId: node.getMesh() ? (meshIds.get(node.getMesh() as Mesh) ?? null) : null,
-			translation: toVec3(node.getTranslation()),
-			rotation: toQuat(node.getRotation()),
-			scale: toVec3(node.getScale())
-		});
-
-		node.listChildren().forEach((child, childIndex) => visitNode(child, path, childIndex));
-	};
-
-	scenes.forEach((scene) => {
-		scene
-			.listChildren()
-			.forEach((node, nodeIndex) => visitNode(node, scene.getName().trim(), nodeIndex));
-	});
-
-	nodes.sort((left, right) => left.path.localeCompare(right.path));
-	return nodes;
-}
-
-function collectMeshSummaries(meshes: Mesh[]): {
-	meshes: GltfPreprocessMesh[];
-	meshIds: WeakMap<Mesh, string>;
-} {
-	const meshIds = new WeakMap<Mesh, string>();
-	const summaries = meshes.map((mesh, index) => {
-		const id = createMeshId(index);
-		meshIds.set(mesh, id);
-
-		const primitives = mesh.listPrimitives();
-		const semantics = new Set<string>();
-		const materialNames = new Set<string>();
-		let hasTexcoord0 = false;
-		let hasTexcoord1 = false;
-
-		for (const primitive of primitives) {
-			for (const semantic of collectPrimitiveSemantics(primitive)) {
-				semantics.add(semantic);
-				if (semantic === 'TEXCOORD_0') hasTexcoord0 = true;
-				if (semantic === 'TEXCOORD_1') hasTexcoord1 = true;
-			}
-
-			const material = primitive.getMaterial();
-			if (material) {
-				materialNames.add(material.getName().trim() || 'Unnamed Material');
-			}
-		}
-
-		return {
-			id,
-			name: formatMeshName(mesh, index),
-			primitiveCount: primitives.length,
-			attributeSemantics: Array.from(semantics).sort((left, right) => left.localeCompare(right)),
-			materialNames: Array.from(materialNames).sort((left, right) => left.localeCompare(right)),
-			hasTexcoord0,
-			hasTexcoord1,
-			wireframeCapable: primitives.length > 0,
-			uvDebugCapable: hasTexcoord0 || hasTexcoord1
-		};
-	});
-
-	return { meshes: summaries, meshIds };
-}
-
-function collectMaterialSummaries(materials: Material[]): GltfPreprocessMaterial[] {
-	return materials.map((material, index) => ({
-		id: createMaterialId(index),
-		name: formatMaterialName(material, index),
-		alphaMode: material.getAlphaMode(),
-		doubleSided: material.getDoubleSided(),
-		textureSlots: collectTextureSlots(material)
-	}));
-}
-
-async function createCacheKey(assetPath: string): Promise<string> {
-	const assetStats = await stat(assetPath);
-	return `${assetPath}:${assetStats.size}:${assetStats.mtimeMs}`;
-}
-
-async function preprocessVehicleAsset(assetId: VehicleAssetId): Promise<GltfPreprocessManifest> {
-	const assetPath = resolveLocalAssetPath(assetId);
-	await access(assetPath, constants.R_OK);
-
-	const cacheKey = await createCacheKey(assetPath);
-	const cached = preprocessCache.get(assetId);
-	if (cached && cached.cacheKey === cacheKey) {
-		return cached.manifest;
-	}
-
-	const document = await io.read(assetPath);
-	await document.transform(dedup(), prune());
-
-	const root = document.getRoot();
-	const scenes = root.listScenes();
-	const { meshes, meshIds } = collectMeshSummaries(root.listMeshes());
-	const manifest: GltfPreprocessManifest = {
-		assetId,
-		assetPath,
-		generatedAt: new Date().toISOString(),
-		scenes: collectSceneSummaries(scenes),
-		nodes: collectNodeSummaries(scenes, meshIds),
-		meshes,
-		materials: collectMaterialSummaries(root.listMaterials())
-	};
-
-	preprocessCache.set(assetId, { cacheKey, manifest });
-	return manifest;
-}
-
-function deriveControlCandidates(nodes: GltfPreprocessNode[]): VehicleInspectionControlCandidate[] {
+function deriveControlCandidates(nodes: StructuralNode[]): VehicleInspectionControlCandidate[] {
 	return nodes
 		.filter((node) => node.meshId !== null || node.childCount > 0)
 		.map((node) => ({
@@ -276,11 +34,11 @@ function deriveControlCandidates(nodes: GltfPreprocessNode[]): VehicleInspection
 		}));
 }
 
-function deriveDebugMeshes(meshes: GltfPreprocessMesh[]): {
+function deriveDebugMeshes(meshes: StructuralMesh[]): {
 	wireframeMeshes: VehicleInspectionDebugMesh[];
 	uvDebugMeshes: VehicleInspectionDebugMesh[];
 } {
-	const toDebugMesh = (mesh: GltfPreprocessMesh): VehicleInspectionDebugMesh => ({
+	const toDebugMesh = (mesh: StructuralMesh): VehicleInspectionDebugMesh => ({
 		meshId: mesh.id,
 		name: mesh.name,
 		attributeSemantics: mesh.attributeSemantics,
@@ -288,20 +46,25 @@ function deriveDebugMeshes(meshes: GltfPreprocessMesh[]): {
 	});
 
 	return {
-		wireframeMeshes: meshes.filter((mesh) => mesh.wireframeCapable).map(toDebugMesh),
-		uvDebugMeshes: meshes.filter((mesh) => mesh.uvDebugCapable).map(toDebugMesh)
+		wireframeMeshes: meshes.filter((mesh) => mesh.primitiveCount > 0).map(toDebugMesh),
+		uvDebugMeshes: meshes
+			.filter((mesh) => mesh.hasTexcoord0 || mesh.hasTexcoord1)
+			.map(toDebugMesh)
 	};
 }
 
 function deriveMaterialSummaries(
-	materials: GltfPreprocessMaterial[]
+	materials: StructuralMaterial[]
 ): VehicleInspectionMaterialSummary[] {
 	return materials.map((material) => ({
 		id: material.id,
 		name: material.name,
 		alphaMode: material.alphaMode,
 		doubleSided: material.doubleSided,
-		textureSlots: material.textureSlots
+		textureSlots: material.textureSlots,
+		meshIds: material.meshIds,
+		meshNames: material.meshNames,
+		nodePaths: material.nodePaths
 	}));
 }
 
@@ -504,6 +267,12 @@ function validatePatchOperation(
 					return isVec4(operation.value)
 						? { accepted: operation }
 						: { reason: `${operation.op} requires a 4-number tuple` };
+				case 'set_metalness_factor':
+				case 'set_roughness_factor':
+				case 'set_env_map_intensity':
+					return isNumber(operation.value)
+						? { accepted: operation }
+						: { reason: `${operation.op} requires a numeric value` };
 				case 'set_emissive_factor':
 					return isVec3(operation.value)
 						? { accepted: operation }
@@ -525,6 +294,7 @@ function validatePatchOperation(
 						? { accepted: operation }
 						: { reason: 'Postprocess viewer op requires set_enabled(boolean)' };
 				case 'wireframe':
+				case 'xray':
 				case 'uv_debug':
 					if (operation.op === 'set_enabled' && isBoolean(operation.value)) {
 						return { accepted: operation };
@@ -550,21 +320,21 @@ function validatePatchOperation(
 export async function deriveVehicleInspectionCapabilities(
 	assetId: VehicleAssetId
 ): Promise<VehicleInspectionCapabilities> {
-	const manifest = await preprocessVehicleAsset(assetId);
-	const { wireframeMeshes, uvDebugMeshes } = deriveDebugMeshes(manifest.meshes);
+	const snapshot = await deriveStructuralAssetSnapshot(assetId);
+	const { wireframeMeshes, uvDebugMeshes } = deriveDebugMeshes(snapshot.meshes);
 
 	return {
-		assetId: manifest.assetId,
-		generatedAt: manifest.generatedAt,
-		sceneCount: manifest.scenes.length,
-		nodeCount: manifest.nodes.length,
-		meshCount: manifest.meshes.length,
-		materialCount: manifest.materials.length,
-		scenes: manifest.scenes,
-		controlCandidates: deriveControlCandidates(manifest.nodes),
+		assetId: snapshot.assetId,
+		generatedAt: snapshot.generatedAt,
+		sceneCount: snapshot.scenes.length,
+		nodeCount: snapshot.nodes.length,
+		meshCount: snapshot.meshes.length,
+		materialCount: snapshot.materials.length,
+		scenes: snapshot.scenes,
+		controlCandidates: deriveControlCandidates(snapshot.nodes),
 		wireframeMeshes,
 		uvDebugMeshes,
-		materials: deriveMaterialSummaries(manifest.materials)
+		materials: deriveMaterialSummaries(snapshot.materials)
 	};
 }
 
@@ -573,9 +343,14 @@ export async function planVehiclePartHighlight(
 	partQuery: string
 ): Promise<VehiclePartHighlightPlan> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
+	const semanticMatches = await listSemanticMaterialsByQuery(
+		assetId,
+		capabilities.generatedAt,
+		partQuery
+	);
 	const terms = normalizeHighlightTerms(partQuery);
 
-	if (terms.length === 0) {
+	if (terms.length === 0 && semanticMatches.length === 0) {
 		return {
 			assetId,
 			partQuery,
@@ -606,14 +381,23 @@ export async function planVehiclePartHighlight(
 		}
 	}
 
+	const semanticMaterialIds = new Set(semanticMatches.map((material) => material.targetId));
 	const matchedMaterials = capabilities.materials.filter(
-		(material) => meshMaterialNames.has(material.name) || includesAnyTerm(material.name, terms)
+		(material) =>
+			semanticMaterialIds.has(material.id) ||
+			meshMaterialNames.has(material.name) ||
+			includesAnyTerm(material.name, terms)
 	);
 
 	return {
 		assetId,
 		partQuery,
-		matchedPaths,
+		matchedPaths: Array.from(
+			new Set([
+				...matchedPaths,
+				...matchedMaterials.flatMap((material) => material.nodePaths)
+			])
+		),
 		matchedMaterialNames: matchedMaterials.map((material) => material.name),
 		operations: matchedMaterials.map((material) => ({
 			targetType: 'material',
@@ -627,10 +411,25 @@ export async function planVehiclePartHighlight(
 
 export async function planVehicleBodyPaint(
 	assetId: VehicleAssetId,
-	color: [number, number, number, number]
+	color: [number, number, number, number],
+	finish?: {
+		metalness?: number;
+		roughness?: number;
+		envMapIntensity?: number;
+	}
 ): Promise<VehicleBodyPaintPlan> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
-	const matchedMaterialNames = inferBodyPaintMaterialNames(capabilities);
+	const semanticMatches = await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, [
+		'body_paint_candidate'
+	]);
+	const matchedMaterialNames =
+		semanticMatches.length > 0
+			? capabilities.materials
+					.filter((material) =>
+						semanticMatches.some((candidate) => candidate.targetId === material.id)
+					)
+					.map((material) => material.name)
+			: inferBodyPaintMaterialNames(capabilities);
 	const matchedNameSet = new Set(matchedMaterialNames);
 
 	return {
@@ -639,13 +438,49 @@ export async function planVehicleBodyPaint(
 		matchedMaterialNames,
 		operations: capabilities.materials
 			.filter((material) => matchedNameSet.has(material.name))
-			.map((material) => ({
-				targetType: 'material',
-				targetId: material.id,
-				targetName: material.name,
-				op: 'set_base_color_factor',
-				value: color
-			}))
+			.flatMap((material) => {
+				const operations: VehicleInspectionPatchOperation[] = [
+					{
+						targetType: 'material',
+						targetId: material.id,
+						targetName: material.name,
+						op: 'set_base_color_factor',
+						value: color
+					}
+				];
+
+				if (typeof finish?.metalness === 'number') {
+					operations.push({
+						targetType: 'material',
+						targetId: material.id,
+						targetName: material.name,
+						op: 'set_metalness_factor',
+						value: finish.metalness
+					});
+				}
+
+				if (typeof finish?.roughness === 'number') {
+					operations.push({
+						targetType: 'material',
+						targetId: material.id,
+						targetName: material.name,
+						op: 'set_roughness_factor',
+						value: finish.roughness
+					});
+				}
+
+				if (typeof finish?.envMapIntensity === 'number') {
+					operations.push({
+						targetType: 'material',
+						targetId: material.id,
+						targetName: material.name,
+						op: 'set_env_map_intensity',
+						value: finish.envMapIntensity
+					});
+				}
+
+				return operations;
+			})
 	};
 }
 
@@ -655,7 +490,17 @@ export async function planVehicleWindowTint(
 	color: [number, number, number, number]
 ): Promise<VehicleWindowTintPlan> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
-	const matchedMaterialNames = inferWindowTintMaterialNames(capabilities);
+	const semanticMatches = await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, [
+		'glass_candidate'
+	]);
+	const matchedMaterialNames =
+		semanticMatches.length > 0
+			? capabilities.materials
+					.filter((material) =>
+						semanticMatches.some((candidate) => candidate.targetId === material.id)
+					)
+					.map((material) => material.name)
+			: inferWindowTintMaterialNames(capabilities);
 	const matchedNameSet = new Set(matchedMaterialNames);
 
 	return {

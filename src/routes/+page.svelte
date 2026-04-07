@@ -12,7 +12,7 @@
 </svelte:head>
 
 <div
-	class="relative flex min-h-0 flex-1 overflow-visible px-5 py-5 sm:px-7 sm:py-7 lg:px-9 lg:py-9"
+	class="relative flex min-h-0 flex-1 overflow-visible px-0 pt-2 pb-1 sm:pt-3 sm:pb-1.5 lg:pt-4 lg:pb-2"
 >
 	<div class="flex min-h-0 flex-1 overflow-visible">
 		{#key assetId}

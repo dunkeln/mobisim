@@ -11,3 +11,13 @@ export function resolveLocalAssetDirectory(): string {
 export function resolveLocalAssetPath(assetId: VehicleAssetId): string {
 	return path.join(resolveLocalAssetDirectory(), VEHICLE_CATALOG[assetId].fileName);
 }
+
+export function resolveSemanticOverlayDirectory(): string {
+	return env.SEMANTIC_MANIFEST_LOCAL_DIR
+		? path.resolve(env.SEMANTIC_MANIFEST_LOCAL_DIR)
+		: path.resolve(process.cwd(), 'storage/vehicle-semantic-overlays');
+}
+
+export function resolveSemanticOverlayPath(assetId: VehicleAssetId): string {
+	return path.join(resolveSemanticOverlayDirectory(), `${assetId}.semantic-overlay.json`);
+}

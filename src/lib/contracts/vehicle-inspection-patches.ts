@@ -12,6 +12,9 @@ export type VehicleInspectionMaterialPatchOperation = {
 	targetName?: string;
 	op:
 		| 'set_base_color_factor'
+		| 'set_metalness_factor'
+		| 'set_roughness_factor'
+		| 'set_env_map_intensity'
 		| 'set_emissive_factor'
 		| 'set_alpha'
 		| 'set_double_sided'
@@ -21,10 +24,10 @@ export type VehicleInspectionMaterialPatchOperation = {
 
 export type VehicleInspectionViewerPatchOperation = {
 	targetType: 'viewer';
-	targetId: 'postprocess' | 'wireframe' | 'uv_debug';
+	targetId: 'postprocess' | 'wireframe' | 'uv_debug' | 'xray' | 'scene_y_offset';
 	targetName?: string;
 	op: 'set_enabled' | 'set_target';
-	value: boolean | string | null;
+	value: boolean | string | null | number;
 };
 
 export type VehicleInspectionPatchOperation =

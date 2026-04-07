@@ -6,7 +6,8 @@ export type VehicleAssetId =
 	| '2015_cadillac_escalade_esv'
 	| '2021_koenigsegg_gemera'
 	| 'humvee'
-	| 'ks_blade_runner_spinner';
+	| 'ks_blade_runner_spinner'
+	| 'arkham_knight_batmobile_advanced_rig';
 
 export type VehicleCatalogEntry = {
 	id: VehicleAssetId;
@@ -98,6 +99,15 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 		description:
 			'Fictional spinner vehicle retained as a sci-fi contrast asset for silhouette and lighting experiments. Length is an approximate placeholder.',
 		lengthMeters: 6.4
+	},
+	arkham_knight_batmobile_advanced_rig: {
+		id: 'arkham_knight_batmobile_advanced_rig',
+		fileName: 'arkham_knight_batmobile_advanced_rig.glb',
+		displayName: 'Arkham Knight Batmobile',
+		title: 'Arkham Knight Batmobile',
+		description:
+			'Combat-mode Batmobile asset retained as a heavy stylized contrast vehicle for aggressive proportions and hard-surface inspection. Length is an editable placeholder.',
+		lengthMeters: 5.2
 	}
 };
 

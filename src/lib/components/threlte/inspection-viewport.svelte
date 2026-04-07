@@ -10,8 +10,10 @@
 	import type { CameraConfig, Vec3Tuple } from '$lib/components/inspector/types';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
+	import type { VehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
-	import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
+	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 	type Props = {
 		assetId: VehicleAssetId;
@@ -26,17 +28,28 @@
 	const CAMERA_ELEVATION_DEG = 20;
 	const CAMERA_DISTANCE = 9;
 	const DEFAULT_CAMERA_FOV = 34;
+	const XRAY_OPACITY = 0.18;
+	const SELECTION_CLICK_DRAG_THRESHOLD = 8;
+	const SELECTION_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.95, 0.79, 0.42, 0.94];
 
 	let camera = $state<THREE.PerspectiveCamera | undefined>();
 	let controls = $state<ThreeOrbitControls | undefined>();
+	let canvasHost = $state<HTMLDivElement | undefined>();
+	let selectionPointerDown = $state<{ x: number; y: number; pointerId: number } | null>(null);
 	let modelPosition = $state<Vec3Tuple>([0, 0, 0]);
 	let floorY = $state(-0.8);
 	let floorSize = $state(18);
 	let viewportLightIntensity = $state(1);
 	let cameraConfig = $state<CameraConfig | null>(null);
+	let semanticOverlayStatus = $state<VehicleSemanticOverlayStatus>('unknown');
 	let loadedScene = $state<THREE.Object3D | undefined>();
-	let headlightLightPositions = $state<Vec3Tuple[]>([]);
-	let headlightEmitterPositions = $state<Vec3Tuple[]>([]);
+	const originalNodeState = new WeakMap<
+		THREE.Object3D,
+		{
+			visible: boolean;
+			position: Vec3Tuple;
+		}
+	>();
 	const originalMaterialState = new WeakMap<
 		THREE.Material,
 		{
@@ -44,8 +57,15 @@
 			opacity?: number;
 			transparent?: boolean;
 			side?: THREE.Side;
+			depthWrite?: boolean;
 			color?: THREE.Color;
 			emissive?: THREE.Color;
+			emissiveIntensity?: number;
+			transmission?: number;
+			thickness?: number;
+			roughness?: number;
+			metalness?: number;
+			envMapIntensity?: number;
 		}
 	>();
 	const floorDotMaterial = new THREE.ShaderMaterial({
@@ -93,6 +113,8 @@
 			}
 		`
 	});
+	const raycaster = new THREE.Raycaster();
+	const pointer = new THREE.Vector2();
 
 	$effect(() => {
 		floorDotMaterial.uniforms.uFloorSize.value = floorSize;
@@ -132,7 +154,31 @@
 
 	let cameraPosition = $state<Vec3Tuple>(getCameraPresetPosition());
 	const HIGHLIGHT_OVERLAY_NAME = '__mobisim-highlight-overlay__';
-
+	const SELECTION_OVERLAY_NAME = '__mobisim-selection-overlay__';
+	const semanticOverlayLabel = $derived.by(() => {
+		switch (semanticOverlayStatus) {
+			case 'fresh':
+				return 'Semantic overlay ready';
+			case 'stale':
+				return 'Semantic overlay stale';
+			case 'missing':
+				return 'Semantic overlay missing';
+			default:
+				return 'Semantic overlay status unknown';
+		}
+	});
+	const semanticDotClasses = $derived.by(() => {
+		switch (semanticOverlayStatus) {
+			case 'fresh':
+				return 'bg-[#62f2a2] shadow-[0_0_0_1px_rgba(98,242,162,0.18),0_0_16px_rgba(98,242,162,0.88),0_0_28px_rgba(98,242,162,0.42)]';
+			case 'stale':
+				return 'bg-boundary-secondary shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-secondary)_24%,transparent),0_0_12px_color-mix(in_oklab,var(--color-boundary-secondary)_46%,transparent)]';
+			case 'missing':
+				return 'bg-boundary-warning shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-warning)_24%,transparent),0_0_12px_color-mix(in_oklab,var(--color-boundary-warning)_34%,transparent)]';
+			default:
+				return 'bg-boundary-text/28 shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-text)_12%,transparent)]';
+		}
+	});
 	function listNodeMaterials(node: THREE.Object3D): THREE.Material[] {
 		if (!(node instanceof THREE.Mesh)) {
 			return [];
@@ -171,8 +217,45 @@
 		return 'emissive' in material && material.emissive instanceof THREE.Color;
 	}
 
+	function hasEmissiveIntensityProperty(material: THREE.Material): material is THREE.Material & {
+		emissiveIntensity: number;
+	} {
+		return 'emissiveIntensity' in material;
+	}
+
+	function hasTransmissionProperty(material: THREE.Material): material is THREE.Material & {
+		transmission: number;
+		thickness: number;
+		roughness: number;
+	} {
+		return (
+			'transmission' in material &&
+			'thickness' in material &&
+			'roughness' in material
+		);
+	}
+
+	function hasFinishProperty(material: THREE.Material): material is THREE.Material & {
+		roughness: number;
+		metalness: number;
+		envMapIntensity: number;
+	} {
+		return (
+			'roughness' in material &&
+			'metalness' in material &&
+			'envMapIntensity' in material
+		);
+	}
+
 	function snapshotSceneState(scene: THREE.Object3D): void {
 		scene.traverse((node) => {
+			if (!originalNodeState.has(node)) {
+				originalNodeState.set(node, {
+					visible: node.visible,
+					position: [node.position.x, node.position.y, node.position.z]
+				});
+			}
+
 			for (const material of listNodeMaterials(node)) {
 				if (originalMaterialState.has(material)) {
 					continue;
@@ -183,8 +266,20 @@
 					opacity: hasOpacityProperty(material) ? material.opacity : undefined,
 					transparent: hasOpacityProperty(material) ? material.transparent : undefined,
 					side: hasOpacityProperty(material) ? material.side : undefined,
+					depthWrite: 'depthWrite' in material ? material.depthWrite : undefined,
 					color: hasColorProperty(material) ? material.color.clone() : undefined,
-					emissive: hasEmissiveProperty(material) ? material.emissive.clone() : undefined
+					emissive: hasEmissiveProperty(material) ? material.emissive.clone() : undefined,
+					emissiveIntensity: hasEmissiveIntensityProperty(material)
+						? material.emissiveIntensity
+						: undefined,
+					transmission: hasTransmissionProperty(material) ? material.transmission : undefined,
+					thickness: hasTransmissionProperty(material) ? material.thickness : undefined,
+					roughness:
+						hasTransmissionProperty(material) || hasFinishProperty(material)
+							? material.roughness
+							: undefined,
+					metalness: hasFinishProperty(material) ? material.metalness : undefined,
+					envMapIntensity: hasFinishProperty(material) ? material.envMapIntensity : undefined
 				});
 			}
 		});
@@ -192,6 +287,12 @@
 
 	function restoreSceneState(scene: THREE.Object3D): void {
 		scene.traverse((node) => {
+			const originalNode = originalNodeState.get(node);
+			if (originalNode) {
+				node.visible = originalNode.visible;
+				node.position.set(...originalNode.position);
+			}
+
 			for (const material of listNodeMaterials(node)) {
 				const originalMaterial = originalMaterialState.get(material);
 				if (!originalMaterial) {
@@ -214,6 +315,10 @@
 					if (originalMaterial.side !== undefined) {
 						material.side = originalMaterial.side;
 					}
+
+					if (originalMaterial.depthWrite !== undefined && 'depthWrite' in material) {
+						material.depthWrite = originalMaterial.depthWrite;
+					}
 				}
 
 				if (hasColorProperty(material) && originalMaterial.color) {
@@ -224,9 +329,73 @@
 					material.emissive.copy(originalMaterial.emissive);
 				}
 
+				if (
+					hasEmissiveIntensityProperty(material) &&
+					originalMaterial.emissiveIntensity !== undefined
+				) {
+					material.emissiveIntensity = originalMaterial.emissiveIntensity;
+				}
+
+				if (hasTransmissionProperty(material)) {
+					if (originalMaterial.transmission !== undefined) {
+						material.transmission = originalMaterial.transmission;
+					}
+
+					if (originalMaterial.thickness !== undefined) {
+						material.thickness = originalMaterial.thickness;
+					}
+
+					if (originalMaterial.roughness !== undefined) {
+						material.roughness = originalMaterial.roughness;
+					}
+				}
+
+				if (hasFinishProperty(material)) {
+					if (originalMaterial.roughness !== undefined) {
+						material.roughness = originalMaterial.roughness;
+					}
+
+					if (originalMaterial.metalness !== undefined) {
+						material.metalness = originalMaterial.metalness;
+					}
+
+					if (originalMaterial.envMapIntensity !== undefined) {
+						material.envMapIntensity = originalMaterial.envMapIntensity;
+					}
+				}
+
 				material.needsUpdate = true;
 			}
 		});
+	}
+
+	function formatNodeName(node: THREE.Object3D, fallbackIndex: number): string {
+		return node.name.trim() || `Node ${fallbackIndex}`;
+	}
+
+	function createNodeId(index: number): string {
+		return `node-${index}`;
+	}
+
+	function buildRuntimeNodeLookup(scene: THREE.Object3D): Map<string, THREE.Object3D> {
+		const lookup = new Map<string, THREE.Object3D>();
+		let nextNodeIndex = 0;
+
+		const visitNode = (node: THREE.Object3D, index: number): void => {
+			lookup.set(createNodeId(nextNodeIndex), node);
+			nextNodeIndex += 1;
+			node.children.forEach((child, childIndex) => {
+				void formatNodeName(child, childIndex);
+				visitNode(child, childIndex);
+			});
+		};
+
+		scene.children.forEach((child, childIndex) => {
+			void formatNodeName(child, childIndex);
+			visitNode(child, childIndex);
+		});
+
+		return lookup;
 	}
 
 	function setSceneWireframe(scene: THREE.Object3D, enabled: boolean): void {
@@ -237,6 +406,24 @@
 				}
 
 				material.wireframe = enabled;
+				material.needsUpdate = true;
+			}
+		});
+	}
+
+	function setSceneXray(scene: THREE.Object3D, enabled: boolean): void {
+		scene.traverse((node) => {
+			for (const material of listNodeMaterials(node)) {
+				if (!hasOpacityProperty(material) || !enabled) {
+					continue;
+				}
+
+				material.opacity = Math.min(material.opacity, XRAY_OPACITY);
+				material.transparent = true;
+				material.side = THREE.DoubleSide;
+				if ('depthWrite' in material) {
+					material.depthWrite = false;
+				}
 				material.needsUpdate = true;
 			}
 		});
@@ -263,7 +450,8 @@
 
 	function addHighlightOverlay(
 		node: THREE.Object3D,
-		colorFactor: [number, number, number, number]
+		colorFactor: [number, number, number, number],
+		overlayName: string = HIGHLIGHT_OVERLAY_NAME
 	): void {
 		if (!(node instanceof THREE.Mesh)) {
 			return;
@@ -283,7 +471,7 @@
 		});
 		overlayMaterial.toneMapped = false;
 		const overlayMesh = new THREE.Mesh(node.geometry, overlayMaterial);
-		overlayMesh.name = HIGHLIGHT_OVERLAY_NAME;
+		overlayMesh.name = overlayName;
 		overlayMesh.renderOrder = 16;
 		overlayMesh.frustumCulled = false;
 
@@ -293,7 +481,7 @@
 		wireframeMaterial.blending = THREE.NormalBlending;
 		wireframeMaterial.toneMapped = false;
 		const wireframeOverlay = new THREE.Mesh(node.geometry, wireframeMaterial);
-		wireframeOverlay.name = HIGHLIGHT_OVERLAY_NAME;
+		wireframeOverlay.name = overlayName;
 		wireframeOverlay.renderOrder = 17;
 		wireframeOverlay.frustumCulled = false;
 
@@ -301,55 +489,160 @@
 		node.add(wireframeOverlay);
 	}
 
-	function getMeshCenter(node: THREE.Object3D): Vec3Tuple | null {
-		if (!(node instanceof THREE.Mesh)) {
-			return null;
-		}
-
-		const bounds = new THREE.Box3().setFromObject(node);
-		if (bounds.isEmpty()) {
-			return null;
-		}
-
-		const center = new THREE.Vector3();
-		bounds.getCenter(center);
-		return [center.x, center.y, center.z];
-	}
-
-	function getDerivedHeadlightEmitters(center: THREE.Vector3, size: THREE.Vector3): Vec3Tuple[] {
-		const frontZ = center.z + size.z * 0.38;
-		const leftX = center.x - size.x * 0.26;
-		const rightX = center.x + size.x * 0.26;
-		const y = center.y - size.y * 0.08;
-
-		return [
-			[leftX, y, frontZ],
-			[rightX, y, frontZ]
-		];
-	}
-
-	function getEffectiveHeadlightEmitters(
-		configuredPositions: [number, number, number][] | undefined,
-		center: THREE.Vector3,
-		size: THREE.Vector3
-	): Vec3Tuple[] {
-		if (!configuredPositions || configuredPositions.length === 0) {
-			return getDerivedHeadlightEmitters(center, size);
-		}
-
-		const maxExpectedRadius = Math.max(size.x, size.y, size.z) * 1.35;
-		const areConfiguredPositionsPlausible = configuredPositions.every((position) => {
-			const deltaX = Math.abs(position[0] - center.x);
-			const deltaY = Math.abs(position[1] - center.y);
-			const deltaZ = Math.abs(position[2] - center.z);
-			return (
-				deltaX <= maxExpectedRadius && deltaY <= maxExpectedRadius && deltaZ <= maxExpectedRadius
+	function clearSelectionOverlays(scene: THREE.Object3D): void {
+		scene.traverse((node) => {
+			const overlays = node.children.filter(
+				(child) => child.name === SELECTION_OVERLAY_NAME && child instanceof THREE.Mesh
 			);
-		});
 
-		return areConfiguredPositionsPlausible
-			? configuredPositions.map((position) => [...position] as Vec3Tuple)
-			: getDerivedHeadlightEmitters(center, size);
+			for (const overlay of overlays) {
+				node.remove(overlay);
+				if (overlay instanceof THREE.Mesh && overlay.material instanceof THREE.Material) {
+					overlay.material.dispose();
+				} else if (overlay instanceof THREE.Mesh && Array.isArray(overlay.material)) {
+					for (const material of overlay.material) {
+						material.dispose();
+					}
+				}
+			}
+		});
+	}
+
+	function buildRuntimeNodePath(node: THREE.Object3D, root: THREE.Object3D): string {
+		const parts: string[] = [];
+		let current: THREE.Object3D | null = node;
+
+		while (current && current !== root) {
+			parts.unshift(current.name.trim() || current.type);
+			current = current.parent;
+		}
+
+		if (current === root) {
+			parts.unshift(root.name.trim() || 'Scene');
+		}
+
+		return parts.join('/');
+	}
+
+	function resolveSelectableRuntimeNodeId(scene: THREE.Object3D, object: THREE.Object3D): string | null {
+		const nodeLookup = buildRuntimeNodeLookup(scene);
+		let current: THREE.Object3D | null = object;
+
+		while (current) {
+			for (const [nodeId, candidate] of nodeLookup.entries()) {
+				if (candidate === current) {
+					return nodeId;
+				}
+			}
+
+			if (current === scene) {
+				break;
+			}
+
+			current = current.parent;
+		}
+
+		return null;
+	}
+
+	function handleViewportPointerDown(event: PointerEvent): void {
+		selectionPointerDown = {
+			x: event.clientX,
+			y: event.clientY,
+			pointerId: event.pointerId
+		};
+	}
+
+	function handleViewportPointerCancel(): void {
+		selectionPointerDown = null;
+	}
+
+	function handleViewportPointerUp(event: PointerEvent): void {
+		if (!loadedScene || !camera || !canvasHost) {
+			selectionPointerDown = null;
+			return;
+		}
+
+		const eventTarget = event.target;
+		if (eventTarget instanceof HTMLElement && eventTarget.closest('[data-viewport-ui="true"]')) {
+			selectionPointerDown = null;
+			return;
+		}
+
+		if (!selectionPointerDown || selectionPointerDown.pointerId !== event.pointerId) {
+			selectionPointerDown = null;
+			return;
+		}
+
+		const pointerTravel = Math.hypot(
+			event.clientX - selectionPointerDown.x,
+			event.clientY - selectionPointerDown.y
+		);
+		selectionPointerDown = null;
+
+		if (pointerTravel > SELECTION_CLICK_DRAG_THRESHOLD) {
+			return;
+		}
+
+		const rect = canvasHost.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) {
+			return;
+		}
+
+		pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+		pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+		raycaster.setFromCamera(pointer, camera);
+
+		const intersections = raycaster
+			.intersectObject(loadedScene, true)
+			.filter((intersection) => intersection.object.name !== HIGHLIGHT_OVERLAY_NAME)
+			.filter((intersection) => intersection.object.name !== SELECTION_OVERLAY_NAME);
+		const hitObject = intersections[0]?.object;
+
+		if (!hitObject) {
+			vehicleNodeSelection.clear(assetId);
+			return;
+		}
+
+		const nodeId = resolveSelectableRuntimeNodeId(loadedScene, hitObject);
+		if (!nodeId) {
+			vehicleNodeSelection.clear(assetId);
+			return;
+		}
+
+		const nodeLookup = buildRuntimeNodeLookup(loadedScene);
+		const runtimeNode = nodeLookup.get(nodeId);
+		if (!runtimeNode) {
+			vehicleNodeSelection.clear(assetId);
+			return;
+		}
+
+		vehicleNodeSelection.select({
+			assetId,
+			nodeId,
+			nodeName: runtimeNode.name.trim() || runtimeNode.type,
+			nodePath: buildRuntimeNodePath(runtimeNode, loadedScene)
+		});
+	}
+
+	function handleViewportKeyDown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter' && event.key !== ' ') {
+			return;
+		}
+
+		event.preventDefault();
+		vehicleNodeSelection.clear(assetId);
+	}
+
+	function getResolvedLensGlowColor(color: THREE.Color): THREE.Color {
+		const luminance = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;
+		if (luminance >= 0.22) {
+			return color;
+		}
+
+		const fallbackHeadlightWhite = new THREE.Color(1, 0.98, 0.9);
+		const mixRatio = THREE.MathUtils.clamp((0.22 - luminance) / 0.22, 0.32, 0.82);
+		return color.clone().lerp(fallbackHeadlightWhite, mixRatio);
 	}
 
 	function applyMaterialPatch(
@@ -359,8 +652,6 @@
 		if (operation.targetType !== 'material' || !operation.targetName) {
 			return;
 		}
-
-		const nextHeadlightPositions = [...headlightEmitterPositions];
 
 		scene.traverse((node) => {
 			for (const material of listNodeMaterials(node)) {
@@ -372,20 +663,27 @@
 					case 'set_base_color_factor':
 						if (Array.isArray(operation.value) && operation.value.length === 4) {
 							if (hasColorProperty(material)) {
-								const baseColor =
-									originalMaterialState.get(material)?.color ?? material.color.clone();
-								const tintStrength = THREE.MathUtils.clamp(operation.value[3] ?? 0.4, 0, 1);
-								material.color
-									.copy(baseColor)
-									.lerp(
-										new THREE.Color(
-											operation.value[0] ?? 1,
-											operation.value[1] ?? 1,
-											operation.value[2] ?? 1
-										),
-										tintStrength
-									);
+								material.color.setRGB(
+									operation.value[0] ?? 1,
+									operation.value[1] ?? 1,
+									operation.value[2] ?? 1
+								);
 							}
+						}
+						break;
+					case 'set_metalness_factor':
+						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+							material.metalness = THREE.MathUtils.clamp(operation.value, 0, 1);
+						}
+						break;
+					case 'set_roughness_factor':
+						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+							material.roughness = THREE.MathUtils.clamp(operation.value, 0, 1);
+						}
+						break;
+					case 'set_env_map_intensity':
+						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+							material.envMapIntensity = THREE.MathUtils.clamp(operation.value, 0, 3);
 						}
 						break;
 					case 'set_overlay_highlight':
@@ -404,19 +702,73 @@
 							operation.value.length === 3 &&
 							hasEmissiveProperty(material)
 						) {
-							material.emissive.setRGB(
+							const requestedEmissiveColor = new THREE.Color(
 								operation.value[0] ?? 0,
 								operation.value[1] ?? 0,
 								operation.value[2] ?? 0
 							);
+							const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
+							const requestedStrength = THREE.MathUtils.clamp(
+								Math.max(...operation.value.map((channel) => Math.abs(channel ?? 0))),
+								0,
+								1
+							);
+							const resolvedLuminance =
+								emissiveColor.r * 0.2126 + emissiveColor.g * 0.7152 + emissiveColor.b * 0.0722;
+							const emissiveStrength =
+								requestedStrength > 0
+									? Math.max(
+											requestedStrength,
+											THREE.MathUtils.clamp(resolvedLuminance * 0.85, 0.24, 0.9)
+										)
+									: 0;
 
-							const emissiveMagnitude =
-								Math.abs(operation.value[0] ?? 0) +
-								Math.abs(operation.value[1] ?? 0) +
-								Math.abs(operation.value[2] ?? 0);
-							const meshCenter = getMeshCenter(node);
-							if (emissiveMagnitude > 0 && nextHeadlightPositions.length === 0 && meshCenter) {
-								nextHeadlightPositions.push(meshCenter);
+							material.emissive.setRGB(
+								emissiveColor.r,
+								emissiveColor.g,
+								emissiveColor.b
+							);
+
+							if (hasEmissiveIntensityProperty(material)) {
+								const baseEmissiveIntensity =
+									originalMaterialState.get(material)?.emissiveIntensity ?? material.emissiveIntensity;
+								material.emissiveIntensity =
+									baseEmissiveIntensity + emissiveStrength * 1.35;
+							}
+
+							if (hasColorProperty(material)) {
+								const baseColor =
+									originalMaterialState.get(material)?.color ?? material.color.clone();
+								material.color.copy(baseColor).lerp(emissiveColor, emissiveStrength * 0.18);
+							}
+
+							if (hasOpacityProperty(material) && emissiveStrength > 0) {
+								const originalMaterial = originalMaterialState.get(material);
+								const baseOpacity = originalMaterial?.opacity ?? material.opacity;
+								const baseTransparent = originalMaterial?.transparent ?? material.transparent;
+
+								// Only lift translucency for lens covers that were already authored as translucent.
+								if (baseTransparent || baseOpacity < 0.985) {
+									material.opacity = Math.min(baseOpacity + emissiveStrength * 0.04, 0.985);
+									material.transparent = true;
+								}
+							}
+
+							if (hasTransmissionProperty(material) && emissiveStrength > 0) {
+								const originalMaterial = originalMaterialState.get(material);
+								const baseTransmission = originalMaterial?.transmission ?? 0;
+
+								if (baseTransmission > 0.01) {
+									material.transmission = Math.max(
+										baseTransmission,
+										0.08 * emissiveStrength
+									);
+									material.thickness = Math.max(originalMaterial?.thickness ?? 0, 0.08);
+									material.roughness = Math.min(
+										originalMaterial?.roughness ?? material.roughness,
+										0.22
+									);
+								}
 							}
 						}
 						break;
@@ -438,10 +790,6 @@
 				material.needsUpdate = true;
 			}
 		});
-
-		if (operation.op === 'set_emissive_factor') {
-			headlightLightPositions = nextHeadlightPositions.slice(0, 4);
-		}
 	}
 
 	function applyViewerPatch(
@@ -452,8 +800,55 @@
 			return;
 		}
 
-		if (operation.targetId === 'wireframe' && operation.op === 'set_enabled') {
+		if (operation.targetId === 'scene_y_offset') {
+			if (operation.op === 'set_target' && typeof operation.value === 'number') {
+				scene.position.y = operation.value;
+			}
+			return;
+		}
+
+		if (operation.op !== 'set_enabled') {
+			return;
+		}
+
+		if (operation.targetId === 'wireframe') {
 			setSceneWireframe(scene, operation.value === true);
+			return;
+		}
+
+		if (operation.targetId === 'xray') {
+			setSceneXray(scene, operation.value === true);
+		}
+	}
+
+	function applyNodePatch(
+		nodeLookup: Map<string, THREE.Object3D>,
+		operation: VehicleInspectionPatchOperation
+	): void {
+		if (operation.targetType !== 'node') {
+			return;
+		}
+
+		const node = nodeLookup.get(operation.targetId);
+		if (!node) {
+			return;
+		}
+
+		if (operation.op === 'set_visibility' && typeof operation.value === 'boolean') {
+			node.visible = operation.value;
+			return;
+		}
+
+		if (
+			operation.op === 'set_translation' &&
+			Array.isArray(operation.value) &&
+			operation.value.length === 3
+		) {
+			node.position.set(
+				operation.value[0] ?? 0,
+				operation.value[1] ?? 0,
+				operation.value[2] ?? 0
+			);
 		}
 	}
 
@@ -464,10 +859,13 @@
 		snapshotSceneState(scene);
 		restoreSceneState(scene);
 		clearHighlightOverlays(scene);
-		headlightLightPositions = [];
+		const nodeLookup = buildRuntimeNodeLookup(scene);
 
 		for (const operation of operations) {
 			switch (operation.targetType) {
+				case 'node':
+					applyNodePatch(nodeLookup, operation);
+					break;
 				case 'material':
 					applyMaterialPatch(scene, operation);
 					break;
@@ -482,11 +880,6 @@
 		loadedScene = gltf.scene;
 
 		const { size, center } = normalizeVehicleScene(gltf.scene);
-		headlightEmitterPositions = getEffectiveHeadlightEmitters(
-			VEHICLE_CATALOG[assetId].headlightEmitterPositions,
-			center,
-			size
-		);
 
 		modelPosition = [-center.x, -center.y, -center.z];
 		cameraPosition = getCameraPresetPosition();
@@ -527,6 +920,76 @@
 
 		applyPatchOperations(loadedScene, patchState.operations);
 	});
+
+	$effect(() => {
+		if (!loadedScene) {
+			return;
+		}
+
+		clearSelectionOverlays(loadedScene);
+		const selection = $vehicleNodeSelection;
+		if (!selection || selection.assetId !== assetId) {
+			return;
+		}
+
+		const runtimeNode = buildRuntimeNodeLookup(loadedScene).get(selection.nodeId);
+		if (!runtimeNode) {
+			return;
+		}
+
+		addHighlightOverlay(runtimeNode, SELECTION_HIGHLIGHT_FACTOR, SELECTION_OVERLAY_NAME);
+	});
+
+	$effect(() => {
+		assetId;
+		let cancelled = false;
+		let nextPoll: ReturnType<typeof setTimeout> | undefined;
+
+		const loadSemanticOverlayStatus = async (): Promise<void> => {
+			try {
+				const response = await fetch(`/api/vehicle-assets/${assetId}/inspection`);
+				if (!response.ok) {
+					throw new Error(`Inspection status request failed: ${response.status}`);
+				}
+
+				const payload = (await response.json()) as {
+					semanticOverlayStatus?: VehicleSemanticOverlayStatus;
+				};
+
+				if (cancelled) {
+					return;
+				}
+
+				semanticOverlayStatus = payload.semanticOverlayStatus ?? 'unknown';
+				if (semanticOverlayStatus !== 'fresh') {
+					nextPoll = setTimeout(() => {
+						void loadSemanticOverlayStatus();
+					}, 5000);
+				}
+			} catch {
+				if (cancelled) {
+					return;
+				}
+
+				semanticOverlayStatus = 'unknown';
+				nextPoll = setTimeout(() => {
+					void loadSemanticOverlayStatus();
+				}, 5000);
+			}
+		};
+
+		loadedScene = undefined;
+		semanticOverlayStatus = 'unknown';
+		vehicleNodeSelection.clear(assetId);
+		void loadSemanticOverlayStatus();
+
+		return () => {
+			cancelled = true;
+			if (nextPoll) {
+				clearTimeout(nextPoll);
+			}
+		};
+	});
 </script>
 
 <div
@@ -546,18 +1009,42 @@
 		<div
 			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_40%,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_50%)]"
 		></div>
-		<div class="pointer-events-none absolute inset-0 z-20">
+		<div class="pointer-events-none absolute inset-0 z-20" data-viewport-ui="true">
 			<div class="pointer-events-auto absolute top-4 left-4 sm:top-5 sm:left-6">
-				<AssetSelectionDropdown />
+				<AssetSelectionDropdown class="origin-top-left scale-[0.8] xl:scale-100" />
 			</div>
-			<div class="pointer-events-auto absolute top-4 right-4 sm:top-5 sm:right-6">
-				<CameraConfigReadout config={cameraConfig} moving={false} />
+			<div class="pointer-events-auto absolute top-4 right-4 flex items-center gap-2 sm:top-5 sm:right-6">
+				<CameraConfigReadout
+					config={cameraConfig}
+					moving={false}
+					class="origin-top-right scale-[0.8] xl:scale-100"
+				/>
 			</div>
-			<div class="pointer-events-auto absolute top-4 left-1/2 -translate-x-1/2 sm:top-5">
+			<div
+				class="pointer-events-auto absolute top-4 left-1/2 flex items-center gap-2 -translate-x-1/2 sm:top-5"
+			>
 				<LightingControl bind:value={viewportLightIntensity} />
+				<span
+					class={[
+						'h-1.5 w-1.5 self-center rounded-full transition-[background-color,box-shadow,opacity] duration-300',
+						semanticDotClasses
+					]}
+					aria-label={semanticOverlayLabel}
+					title={semanticOverlayLabel}
+				></span>
 			</div>
 		</div>
-		<div class="h-full min-h-0 w-full overflow-hidden rounded-[inherit]">
+		<div
+			bind:this={canvasHost}
+			class="h-full min-h-0 w-full overflow-hidden rounded-[inherit]"
+			onpointerdown={handleViewportPointerDown}
+			onpointerup={handleViewportPointerUp}
+			onpointercancel={handleViewportPointerCancel}
+			onkeydown={handleViewportKeyDown}
+			role="button"
+			tabindex="0"
+			aria-label="Vehicle inspection viewport"
+		>
 			<Canvas>
 				<T.PerspectiveCamera
 					bind:ref={camera}
@@ -583,9 +1070,6 @@
 				</T.Mesh>
 				{#key assetUrl}
 					<T.Group position={modelPosition}>
-						{#each headlightLightPositions as position, index (`${position[0]}:${position[1]}:${position[2]}:${index}`)}
-							<T.PointLight {position} intensity={7.5} distance={14} decay={2} color="#f4efdf" />
-						{/each}
 						<GLTF url={assetUrl} onload={frameVehicle} />
 					</T.Group>
 				{/key}

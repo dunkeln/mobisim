@@ -32,6 +32,9 @@ export type VehicleInspectionMaterialSummary = {
 	alphaMode: 'OPAQUE' | 'MASK' | 'BLEND';
 	doubleSided: boolean;
 	textureSlots: string[];
+	meshIds: string[];
+	meshNames: string[];
+	nodePaths: string[];
 };
 
 export type VehicleInspectionCapabilities = {

@@ -42,6 +42,8 @@ In `Done`:
 - [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 - [ ] T-008 | Delete placeholder scene helpers after the first vertical slice lands | next: remove procedural stand-in scene code after asset-driven scene is live
 - [ ] T-013 | Reduce oversized client chunk from viewer route | next: re-measure after the first real asset and split any viewer-only code if still needed
+- [ ] T-023 | Add semantic overlay generation for GLB manifests | next: store reviewed LLM semantic candidates separately from structural manifests
+- [ ] T-024 | Add cross-instance semantic refresh coordination | next: persist overlay refresh job state and shared locks so cache revalidation survives multiple server instances
 - [ ] T-019 | Add Jarvis sub-UI components | next: define the smallest reusable control cluster for footer, inspector, and overlays
 - [ ] T-020 | Add freeform-to-deterministic tool instruction layer | next: document the minimal prompt and executor contract for expressive tool use
 - [ ] T-021 | Add voice agent slice | next: define one end-to-end voice command path that maps to the existing deterministic vehicle intent executor
@@ -50,6 +52,7 @@ In `Done`:
 ## In Progress
 
 - [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
+- [ ] T-023 | Add semantic overlay generation for GLB manifests | next: finish planner reads, route wiring, and deterministic tests
 
 ## Blocked
 
@@ -75,6 +78,13 @@ In `Done`:
 - [x] T-016 | Create footer voice blob placeholder | completed: 2026-04-05
 - [x] T-018 | Build server-side vehicle asset registry scaffold | completed: 2026-04-05
 - [x] T-017 | Wire frontend viewer to registry-backed asset selection | completed: 2026-04-05
+- [x] T-025 | Split structural snapshot from preprocessing heuristics | completed: 2026-04-06
+- [x] T-026 | Add semantic part-unit overlay schema | completed: 2026-04-06
+- [x] T-027 | Add deterministic part-intent planner | completed: 2026-04-06
+- [x] T-028 | Add validated isolate-part execution path | completed: 2026-04-06
+- [x] T-029 | Add deterministic explode-part presentation state | completed: 2026-04-06
+- [x] T-030 | Replace flat patch queue with presentation state model | completed: 2026-04-06
+- [x] T-031 | Add headlight toggle and beam rendering slice | completed: 2026-04-06
 
 ## Updates
 
@@ -95,3 +105,21 @@ In `Done`:
 - 2026-04-06 21:35 PT | Marked `T-002`, `T-003`, and `T-004` done after unifying deterministic vehicle intent planning across chat, REST endpoints, and the active viewport patch flow
 - 2026-04-06 21:35 PT | Moved `T-006` into `In Progress` to cover missing integration coverage for the new vehicle intent REST surface
 - 2026-04-06 21:35 PT | Added backlog tasks `T-019`, `T-020`, `T-021`, and `T-022` for Jarvis sub-UI components, expressive deterministic tool instructions, voice-agent work, and JARVIS-style component isolation
+- 2026-04-06 22:05 PT | Added `T-023` to `Backlog` and `In Progress` to land a reviewed semantic overlay layer on top of deterministic GLB manifests
+- 2026-04-06 22:10 PT | Extended the footer chat tool loop with explicit semantic refresh support so overlay-aware intent planning can self-prime on the active asset
+- 2026-04-06 22:14 PT | Switched semantic refresh to stale-while-revalidate so interactive tool calls use cache-first behavior and only explicit refresh requests block on overlay generation
+- 2026-04-06 22:16 PT | Added `T-024` to `Backlog` for shared semantic refresh locks and persisted job state across multiple server instances
+- 2026-04-06 22:35 PT | Added `T-025` through `T-030` to `Backlog` to stage the structural snapshot, semantic part-unit, planner, isolate, explode, and presentation-state rewrite as incremental vertical slices
+- 2026-04-06 22:40 PT | Added `T-025` to `In Progress` to extract a dedicated structural snapshot connector and make preprocessing consume it as a compatibility layer
+- 2026-04-06 22:43 PT | Marked `T-025` done after extracting a dedicated `gltf-structure` connector and refactoring preprocessing to derive capabilities from the structural snapshot
+- 2026-04-06 22:48 PT | Added `T-026` to `In Progress` to extend semantic overlays with validated part-unit assemblies without changing planner behavior yet
+- 2026-04-06 22:48 PT | Marked `T-026` done after extending semantic overlays, validation, prompt schema, and storage to include reviewed part-unit assemblies
+- 2026-04-06 23:05 PT | Added `T-027` to `In Progress` to resolve semantic part units deterministically before isolate and explode execution paths are wired
+- 2026-04-06 23:05 PT | Marked `T-027` done after adding semantic part query helpers, planner-level part intent resolution, and deterministic highlight fallback tests
+- 2026-04-06 23:18 PT | Added `T-028` to `In Progress` to execute semantic isolate intents through validated node visibility patches and the existing viewer patch flow
+- 2026-04-06 23:18 PT | Marked `T-028` done after wiring isolate planning to emit node visibility patches and teaching the viewport to restore and apply node visibility state deterministically
+- 2026-04-06 23:32 PT | Added `T-029` to `In Progress` to execute one semantic explode intent through deterministic node translations and the existing patch application path
+- 2026-04-06 23:32 PT | Marked `T-029` done after wiring explode planning to emit node translation patches and teaching the viewport to restore and apply node translation state deterministically
+- 2026-04-06 23:44 PT | Added `T-030` to `In Progress` to replace batch-history patch storage with layered presentation state while preserving the existing footer and viewport integrations
+- 2026-04-06 23:44 PT | Marked `T-030` done after splitting patch storage into highlight, material, visibility, transform, and viewer presentation layers with reversible history snapshots
+- 2026-04-06 23:58 PT | Marked `T-031` done after adding a REST-backed headlight support/toggle path and deriving spotlight beams from identified headlight emitters in the viewport
