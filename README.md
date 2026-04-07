@@ -6,6 +6,7 @@ Minimal SvelteKit viewer shell for a Chrome-first 360-degree vehicle inspection 
 
 ![Progress](./assets/progress.png)
 ![Follow-up](./assets/progress_1.png)
+![Progress GIF](./assets/progress_2.gif)
 
 ## Development
 
