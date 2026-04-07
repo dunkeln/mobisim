@@ -16,7 +16,7 @@
 >
 	<div class="flex min-h-0 flex-1 overflow-visible">
 		{#key assetId}
-			<InspectionViewport {assetUrl} class="min-h-0 flex-1" />
+			<InspectionViewport {assetId} {assetUrl} class="min-h-0 flex-1" />
 		{/key}
 	</div>
 </div>

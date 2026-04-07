@@ -39,16 +39,17 @@ In `Done`:
 
 ## Backlog
 
-- [ ] T-002 | Expose one REST-controlled vehicle state | next: define minimal request and response schema
-- [ ] T-003 | Reflect controlled vehicle state in the scene | next: map one API field to one visible scene change
 - [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 - [ ] T-008 | Delete placeholder scene helpers after the first vertical slice lands | next: remove procedural stand-in scene code after asset-driven scene is live
 - [ ] T-013 | Reduce oversized client chunk from viewer route | next: re-measure after the first real asset and split any viewer-only code if still needed
-- [x] T-017 | Wire frontend viewer to registry-backed asset selection | completed: 2026-04-05
+- [ ] T-019 | Add Jarvis sub-UI components | next: define the smallest reusable control cluster for footer, inspector, and overlays
+- [ ] T-020 | Add freeform-to-deterministic tool instruction layer | next: document the minimal prompt and executor contract for expressive tool use
+- [ ] T-021 | Add voice agent slice | next: define one end-to-end voice command path that maps to the existing deterministic vehicle intent executor
+- [ ] T-022 | Isolate JARVIS-style components | next: separate the shell, chat, inspector, and viewport chrome into modular component boundaries
 
 ## In Progress
 
-- [ ] T-004 | Define shared API contract for vehicle state | next: add the contract to the reduced app shell without reintroducing scaffolding
+- [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 
 ## Blocked
 
@@ -61,6 +62,9 @@ In `Done`:
 ## Done
 
 - [x] T-000 | Initialize project documentation scaffold | completed: 2026-04-04
+- [x] T-002 | Expose one REST-controlled vehicle state | completed: 2026-04-06
+- [x] T-003 | Reflect controlled vehicle state in the scene | completed: 2026-04-06
+- [x] T-004 | Define shared API contract for vehicle state | completed: 2026-04-06
 - [x] T-005 | Establish root-only app shell and route-owned page content | completed: 2026-04-04
 - [x] T-007 | Prune duplicate vehicle-state types after API wiring | completed: 2026-04-05
 - [x] T-009 | Remove temporary wrappers introduced during current slice work | completed: 2026-04-05
@@ -68,6 +72,7 @@ In `Done`:
 - [x] T-011 | Define dark-first Tailwind 4 surface tokens and color boundary | completed: 2026-04-04
 - [x] T-012 | Add reusable Threlte inspection viewport placeholder | completed: 2026-04-04
 - [x] T-015 | Load Audi R8 asset into the inspection viewport | completed: 2026-04-05
+- [x] T-016 | Create footer voice blob placeholder | completed: 2026-04-05
 - [x] T-018 | Build server-side vehicle asset registry scaffold | completed: 2026-04-05
 - [x] T-017 | Wire frontend viewer to registry-backed asset selection | completed: 2026-04-05
 
@@ -87,3 +92,6 @@ In `Done`:
 - 2026-04-05 20:30 PT | Marked `T-018` done after adding a server-side vehicle asset registry with local-to-remote URL resolution and minimal REST endpoints
 - 2026-04-05 20:30 PT | Added `T-017` to `Backlog` to connect the active viewer to the new registry instead of hardcoded asset URLs
 - 2026-04-05 20:48 PT | Marked `T-017` done after switching the viewer to asset metadata from the registry and serving local GLBs through a private download route
+- 2026-04-06 21:35 PT | Marked `T-002`, `T-003`, and `T-004` done after unifying deterministic vehicle intent planning across chat, REST endpoints, and the active viewport patch flow
+- 2026-04-06 21:35 PT | Moved `T-006` into `In Progress` to cover missing integration coverage for the new vehicle intent REST surface
+- 2026-04-06 21:35 PT | Added backlog tasks `T-019`, `T-020`, `T-021`, and `T-022` for Jarvis sub-UI components, expressive deterministic tool instructions, voice-agent work, and JARVIS-style component isolation

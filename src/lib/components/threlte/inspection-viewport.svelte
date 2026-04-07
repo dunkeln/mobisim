@@ -9,12 +9,16 @@
 	import LightingControl from '$lib/components/inspector/lighting-control.svelte';
 	import type { CameraConfig, Vec3Tuple } from '$lib/components/inspector/types';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
+	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
+	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
+	import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
 
 	type Props = {
+		assetId: VehicleAssetId;
 		assetUrl: string;
 		class?: string;
 	};
-	let { assetUrl, class: className = '' }: Props = $props();
+	let { assetId, assetUrl, class: className = '' }: Props = $props();
 
 	const DOT_FADE_RADIUS = 50;
 	const DOT_FIELD_PADDING = 12;
@@ -30,6 +34,20 @@
 	let floorSize = $state(18);
 	let viewportLightIntensity = $state(1);
 	let cameraConfig = $state<CameraConfig | null>(null);
+	let loadedScene = $state<THREE.Object3D | undefined>();
+	let headlightLightPositions = $state<Vec3Tuple[]>([]);
+	let headlightEmitterPositions = $state<Vec3Tuple[]>([]);
+	const originalMaterialState = new WeakMap<
+		THREE.Material,
+		{
+			wireframe?: boolean;
+			opacity?: number;
+			transparent?: boolean;
+			side?: THREE.Side;
+			color?: THREE.Color;
+			emissive?: THREE.Color;
+		}
+	>();
 	const floorDotMaterial = new THREE.ShaderMaterial({
 		transparent: true,
 		depthWrite: false,
@@ -113,29 +131,97 @@
 	}
 
 	let cameraPosition = $state<Vec3Tuple>(getCameraPresetPosition());
+	const HIGHLIGHT_OVERLAY_NAME = '__mobisim-highlight-overlay__';
 
-	function enforceOpaqueExterior(scene: THREE.Object3D): void {
-		scene.traverse((child) => {
-			if (!(child instanceof THREE.Mesh)) return;
+	function listNodeMaterials(node: THREE.Object3D): THREE.Material[] {
+		if (!(node instanceof THREE.Mesh)) {
+			return [];
+		}
 
-			const materials = Array.isArray(child.material) ? child.material : [child.material];
+		return Array.isArray(node.material)
+			? node.material.filter(Boolean)
+			: node.material
+				? [node.material]
+				: [];
+	}
 
-			for (const material of materials) {
-				if (!material) continue;
+	function hasWireframeProperty(
+		material: THREE.Material
+	): material is THREE.Material & { wireframe: boolean } {
+		return 'wireframe' in material;
+	}
 
-				material.transparent = false;
-				material.opacity = 1;
-				material.alphaTest = 0;
-				material.depthWrite = true;
-				material.depthTest = true;
-				material.side = THREE.FrontSide;
+	function hasOpacityProperty(material: THREE.Material): material is THREE.Material & {
+		opacity: number;
+		transparent: boolean;
+		side: THREE.Side;
+	} {
+		return 'opacity' in material && 'transparent' in material && 'side' in material;
+	}
 
-				if ('transmission' in material) {
-					material.transmission = 0;
+	function hasColorProperty(
+		material: THREE.Material
+	): material is THREE.Material & { color: THREE.Color } {
+		return 'color' in material && material.color instanceof THREE.Color;
+	}
+
+	function hasEmissiveProperty(
+		material: THREE.Material
+	): material is THREE.Material & { emissive: THREE.Color } {
+		return 'emissive' in material && material.emissive instanceof THREE.Color;
+	}
+
+	function snapshotSceneState(scene: THREE.Object3D): void {
+		scene.traverse((node) => {
+			for (const material of listNodeMaterials(node)) {
+				if (originalMaterialState.has(material)) {
+					continue;
 				}
 
-				if ('clearcoat' in material && material.clearcoat < 0) {
-					material.clearcoat = 0;
+				originalMaterialState.set(material, {
+					wireframe: hasWireframeProperty(material) ? material.wireframe : undefined,
+					opacity: hasOpacityProperty(material) ? material.opacity : undefined,
+					transparent: hasOpacityProperty(material) ? material.transparent : undefined,
+					side: hasOpacityProperty(material) ? material.side : undefined,
+					color: hasColorProperty(material) ? material.color.clone() : undefined,
+					emissive: hasEmissiveProperty(material) ? material.emissive.clone() : undefined
+				});
+			}
+		});
+	}
+
+	function restoreSceneState(scene: THREE.Object3D): void {
+		scene.traverse((node) => {
+			for (const material of listNodeMaterials(node)) {
+				const originalMaterial = originalMaterialState.get(material);
+				if (!originalMaterial) {
+					continue;
+				}
+
+				if (hasWireframeProperty(material) && originalMaterial.wireframe !== undefined) {
+					material.wireframe = originalMaterial.wireframe;
+				}
+
+				if (hasOpacityProperty(material)) {
+					if (originalMaterial.opacity !== undefined) {
+						material.opacity = originalMaterial.opacity;
+					}
+
+					if (originalMaterial.transparent !== undefined) {
+						material.transparent = originalMaterial.transparent;
+					}
+
+					if (originalMaterial.side !== undefined) {
+						material.side = originalMaterial.side;
+					}
+				}
+
+				if (hasColorProperty(material) && originalMaterial.color) {
+					material.color.copy(originalMaterial.color);
+				}
+
+				if (hasEmissiveProperty(material) && originalMaterial.emissive) {
+					material.emissive.copy(originalMaterial.emissive);
 				}
 
 				material.needsUpdate = true;
@@ -143,10 +229,264 @@
 		});
 	}
 
+	function setSceneWireframe(scene: THREE.Object3D, enabled: boolean): void {
+		scene.traverse((node) => {
+			for (const material of listNodeMaterials(node)) {
+				if (!hasWireframeProperty(material)) {
+					continue;
+				}
+
+				material.wireframe = enabled;
+				material.needsUpdate = true;
+			}
+		});
+	}
+
+	function clearHighlightOverlays(scene: THREE.Object3D): void {
+		scene.traverse((node) => {
+			const overlays = node.children.filter(
+				(child) => child.name === HIGHLIGHT_OVERLAY_NAME && child instanceof THREE.Mesh
+			);
+
+			for (const overlay of overlays) {
+				node.remove(overlay);
+				if (overlay instanceof THREE.Mesh && overlay.material instanceof THREE.Material) {
+					overlay.material.dispose();
+				} else if (overlay instanceof THREE.Mesh && Array.isArray(overlay.material)) {
+					for (const material of overlay.material) {
+						material.dispose();
+					}
+				}
+			}
+		});
+	}
+
+	function addHighlightOverlay(
+		node: THREE.Object3D,
+		colorFactor: [number, number, number, number]
+	): void {
+		if (!(node instanceof THREE.Mesh)) {
+			return;
+		}
+
+		const overlayMaterial = new THREE.MeshBasicMaterial({
+			color: new THREE.Color(colorFactor[0] ?? 1, colorFactor[1] ?? 1, colorFactor[2] ?? 1),
+			transparent: true,
+			opacity: THREE.MathUtils.clamp(colorFactor[3] ?? 0.48, 0.24, 0.68),
+			depthWrite: false,
+			depthTest: true,
+			side: THREE.DoubleSide,
+			blending: THREE.NormalBlending,
+			polygonOffset: true,
+			polygonOffsetFactor: -2,
+			polygonOffsetUnits: -2
+		});
+		overlayMaterial.toneMapped = false;
+		const overlayMesh = new THREE.Mesh(node.geometry, overlayMaterial);
+		overlayMesh.name = HIGHLIGHT_OVERLAY_NAME;
+		overlayMesh.renderOrder = 16;
+		overlayMesh.frustumCulled = false;
+
+		const wireframeMaterial = overlayMaterial.clone();
+		wireframeMaterial.wireframe = true;
+		wireframeMaterial.opacity = Math.min(0.44, overlayMaterial.opacity * 0.9);
+		wireframeMaterial.blending = THREE.NormalBlending;
+		wireframeMaterial.toneMapped = false;
+		const wireframeOverlay = new THREE.Mesh(node.geometry, wireframeMaterial);
+		wireframeOverlay.name = HIGHLIGHT_OVERLAY_NAME;
+		wireframeOverlay.renderOrder = 17;
+		wireframeOverlay.frustumCulled = false;
+
+		node.add(overlayMesh);
+		node.add(wireframeOverlay);
+	}
+
+	function getMeshCenter(node: THREE.Object3D): Vec3Tuple | null {
+		if (!(node instanceof THREE.Mesh)) {
+			return null;
+		}
+
+		const bounds = new THREE.Box3().setFromObject(node);
+		if (bounds.isEmpty()) {
+			return null;
+		}
+
+		const center = new THREE.Vector3();
+		bounds.getCenter(center);
+		return [center.x, center.y, center.z];
+	}
+
+	function getDerivedHeadlightEmitters(center: THREE.Vector3, size: THREE.Vector3): Vec3Tuple[] {
+		const frontZ = center.z + size.z * 0.38;
+		const leftX = center.x - size.x * 0.26;
+		const rightX = center.x + size.x * 0.26;
+		const y = center.y - size.y * 0.08;
+
+		return [
+			[leftX, y, frontZ],
+			[rightX, y, frontZ]
+		];
+	}
+
+	function getEffectiveHeadlightEmitters(
+		configuredPositions: [number, number, number][] | undefined,
+		center: THREE.Vector3,
+		size: THREE.Vector3
+	): Vec3Tuple[] {
+		if (!configuredPositions || configuredPositions.length === 0) {
+			return getDerivedHeadlightEmitters(center, size);
+		}
+
+		const maxExpectedRadius = Math.max(size.x, size.y, size.z) * 1.35;
+		const areConfiguredPositionsPlausible = configuredPositions.every((position) => {
+			const deltaX = Math.abs(position[0] - center.x);
+			const deltaY = Math.abs(position[1] - center.y);
+			const deltaZ = Math.abs(position[2] - center.z);
+			return (
+				deltaX <= maxExpectedRadius && deltaY <= maxExpectedRadius && deltaZ <= maxExpectedRadius
+			);
+		});
+
+		return areConfiguredPositionsPlausible
+			? configuredPositions.map((position) => [...position] as Vec3Tuple)
+			: getDerivedHeadlightEmitters(center, size);
+	}
+
+	function applyMaterialPatch(
+		scene: THREE.Object3D,
+		operation: VehicleInspectionPatchOperation
+	): void {
+		if (operation.targetType !== 'material' || !operation.targetName) {
+			return;
+		}
+
+		const nextHeadlightPositions = [...headlightEmitterPositions];
+
+		scene.traverse((node) => {
+			for (const material of listNodeMaterials(node)) {
+				if (material.name !== operation.targetName) {
+					continue;
+				}
+
+				switch (operation.op) {
+					case 'set_base_color_factor':
+						if (Array.isArray(operation.value) && operation.value.length === 4) {
+							if (hasColorProperty(material)) {
+								const baseColor =
+									originalMaterialState.get(material)?.color ?? material.color.clone();
+								const tintStrength = THREE.MathUtils.clamp(operation.value[3] ?? 0.4, 0, 1);
+								material.color
+									.copy(baseColor)
+									.lerp(
+										new THREE.Color(
+											operation.value[0] ?? 1,
+											operation.value[1] ?? 1,
+											operation.value[2] ?? 1
+										),
+										tintStrength
+									);
+							}
+						}
+						break;
+					case 'set_overlay_highlight':
+						if (Array.isArray(operation.value) && operation.value.length === 4) {
+							addHighlightOverlay(node, [
+								operation.value[0] ?? 1,
+								operation.value[1] ?? 1,
+								operation.value[2] ?? 1,
+								operation.value[3] ?? 0.48
+							]);
+						}
+						break;
+					case 'set_emissive_factor':
+						if (
+							Array.isArray(operation.value) &&
+							operation.value.length === 3 &&
+							hasEmissiveProperty(material)
+						) {
+							material.emissive.setRGB(
+								operation.value[0] ?? 0,
+								operation.value[1] ?? 0,
+								operation.value[2] ?? 0
+							);
+
+							const emissiveMagnitude =
+								Math.abs(operation.value[0] ?? 0) +
+								Math.abs(operation.value[1] ?? 0) +
+								Math.abs(operation.value[2] ?? 0);
+							const meshCenter = getMeshCenter(node);
+							if (emissiveMagnitude > 0 && nextHeadlightPositions.length === 0 && meshCenter) {
+								nextHeadlightPositions.push(meshCenter);
+							}
+						}
+						break;
+					case 'set_alpha':
+						if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
+							material.opacity = operation.value;
+							material.transparent = operation.value < 1;
+						}
+						break;
+					case 'set_double_sided':
+						if (typeof operation.value === 'boolean' && hasOpacityProperty(material)) {
+							material.side = operation.value
+								? THREE.DoubleSide
+								: (originalMaterialState.get(material)?.side ?? THREE.FrontSide);
+						}
+						break;
+				}
+
+				material.needsUpdate = true;
+			}
+		});
+
+		if (operation.op === 'set_emissive_factor') {
+			headlightLightPositions = nextHeadlightPositions.slice(0, 4);
+		}
+	}
+
+	function applyViewerPatch(
+		scene: THREE.Object3D,
+		operation: VehicleInspectionPatchOperation
+	): void {
+		if (operation.targetType !== 'viewer') {
+			return;
+		}
+
+		if (operation.targetId === 'wireframe' && operation.op === 'set_enabled') {
+			setSceneWireframe(scene, operation.value === true);
+		}
+	}
+
+	function applyPatchOperations(
+		scene: THREE.Object3D,
+		operations: VehicleInspectionPatchOperation[]
+	): void {
+		snapshotSceneState(scene);
+		restoreSceneState(scene);
+		clearHighlightOverlays(scene);
+		headlightLightPositions = [];
+
+		for (const operation of operations) {
+			switch (operation.targetType) {
+				case 'material':
+					applyMaterialPatch(scene, operation);
+					break;
+				case 'viewer':
+					applyViewerPatch(scene, operation);
+					break;
+			}
+		}
+	}
+
 	function frameVehicle(gltf: ThrelteGltf): void {
-		enforceOpaqueExterior(gltf.scene);
+		loadedScene = gltf.scene;
 
 		const { size, center } = normalizeVehicleScene(gltf.scene);
+		headlightEmitterPositions = getEffectiveHeadlightEmitters(
+			VEHICLE_CATALOG[assetId].headlightEmitterPositions,
+			center,
+			size
+		);
 
 		modelPosition = [-center.x, -center.y, -center.z];
 		cameraPosition = getCameraPresetPosition();
@@ -176,6 +516,16 @@
 		return () => {
 			currentControls.removeEventListener('change', emitCameraConfig);
 		};
+	});
+
+	$effect(() => {
+		const patchState = $vehiclePatchState;
+
+		if (!loadedScene || patchState.assetId !== assetId) {
+			return;
+		}
+
+		applyPatchOperations(loadedScene, patchState.operations);
 	});
 </script>
 
@@ -233,6 +583,9 @@
 				</T.Mesh>
 				{#key assetUrl}
 					<T.Group position={modelPosition}>
+						{#each headlightLightPositions as position, index (`${position[0]}:${position[1]}:${position[2]}:${index}`)}
+							<T.PointLight {position} intensity={7.5} distance={14} decay={2} color="#f4efdf" />
+						{/each}
 						<GLTF url={assetUrl} onload={frameVehicle} />
 					</T.Group>
 				{/key}

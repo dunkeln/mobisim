@@ -1,6 +1,8 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import FooterChatbox from '$lib/components/chat/footer-chatbox.svelte';
+	import Sonner from '$lib/components/ui/sonner.svelte';
 
 	let { children }: { children: import('svelte').Snippet } = $props();
 </script>
@@ -22,9 +24,10 @@
 				{@render children()}
 			</div>
 
-			<footer
-				class="flex min-h-8 items-end justify-between gap-4 pt-4 text-xs text-shell-subtle"
-			></footer>
+			<footer class="flex min-h-8 items-end justify-center gap-4 pt-4 text-xs text-shell-subtle">
+				<FooterChatbox />
+			</footer>
 		</section>
 	</main>
+	<Sonner />
 </div>

@@ -5,7 +5,6 @@ export type VehicleAssetId =
 	| '2006_chevrolet_camaro_concept_2007_bumblebee'
 	| '2015_cadillac_escalade_esv'
 	| '2021_koenigsegg_gemera'
-	| 'cl1m09_futuristic_heavy_duty_truck_concept'
 	| 'humvee'
 	| 'ks_blade_runner_spinner';
 
@@ -16,6 +15,9 @@ export type VehicleCatalogEntry = {
 	title: string;
 	description: string;
 	lengthMeters: number;
+	headlightEmitterPositions?: [number, number, number][];
+	bodyPaintMaterialNames?: string[];
+	windowTintMaterialNames?: string[];
 };
 
 export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
@@ -26,7 +28,13 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 		title: 'Audi R8',
 		description:
 			'Mid-engine performance coupe used as the baseline inspection asset for lighting, camera, and material validation.',
-		lengthMeters: 4.43
+		lengthMeters: 4.43,
+		headlightEmitterPositions: [
+			[19.65, 0.85, 5.22],
+			[13.95, 0.85, 5.22]
+		],
+		bodyPaintMaterialNames: ['Meshpart25Mtl', 'Meshpart36Mtl', 'Meshpart52Mtl'],
+		windowTintMaterialNames: ['Meshpart1Mtl', 'Meshpart49Mtl', 'Meshpart65Mtl', 'Meshpart66Mtl']
 	},
 	acura_nsx_type_s_2022: {
 		id: 'acura_nsx_type_s_2022',
@@ -72,15 +80,6 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 		description:
 			'Four-seat hypercar asset kept for low-slung exotic proportions and alternate high-end review framing. Copy is editable placeholder text.',
 		lengthMeters: 4.98
-	},
-	cl1m09_futuristic_heavy_duty_truck_concept: {
-		id: 'cl1m09_futuristic_heavy_duty_truck_concept',
-		fileName: 'cl1m09_-_futuristic_heavy-duty_truck_concept.glb',
-		displayName: 'Futuristic Heavy-Duty Truck Concept',
-		title: 'CL1M09 Futuristic Heavy-Duty Truck Concept',
-		description:
-			'Concept truck asset used for large commercial-vehicle silhouettes and industrial surface studies. Copy and measured length are editable placeholders.',
-		lengthMeters: 7.4
 	},
 	humvee: {
 		id: 'humvee',

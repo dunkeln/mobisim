@@ -1,14 +1,7 @@
-import { env } from '$env/dynamic/private';
 import { error } from '@sveltejs/kit';
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
-
-function resolveLocalAssetDirectory(): string {
-	return env.ASSET_REGISTRY_LOCAL_DIR
-		? path.resolve(env.ASSET_REGISTRY_LOCAL_DIR)
-		: path.resolve(process.cwd(), 'storage/vehicle-assets');
-}
+import { resolveLocalAssetPath } from '$lib/server/connectors/vehicle-registry/storage';
 
 export async function GET({ params }: { params: { assetId: string } }) {
 	const assetId = params.assetId as VehicleAssetId;
@@ -18,7 +11,7 @@ export async function GET({ params }: { params: { assetId: string } }) {
 		throw error(404, 'Vehicle asset not found');
 	}
 
-	const absolutePath = path.join(resolveLocalAssetDirectory(), asset.fileName);
+	const absolutePath = resolveLocalAssetPath(assetId);
 
 	try {
 		const file = await readFile(absolutePath);
@@ -27,7 +20,9 @@ export async function GET({ params }: { params: { assetId: string } }) {
 			headers: {
 				'Content-Type': 'model/gltf-binary',
 				'Content-Length': String(file.byteLength),
-				'Cache-Control': 'private, max-age=3600'
+				'Cache-Control': 'no-store, max-age=0',
+				Pragma: 'no-cache',
+				Expires: '0'
 			}
 		});
 	} catch {
