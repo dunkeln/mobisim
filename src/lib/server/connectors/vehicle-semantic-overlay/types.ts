@@ -117,3 +117,18 @@ export type VehicleSemanticGroupAnnotation = {
 		materialName?: string;
 	}>;
 };
+
+export type VehicleSemanticAssignmentMutation = {
+	action: 'assign' | 'reassign' | 'unassign';
+	nodeIds: string[];
+	materialIds?: string[];
+	category?: VehicleSemanticGroup['category'];
+	semanticGroup?: string;
+	humanLabel?: string;
+	aliases?: string[];
+	materialSelections?: Array<{
+		nodeId: string;
+		materialIndex?: number;
+		materialName?: string;
+	}>;
+};

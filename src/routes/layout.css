@@ -152,6 +152,7 @@
 		text-rendering: optimizeLegibility;
 		-webkit-font-smoothing: antialiased;
 		-moz-osx-font-smoothing: grayscale;
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	body {
@@ -197,5 +198,15 @@
 
 	* {
 		box-sizing: border-box;
+	}
+
+	::selection {
+		background: transparent;
+		color: inherit;
+	}
+
+	::-moz-selection {
+		background: transparent;
+		color: inherit;
 	}
 }

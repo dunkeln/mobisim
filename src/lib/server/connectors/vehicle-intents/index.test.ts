@@ -10,7 +10,10 @@ import {
 	planVehiclePartIntent,
 	resolveVehicleIntent
 } from '$lib/server/connectors/vehicle-intents';
-import { writeVehicleSemanticOverlay } from '$lib/server/connectors/vehicle-semantic-overlay';
+import {
+	readVehicleSemanticOverlay,
+	writeVehicleSemanticOverlay
+} from '$lib/server/connectors/vehicle-semantic-overlay';
 
 const semanticDirs: string[] = [];
 
@@ -154,6 +157,19 @@ describe('vehicle part intent planner', () => {
 		expect(plan.operations.some((operation) => operation.targetId === bodyMaterial!.id)).toBe(true);
 		expect(plan.matchedMaterialNames).toEqual([bodyMaterial!.name]);
 		expect(plan.matchedPaths.length).toBeGreaterThan(0);
+	});
+
+	it('treats select phrasing as a highlight intent for visible part focus', async () => {
+		const plan = await planVehicleHighlightIntent('audi_r8', 'select the wheels');
+
+		expect(plan.operations.length).toBeGreaterThan(0);
+		expect(
+			plan.operations.some(
+				(operation) =>
+					operation.targetType === 'material' && operation.op === 'set_overlay_highlight'
+			)
+		).toBe(true);
+		expect(plan.summary.toLowerCase()).toContain('highlight');
 	});
 
 	it('routes isolate requests to context dimming plus highlight without node hiding', async () => {
@@ -322,6 +338,132 @@ describe('vehicle part intent planner', () => {
 		expect(plan.operations[0]?.targetId).toBe('uv_debug');
 		expect(plan.operations[0]?.op).toBe('set_enabled');
 		expect(plan.operations[0]?.value).toBe(true);
+	});
+
+	it('prefers semantic headlight material tags for glow before metadata heuristics', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const semanticHeadlightMaterial = capabilities.materials[0];
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		expect(semanticHeadlightMaterial).toBeDefined();
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [
+				{
+					targetType: 'material',
+					targetId: semanticHeadlightMaterial!.id,
+					targetName: semanticHeadlightMaterial!.name,
+					humanLabel: 'left headlight lens',
+					aliases: ['headlight'],
+					semanticTags: ['left_headlight'],
+					confidence: 0.98
+				}
+			],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn on the headlights');
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const semanticHeadlightIds = new Set<string>([
+			...(overlay?.acceptedMaterials
+				.filter((material) =>
+					material.semanticTags.some((tag) => tag === 'left_headlight' || tag === 'right_headlight')
+				)
+				.map((material) => material.targetId) ?? []),
+			...(overlay?.acceptedGroups
+				.filter((group) => group.category === 'front_lighting')
+				.flatMap((group) => group.materialIds) ?? []),
+			...(overlay?.acceptedParts
+				.filter((part) => part.category === 'light' && part.region === 'front')
+				.flatMap((part) => part.materialIds) ?? [])
+		]);
+
+		expect(plan.operations.length).toBeGreaterThan(0);
+		expect(plan.operations.every((operation) => operation.op === 'set_emissive_factor')).toBe(true);
+		expect(plan.operations.some((operation) => operation.targetId === semanticHeadlightMaterial!.id)).toBe(
+			true
+		);
+		expect(plan.operations.every((operation) => semanticHeadlightIds.has(operation.targetId))).toBe(true);
+	});
+
+	it('uses semantic rear lighting parts for taillight glow before metadata heuristics', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const semanticTaillightMaterial = capabilities.materials[0];
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		expect(semanticTaillightMaterial).toBeDefined();
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [
+				{
+					id: 'rear_lamp_cluster',
+					humanLabel: 'rear lamp cluster',
+					aliases: ['rear lights', 'taillights'],
+					confidence: 0.95,
+					category: 'light',
+					nodeIds: [],
+					meshIds: [],
+					materialIds: [semanticTaillightMaterial!.id],
+					region: 'rear',
+					side: 'center'
+				}
+			],
+			acceptedGroups: [
+				{
+					id: 'rear_lighting',
+					humanLabel: 'rear lighting',
+					aliases: ['taillights', 'rear lights'],
+					confidence: 0.95,
+					category: 'rear_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: [],
+					materialIds: [],
+					derivedFrom: ['user']
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn on the rear lights');
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const semanticTaillightIds = new Set<string>([
+			...(overlay?.acceptedGroups
+				.filter((group) => group.category === 'rear_lighting')
+				.flatMap((group) => group.materialIds) ?? []),
+			...(overlay?.acceptedParts
+				.filter((part) => part.category === 'light' && part.region === 'rear')
+				.flatMap((part) => part.materialIds) ?? [])
+		]);
+
+		expect(plan.operations.length).toBeGreaterThan(0);
+		expect(plan.operations.every((operation) => operation.op === 'set_emissive_factor')).toBe(true);
+		expect(plan.operations.some((operation) => operation.targetId === semanticTaillightMaterial!.id)).toBe(
+			true
+		);
+		expect(plan.operations.every((operation) => semanticTaillightIds.has(operation.targetId))).toBe(true);
+		expect(plan.operations.every((operation) => operation.value?.toString() === '1,0.14,0.1')).toBe(
+			true
+		);
 	});
 
 	it('prefers semantic groups for wheel queries before falling back to tighter part units', async () => {

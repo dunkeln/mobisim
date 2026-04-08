@@ -381,6 +381,112 @@ describe('vehicle semantic overlays', () => {
 		);
 	});
 
+	it('reduces duplicate semantic groups by id when overlay reads merge stored and reviewed groups', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const structure = await deriveStructuralAssetSnapshot('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const targetNode = structure.nodes.find((node) => node.meshId !== null);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+		expect(targetNode).toBeDefined();
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'group_body_shell',
+					humanLabel: 'shell',
+					aliases: ['outer shell'],
+					confidence: 0.75,
+					category: 'body_shell',
+					supports: ['highlight'],
+					nodeIds: [],
+					meshIds: [],
+					materialIds: [],
+					derivedFrom: ['materials']
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		await annotateVehicleSemanticGroup('audi_r8', {
+			nodeIds: [targetNode!.id],
+			category: 'body_shell',
+			humanLabel: 'body shell',
+			aliases: ['shell']
+		});
+
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const groups = overlay?.acceptedGroups.filter((group) => group.id === 'group_body_shell') ?? [];
+
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.humanLabel).toBe('body shell');
+		expect(groups[0]?.supports).toEqual(expect.arrayContaining(['highlight', 'paint']));
+		expect(groups[0]?.nodeIds).toContain(targetNode!.id);
+		expect(groups[0]?.derivedFrom).toEqual(expect.arrayContaining(['user']));
+	});
+
+	it('reduces visible semantic groups with different ids when they share the same category', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'group_wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel'],
+					confidence: 0.94,
+					category: 'wheels',
+					supports: ['focus', 'highlight', 'isolate'],
+					nodeIds: ['node-a'],
+					meshIds: ['mesh-a'],
+					materialIds: ['material-a'],
+					derivedFrom: ['synthetic']
+				},
+				{
+					id: 'group-wheels',
+					humanLabel: 'wheels',
+					aliases: ['rims'],
+					confidence: 0.98,
+					category: 'wheels',
+					supports: ['focus', 'highlight', 'isolate'],
+					nodeIds: ['node-b'],
+					meshIds: ['mesh-b'],
+					materialIds: ['material-b'],
+					derivedFrom: ['materials']
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const wheelGroups = overlay?.acceptedGroups.filter((group) => group.category === 'wheels') ?? [];
+
+		expect(wheelGroups).toHaveLength(1);
+		expect(wheelGroups[0]?.nodeIds).toEqual(expect.arrayContaining(['node-a', 'node-b']));
+		expect(wheelGroups[0]?.materialIds).toEqual(
+			expect.arrayContaining(['material-a', 'material-b'])
+		);
+	});
+
 	it('syncs a single planner-visible part with the reviewed semantic group for the same category', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const structure = await deriveStructuralAssetSnapshot('audi_r8');

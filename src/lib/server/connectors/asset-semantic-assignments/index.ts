@@ -192,6 +192,40 @@ export async function upsertReviewedAssetSemanticAssignments(input: {
 	});
 }
 
+export async function removeReviewedAssetSemanticAssignments(input: {
+	assetId: VehicleAssetId;
+	structuralGeneratedAt: string;
+	nodeIds?: string[];
+	materialIds?: string[];
+	semanticGroupId?: string;
+}): Promise<AssetSemanticAssignmentsStore> {
+	const existing = await readAssetSemanticAssignments(input.assetId, input.structuralGeneratedAt);
+	const nodeIds = new Set(input.nodeIds ?? []);
+	const materialIds = new Set(input.materialIds ?? []);
+
+	const assignments = existing.assignments.filter((assignment) => {
+		const matchesTarget =
+			(assignment.nodeId && nodeIds.has(assignment.nodeId)) ||
+			(assignment.materialId && materialIds.has(assignment.materialId));
+
+		if (!matchesTarget) {
+			return true;
+		}
+
+		if (input.semanticGroupId) {
+			return assignment.semanticGroupId !== input.semanticGroupId;
+		}
+
+		return false;
+	});
+
+	return writeAssetSemanticAssignments({
+		assetId: input.assetId,
+		structuralGeneratedAt: input.structuralGeneratedAt,
+		assignments
+	});
+}
+
 function summarizePathHints(paths: string[]): string[] {
 	return Array.from(
 		new Set(

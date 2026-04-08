@@ -3,28 +3,59 @@
 
 	type Props = {
 		class?: string;
+		viewportAnchored?: boolean;
 	};
 
-	let { class: className = '' }: Props = $props();
+	let { class: className = '', viewportAnchored = false }: Props = $props();
 </script>
 
-<Toaster
-	theme="dark"
-	position="top-center"
-	visibleToasts={4}
-	closeButton={false}
-	richColors={false}
-	offset="24px"
-	mobileOffset="16px"
-	toastOptions={{
-		unstyled: true,
-		class:
-			'group pointer-events-auto flex w-full items-start gap-3 rounded-[1.35rem] border border-shell-border bg-shell-elevated/96 px-4 py-3 text-sm text-boundary-text shadow-[0_18px_40px_color-mix(in_oklab,var(--color-boundary-background)_56%,black)] backdrop-blur-xl',
-		descriptionClass: 'mt-1 text-sm leading-6 text-boundary-text/70',
-		actionButtonStyle:
-			'background: color-mix(in oklab, var(--color-boundary-text) 92%, white); color: var(--color-boundary-background); border-radius: 9999px; border: 0; padding: 0.35rem 0.7rem; font-size: 0.75rem;',
-		cancelButtonStyle:
-			'background: transparent; color: color-mix(in oklab, var(--color-boundary-text) 70%, transparent); border-radius: 9999px; border: 1px solid color-mix(in oklab, var(--color-boundary-text) 12%, transparent); padding: 0.35rem 0.7rem; font-size: 0.75rem;'
-	}}
-	class={className}
-/>
+<div
+	data-sonner-host={viewportAnchored ? 'viewport' : 'layout'}
+	class={[
+		viewportAnchored
+			? 'pointer-events-none absolute right-4 bottom-4 z-30 sm:right-6 sm:bottom-6'
+			: '',
+		className
+	]}
+>
+	<Toaster
+		theme="dark"
+		position={viewportAnchored ? 'bottom-right' : 'top-center'}
+		visibleToasts={4}
+		closeButton={false}
+		richColors={false}
+		offset={viewportAnchored ? '0px' : '24px'}
+		mobileOffset={viewportAnchored ? '0px' : '16px'}
+		toastOptions={{
+			unstyled: true,
+			class:
+				'group pointer-events-auto flex w-full items-start gap-3 rounded-[1.35rem] border border-shell-border bg-shell-elevated/96 px-4 py-3 text-sm text-boundary-text shadow-[0_18px_40px_color-mix(in_oklab,var(--color-boundary-background)_56%,black)] backdrop-blur-xl',
+			descriptionClass: 'mt-1 text-sm leading-6 text-boundary-text/70',
+			actionButtonStyle:
+				'background: color-mix(in oklab, var(--color-boundary-text) 92%, white); color: var(--color-boundary-background); border-radius: 9999px; border: 0; padding: 0.35rem 0.7rem; font-size: 0.75rem;',
+			cancelButtonStyle:
+				'background: transparent; color: color-mix(in oklab, var(--color-boundary-text) 70%, transparent); border-radius: 9999px; border: 1px solid color-mix(in oklab, var(--color-boundary-text) 12%, transparent); padding: 0.35rem 0.7rem; font-size: 0.75rem;'
+		}}
+		class={className}
+	/>
+</div>
+
+<style>
+	[data-sonner-host] {
+		position: relative;
+	}
+
+	[data-sonner-host] :global([data-sonner-toaster]) {
+		pointer-events: none;
+	}
+
+	[data-sonner-host] :global([data-sonner-toast]) {
+		pointer-events: auto;
+	}
+
+	[data-sonner-host='viewport'] :global([data-sonner-toaster]) {
+		position: absolute;
+		inset: auto 0 0 auto;
+		width: min(24rem, calc(100vw - 2rem));
+	}
+</style>

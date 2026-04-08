@@ -6,10 +6,12 @@ import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf
 import {
 	readAssetSemanticAssignments,
 	listReviewedSemanticGroupExamples,
+	removeReviewedAssetSemanticAssignments,
 	upsertReviewedAssetSemanticAssignments
 } from '$lib/server/connectors/asset-semantic-assignments';
 import { upsertPendingAssetSemanticProposals } from '$lib/server/connectors/asset-semantic-proposals';
 import {
+	findSemanticGroupDefinition,
 	ensureSemanticGroupDefinition,
 	resolveSemanticGroupDefinition,
 	readSemanticGroupDefinitions
@@ -23,6 +25,7 @@ import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type {
 	GenerateVehicleSemanticOverlayOptions,
 	VehicleSemanticActionSupport,
+	VehicleSemanticAssignmentMutation,
 	VehicleSemanticGroupAnnotation,
 	VehicleSemanticGroup,
 	VehicleSemanticPartCategory,
@@ -889,7 +892,7 @@ function validateGroups(
 	const semanticMaterialsById = new Map(
 		acceptedMaterials.map((material) => [material.targetId, material])
 	);
-	const accepted = new Map<string, VehicleSemanticGroup>();
+	const accepted: VehicleSemanticGroup[] = [];
 	const discardedSuggestions: VehicleSemanticOverlayDiscard[] = [];
 
 	for (const group of groups) {
@@ -948,44 +951,11 @@ function validateGroups(
 			continue;
 		}
 
-		const existing = accepted.get(normalizedGroup.id);
-		if (!existing) {
-			accepted.set(normalizedGroup.id, normalizedGroup);
-			continue;
-		}
-
-		accepted.set(normalizedGroup.id, {
-			...existing,
-			humanLabel:
-				existing.humanLabel.length >= normalizedGroup.humanLabel.length
-					? existing.humanLabel
-					: normalizedGroup.humanLabel,
-			aliases: Array.from(new Set([...existing.aliases, ...normalizedGroup.aliases])).sort(
-				(left, right) => left.localeCompare(right)
-			),
-			confidence: Math.max(existing.confidence, normalizedGroup.confidence),
-			supports: Array.from(new Set([...existing.supports, ...normalizedGroup.supports])).sort(
-				(left, right) => left.localeCompare(right)
-			),
-			nodeIds: Array.from(new Set([...existing.nodeIds, ...normalizedGroup.nodeIds])).sort(
-				(left, right) => left.localeCompare(right)
-			),
-			meshIds: Array.from(new Set([...existing.meshIds, ...normalizedGroup.meshIds])).sort(
-				(left, right) => left.localeCompare(right)
-			),
-			materialIds: Array.from(
-				new Set([...existing.materialIds, ...normalizedGroup.materialIds])
-			).sort((left, right) => left.localeCompare(right)),
-			derivedFrom: Array.from(
-				new Set([...(existing.derivedFrom ?? []), ...(normalizedGroup.derivedFrom ?? [])])
-			).sort((left, right) => left.localeCompare(right))
-		});
+		accepted.push(normalizedGroup);
 	}
 
 	return {
-		acceptedGroups: Array.from(accepted.values()).sort((left, right) =>
-			left.id.localeCompare(right.id)
-		),
+		acceptedGroups: reduceSemanticGroups(accepted),
 		discardedSuggestions
 	};
 }
@@ -1392,21 +1362,14 @@ function mergePlannerVisibleGroups(
 	baseGroups: VehicleSemanticGroup[],
 	reviewedGroups: VehicleSemanticGroup[]
 ): VehicleSemanticGroup[] {
-	const accepted = new Map<string, VehicleSemanticGroup>();
 	const deterministicGroups = baseGroups.filter(
 		(group) =>
 			!(group.derivedFrom ?? []).includes('llm') && !(group.derivedFrom ?? []).includes('user')
 	);
 
-	for (const group of deterministicGroups) {
-		accepted.set(group.id, group);
-	}
-
-	for (const group of reviewedGroups) {
-		accepted.set(group.id, group);
-	}
-
-	return Array.from(accepted.values()).sort((left, right) => left.id.localeCompare(right.id));
+	return reduceVisibleSemanticGroups(
+		reduceSemanticGroups([...deterministicGroups, ...reviewedGroups])
+	);
 }
 
 function syncAcceptedPartsWithReviewedGroups(
@@ -1624,9 +1587,66 @@ export async function annotateVehicleSemanticGroup(
 	assetId: VehicleAssetId,
 	annotation: VehicleSemanticGroupAnnotation
 ): Promise<VehicleSemanticOverlay> {
+	return mutateVehicleSemanticAssignment(assetId, {
+		action: 'assign',
+		nodeIds: annotation.nodeIds,
+		semanticGroup: annotation.semanticGroup,
+		category: annotation.category,
+		humanLabel: annotation.humanLabel,
+		aliases: annotation.aliases,
+		materialSelections: annotation.materialSelections
+	});
+}
+
+function buildMutationMaterialIds(input: {
+	nodes: Array<{ id: string; meshId?: string | null }>;
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>;
+	materialSelections?: VehicleSemanticAssignmentMutation['materialSelections'];
+	materialIds?: string[];
+}): string[] {
+	const meshById = new Map(input.structure.meshes.map((mesh) => [mesh.id, mesh]));
+	return Array.from(
+		new Set([
+			...(input.materialIds ?? []),
+			...(input.materialSelections ?? []).flatMap((selection) => {
+				const node = input.nodes.find((entry) => entry.id === selection.nodeId);
+				if (!node?.meshId) {
+					return [];
+				}
+
+				const mesh = meshById.get(node.meshId);
+				if (!mesh) {
+					return [];
+				}
+
+				if (
+					typeof selection.materialIndex === 'number' &&
+					selection.materialIndex >= 0 &&
+					selection.materialIndex < mesh.materialIds.length
+				) {
+					return [mesh.materialIds[selection.materialIndex]!];
+				}
+
+				if (selection.materialName) {
+					return mesh.materialIds.filter((materialId, index) => {
+						const materialName = mesh.materialNames[index];
+						return materialName === selection.materialName;
+					});
+				}
+
+				return [];
+			})
+		])
+	).sort((left, right) => left.localeCompare(right));
+}
+
+export async function mutateVehicleSemanticAssignment(
+	assetId: VehicleAssetId,
+	mutation: VehicleSemanticAssignmentMutation
+): Promise<VehicleSemanticOverlay> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
 	const structure = await deriveStructuralAssetSnapshot(assetId);
-	const annotationNodeIds = Array.from(new Set(annotation.nodeIds)).sort((left, right) =>
+	const annotationNodeIds = Array.from(new Set(mutation.nodeIds)).sort((left, right) =>
 		left.localeCompare(right)
 	);
 	const nodes = annotationNodeIds
@@ -1655,54 +1675,54 @@ export async function annotateVehicleSemanticGroup(
 					discardedSuggestions: []
 				};
 
-	const definition = await resolveSemanticGroupDefinition({
-		semanticGroup: annotation.semanticGroup,
-		category: annotation.category,
-		humanLabel: annotation.humanLabel,
-		aliases: annotation.aliases
+	const materialIds = buildMutationMaterialIds({
+		nodes,
+		structure,
+		materialSelections: mutation.materialSelections,
+		materialIds: mutation.materialIds
 	});
-	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
-	const materialIds = Array.from(
-		new Set(
-			(annotation.materialSelections ?? []).flatMap((selection) => {
-				const node = nodes.find((entry) => entry.id === selection.nodeId);
-				if (!node?.meshId) {
-					return [];
-				}
 
-				const mesh = meshById.get(node.meshId);
-				if (!mesh) {
-					return [];
-				}
+	if (annotationNodeIds.length === 0 && materialIds.length === 0) {
+		throw new Error('At least one runtime node or material target is required.');
+	}
 
-				if (
-					typeof selection.materialIndex === 'number' &&
-					selection.materialIndex >= 0 &&
-					selection.materialIndex < mesh.materialIds.length
-				) {
-					return [mesh.materialIds[selection.materialIndex]!];
-				}
+	if (mutation.action === 'reassign') {
+		await removeReviewedAssetSemanticAssignments({
+			assetId,
+			structuralGeneratedAt: capabilities.generatedAt,
+			nodeIds: annotationNodeIds,
+			materialIds
+		});
+	}
 
-				if (selection.materialName) {
-					return mesh.materialIds.filter((materialId, index) => {
-						const materialName = mesh.materialNames[index];
-						return materialName === selection.materialName;
-					});
-				}
-
-				return [];
-			})
-		)
-	).sort((left, right) => left.localeCompare(right));
-
-	await upsertReviewedAssetSemanticAssignments({
-		assetId,
-		structuralGeneratedAt: capabilities.generatedAt,
-		nodeIds: annotationNodeIds,
-		materialIds,
-		semanticGroupId: definition.id,
-		reviewer: 'user'
-	});
+	if (mutation.action === 'assign' || mutation.action === 'reassign') {
+		const definition = await resolveSemanticGroupDefinition({
+			semanticGroup: mutation.semanticGroup,
+			category: mutation.category,
+			humanLabel: mutation.humanLabel,
+			aliases: mutation.aliases
+		});
+		await upsertReviewedAssetSemanticAssignments({
+			assetId,
+			structuralGeneratedAt: capabilities.generatedAt,
+			nodeIds: annotationNodeIds,
+			materialIds,
+			semanticGroupId: definition.id,
+			reviewer: 'user'
+		});
+	} else {
+		const definition = await findSemanticGroupDefinition({
+			semanticGroup: mutation.semanticGroup,
+			category: mutation.category
+		});
+		await removeReviewedAssetSemanticAssignments({
+			assetId,
+			structuralGeneratedAt: capabilities.generatedAt,
+			nodeIds: annotationNodeIds,
+			materialIds,
+			semanticGroupId: definition?.id
+		});
+	}
 
 	const reviewedGroups = await deriveReviewedSemanticGroups(
 		assetId,
@@ -1938,7 +1958,63 @@ export async function listSemanticGroupsByQuery(
 	const matchedGroups = sanitizedGroups.filter(
 		(group) => groupMatchesQuery(group, query) && (!support || group.supports.includes(support))
 	);
-	const rankedGroups = matchedGroups.sort((left, right) => {
+	return reduceVisibleSemanticGroups(matchedGroups, support);
+}
+
+function mergeSemanticGroup(
+	existing: VehicleSemanticGroup,
+	incoming: VehicleSemanticGroup
+): VehicleSemanticGroup {
+	return {
+		...existing,
+		humanLabel:
+			existing.humanLabel.length >= incoming.humanLabel.length
+				? existing.humanLabel
+				: incoming.humanLabel,
+		aliases: Array.from(new Set([...existing.aliases, ...incoming.aliases])).sort((left, right) =>
+			left.localeCompare(right)
+		),
+		confidence: Math.max(existing.confidence, incoming.confidence),
+		supports: Array.from(new Set([...existing.supports, ...incoming.supports])).sort(
+			(left, right) => left.localeCompare(right)
+		),
+		nodeIds: Array.from(new Set([...existing.nodeIds, ...incoming.nodeIds])).sort((left, right) =>
+			left.localeCompare(right)
+		),
+		meshIds: Array.from(new Set([...existing.meshIds, ...incoming.meshIds])).sort((left, right) =>
+			left.localeCompare(right)
+		),
+		materialIds: Array.from(new Set([...existing.materialIds, ...incoming.materialIds])).sort(
+			(left, right) => left.localeCompare(right)
+		),
+		derivedFrom: Array.from(
+			new Set([...(existing.derivedFrom ?? []), ...(incoming.derivedFrom ?? [])])
+		).sort((left, right) => left.localeCompare(right))
+	};
+}
+
+function reduceSemanticGroups(groups: VehicleSemanticGroup[]): VehicleSemanticGroup[] {
+	const reduced = new Map<string, VehicleSemanticGroup>();
+
+	for (const group of groups) {
+		const existing = reduced.get(group.id);
+		reduced.set(group.id, existing ? mergeSemanticGroup(existing, group) : group);
+	}
+
+	return Array.from(reduced.values()).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function getSemanticGroupSelectionKey(group: VehicleSemanticGroup): string {
+	return group.category === 'other'
+		? `${group.category}:${slugifyPartId(group.humanLabel)}`
+		: group.category;
+}
+
+function reduceVisibleSemanticGroups(
+	groups: VehicleSemanticGroup[],
+	support?: VehicleSemanticActionSupport
+): VehicleSemanticGroup[] {
+	const rankedGroups = [...groups].sort((left, right) => {
 		const leftCoverageScore =
 			(left.nodeIds.length > 0 ? 1000 : 0) +
 			(left.meshIds.length > 0 ? 100 : 0) +
@@ -1972,13 +2048,9 @@ export async function listSemanticGroupsByQuery(
 	const deduped = new Map<string, VehicleSemanticGroup>();
 
 	for (const group of rankedGroups) {
-		const selectionKey =
-			group.category === 'other'
-				? `${group.category}:${slugifyPartId(group.humanLabel)}`
-				: group.category;
-		if (!deduped.has(selectionKey)) {
-			deduped.set(selectionKey, group);
-		}
+		const selectionKey = getSemanticGroupSelectionKey(group);
+		const existing = deduped.get(selectionKey);
+		deduped.set(selectionKey, existing ? mergeSemanticGroup(existing, group) : group);
 	}
 
 	return Array.from(deduped.values());

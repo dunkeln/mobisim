@@ -6,8 +6,12 @@
 	import type { OrbitControls as ThreeOrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 	import AssetSelectionDropdown from '$lib/components/inspector/asset-selection-dropdown.svelte';
 	import CameraConfigReadout from '$lib/components/inspector/camera-config-readout.svelte';
+	import InspectorSidebar from '$lib/components/inspector/inspector-sidebar.svelte';
 	import LightingControl from '$lib/components/inspector/lighting-control.svelte';
 	import type { CameraConfig, Vec3Tuple } from '$lib/components/inspector/types';
+	import ViewportRenderInvalidator from '$lib/components/threlte/viewport-render-invalidator.svelte';
+	import ViewportFooterBlueprint from '$lib/components/ui/viewport-footer-blueprint.svelte';
+	import Sonner from '$lib/components/ui/sonner.svelte';
 	import {
 		buildRuntimeNodeLookup,
 		buildRuntimeNodePath,
@@ -31,7 +35,7 @@
 	const DOT_FIELD_PADDING = 12;
 	const CAMERA_AZIMUTH_DEG = 40;
 	const CAMERA_ELEVATION_DEG = 20;
-	const CAMERA_DISTANCE = 9;
+	const CAMERA_DISTANCE = 12.7;
 	const DEFAULT_CAMERA_FOV = 34;
 	const XRAY_OPACITY = 0.18;
 	const SELECTION_CLICK_DRAG_THRESHOLD = 8;
@@ -187,6 +191,25 @@
 			default:
 				return 'bg-boundary-text/28 shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-text)_12%,transparent)]';
 		}
+	});
+	const scopedSelectionRenderToken = $derived.by(() =>
+		$vehicleNodeSelection
+			.filter((selection) => selection.assetId === assetId)
+			.map((selection) =>
+				[
+					selection.nodeId,
+					selection.nodeName,
+					selection.nodePath,
+					typeof selection.materialIndex === 'number' ? selection.materialIndex : 'none',
+					selection.materialName ?? ''
+				].join(':')
+			)
+			.sort((left, right) => left.localeCompare(right))
+			.join('|')
+	);
+	const viewportRenderToken = $derived.by(() => {
+		const patchRevision = $vehiclePatchState.assetId === assetId ? $vehiclePatchState.revision : 0;
+		return [assetId, assetUrl, patchRevision, scopedSelectionRenderToken].join('::');
 	});
 	function listNodeMaterials(node: THREE.Object3D): THREE.Material[] {
 		if (!(node instanceof THREE.Mesh)) {
@@ -692,6 +715,20 @@
 		return color.clone().lerp(fallbackHeadlightWhite, mixRatio);
 	}
 
+	function matchesRuntimeMaterialTargetName(
+		runtimeMaterialName: string,
+		operationTargetName: string
+	): boolean {
+		if (runtimeMaterialName === operationTargetName) {
+			return true;
+		}
+
+		// Semantic intent labels may decorate the original runtime material name,
+		// for example "Paint_Body (body shell)". Preserve the extra label for chat
+		// and restore matching, but still resolve the runtime material deterministically.
+		return operationTargetName.startsWith(`${runtimeMaterialName} (`);
+	}
+
 	function applyMaterialPatch(
 		scene: THREE.Object3D,
 		operation: VehicleInspectionPatchOperation
@@ -700,9 +737,11 @@
 			return;
 		}
 
+		const targetName = operation.targetName;
+
 		scene.traverse((node) => {
 			for (const material of listNodeMaterials(node)) {
-				if (material.name !== operation.targetName) {
+				if (!matchesRuntimeMaterialTargetName(material.name, targetName)) {
 					continue;
 				}
 
@@ -1041,26 +1080,32 @@
 	]}
 >
 	<div
-		class="relative h-full min-h-0 w-full overflow-hidden rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_9%,transparent)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_6%,transparent),inset_0_-18px_36px_color-mix(in_oklab,var(--color-boundary-background)_68%,black)]"
+		class="relative h-full min-h-0 w-full overflow-hidden rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_9%,transparent)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_6%,transparent)]"
 	>
 		<div
-			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_14%,transparent_84%,color-mix(in_oklab,var(--color-boundary-background)_24%,black))]"
+			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_100%)]"
 		></div>
 		<div
 			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_40%,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_50%)]"
 		></div>
+		<div
+			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_100%,color-mix(in_oklab,var(--color-boundary-background)_22%,black),transparent_34%)]"
+		></div>
 		<div class="pointer-events-none absolute inset-0 z-20" data-viewport-ui="true">
-			<div class="pointer-events-auto absolute top-4 left-4 sm:top-5 sm:left-6">
+			<div
+				class="pointer-events-auto absolute top-4 left-4 flex flex-col items-start gap-2 sm:top-5 sm:left-6"
+			>
 				<AssetSelectionDropdown class="origin-top-left scale-[0.8] xl:scale-100" />
 			</div>
 			<div
-				class="pointer-events-auto absolute top-4 right-4 flex items-center gap-2 sm:top-5 sm:right-6"
+				class="pointer-events-auto absolute top-4 right-4 flex flex-col items-end gap-4 sm:top-5 sm:right-6"
 			>
 				<CameraConfigReadout
 					config={cameraConfig}
 					moving={false}
 					class="origin-top-right scale-[0.8] xl:scale-100"
 				/>
+				<InspectorSidebar {assetId} />
 			</div>
 			<div
 				class="pointer-events-auto absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-2 sm:top-5"
@@ -1075,6 +1120,7 @@
 					title={semanticOverlayLabel}
 				></span>
 			</div>
+			<ViewportFooterBlueprint {assetId} />
 		</div>
 		<div
 			bind:this={canvasHost}
@@ -1088,6 +1134,7 @@
 			aria-label="Vehicle inspection viewport"
 		>
 			<Canvas>
+				<ViewportRenderInvalidator token={viewportRenderToken} />
 				<T.PerspectiveCamera
 					bind:ref={camera}
 					makeDefault
@@ -1117,5 +1164,6 @@
 				{/key}
 			</Canvas>
 		</div>
+		<Sonner viewportAnchored={true} />
 	</div>
 </div>

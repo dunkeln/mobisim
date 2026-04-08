@@ -308,3 +308,31 @@ export async function resolveSemanticGroupDefinition(input: {
 		aliases: Array.from(new Set([semanticGroup, ...(input.aliases ?? [])]))
 	});
 }
+
+export async function findSemanticGroupDefinition(input: {
+	semanticGroup?: string;
+	category?: VehicleSemanticGroup['category'];
+}): Promise<SemanticGroupDefinition | null> {
+	const store = await readSemanticGroupDefinitions();
+
+	if (input.category) {
+		return (
+			store.definitions.find((definition) => definition.category === input.category) ?? null
+		);
+	}
+
+	const semanticGroup = input.semanticGroup?.trim();
+	if (!semanticGroup) {
+		return null;
+	}
+
+	const lookupKey = normalizeLookupKey(semanticGroup);
+	return (
+		store.definitions.find((definition) => {
+			const keys = [definition.id, definition.humanLabel, ...definition.aliases].map((value) =>
+				normalizeLookupKey(value)
+			);
+			return keys.includes(lookupKey);
+		}) ?? null
+	);
+}

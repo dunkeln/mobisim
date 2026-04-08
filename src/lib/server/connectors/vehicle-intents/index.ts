@@ -23,6 +23,7 @@ import type {
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 
 const HEADLIGHT_ON_EMISSIVE: [number, number, number] = [1, 0.95, 0.82];
+const TAILLIGHT_ON_EMISSIVE: [number, number, number] = [1, 0.14, 0.1];
 const ISOLATE_CONTEXT_ALPHA = 0.18;
 const ISOLATE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.64, 0.68, 0.9, 0.96];
 const REMOVE_PART_ALPHA = 0.08;
@@ -125,6 +126,15 @@ export type NormalizedVehiclePaintIntent = {
 	finish?: 'solid' | 'metallic' | 'chrome' | 'matte' | 'pearl' | 'gloss';
 	hex?: string;
 };
+
+function formatSemanticTargetName(materialName: string, semanticLabels: string[]): string {
+	const uniqueLabels = Array.from(new Set(semanticLabels.map((label) => label.trim()).filter(Boolean)));
+	if (uniqueLabels.length === 0) {
+		return materialName;
+	}
+
+	return `${materialName} (${uniqueLabels.join(', ')})`;
+}
 
 function clampColorChannel(value: number): number {
 	return Math.min(1, Math.max(0, value));
@@ -438,7 +448,7 @@ export function parseWindowTint(
 }
 
 function shouldHighlightPart(request: string): boolean {
-	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(
+	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(
 		request
 	);
 }
@@ -453,12 +463,23 @@ function shouldPaintBody(request: string): boolean {
 	);
 }
 
+function isLightingGlowRequest(request: string): boolean {
+	return (
+		/\b(headlight|headlights|taillight|taillights|rear light|rear lights|brake light|brake lights)\b/i.test(
+			request
+		) &&
+		/\b(turn on|turn off|on|off|enable|enabled|disable|disabled|glow|glowing|lit|light up|without|remove|plain)\b/i.test(
+			request
+		)
+	);
+}
+
 export function isVehicleEditRequest(request: string): boolean {
 	return (
 		shouldHighlightPart(request) ||
 		shouldTintWindows(request) ||
 		shouldPaintBody(request) ||
-		/\b(headlight|headlights|wireframe|xray|x-ray|uv|uvs|uv debug|uv_debug|postprocess|post-processing)\b/i.test(
+		/\b(headlight|headlights|taillight|taillights|rear light|rear lights|brake light|brake lights|wireframe|xray|x-ray|uv|uvs|uv debug|uv_debug|postprocess|post-processing)\b/i.test(
 			request
 		)
 	);
@@ -467,7 +488,7 @@ export function isVehicleEditRequest(request: string): boolean {
 function extractHighlightQuery(request: string): string {
 	return request
 		.replace(
-			/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/gi,
+			/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/gi,
 			' '
 		)
 		.replace(/\b(the|a|an|please|car|vehicle|part|parts)\b/gi, ' ')
@@ -569,14 +590,13 @@ async function validatePlannedOperations(
 async function inferHeadlightMaterials(
 	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>
 ) {
-	const semanticMatches = await listSemanticMaterialsByTags(
-		capabilities.assetId,
-		capabilities.generatedAt,
-		['left_headlight', 'right_headlight']
-	);
+	const semanticMatches = await inferSemanticLightingMaterials(capabilities, {
+		tagQueries: [['left_headlight', 'right_headlight']],
+		groupQueries: ['headlights', 'headlight', 'front lighting', 'front lights'],
+		partQueries: ['headlights', 'headlight', 'front light', 'front lights']
+	});
 	if (semanticMatches.length > 0) {
-		const semanticIds = new Set(semanticMatches.map((material) => material.targetId));
-		return capabilities.materials.filter((material) => semanticIds.has(material.id));
+		return semanticMatches;
 	}
 
 	return capabilities.materials.filter((material) => {
@@ -594,6 +614,14 @@ async function inferHeadlightMaterials(
 async function inferTaillightMaterials(
 	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>
 ) {
+	const semanticMatches = await inferSemanticLightingMaterials(capabilities, {
+		groupQueries: ['taillights', 'taillight', 'rear lighting', 'rear lights', 'brake lights'],
+		partQueries: ['taillights', 'taillight', 'rear light', 'rear lights', 'brake light']
+	});
+	if (semanticMatches.length > 0) {
+		return semanticMatches;
+	}
+
 	return capabilities.materials.filter((material) => {
 		const name = material.name.toLowerCase();
 		return (
@@ -607,6 +635,88 @@ async function inferTaillightMaterials(
 			name.includes('rear light')
 		);
 	});
+}
+
+type SemanticLightingMaterialResolution = {
+	tagQueries?: Array<['left_headlight', 'right_headlight']>;
+	groupQueries?: string[];
+	partQueries?: string[];
+};
+
+async function inferSemanticLightingMaterials(
+	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>,
+	resolution: SemanticLightingMaterialResolution
+) {
+	const matchedMaterialIds = new Set<string>();
+	const meshIdsByNodeId = new Map<string, string>();
+	for (const candidate of capabilities.controlCandidates) {
+		if (!candidate.meshId) {
+			continue;
+		}
+
+		meshIdsByNodeId.set(candidate.nodeId, candidate.meshId);
+	}
+
+	const includeSemanticTarget = (
+		target: Pick<VehicleSemanticPartUnit | VehicleSemanticGroup, 'materialIds' | 'meshIds' | 'nodeIds'>
+	) => {
+		for (const materialId of target.materialIds) {
+			matchedMaterialIds.add(materialId);
+		}
+
+		const matchedMeshIds = new Set(target.meshIds);
+		for (const nodeId of target.nodeIds) {
+			const meshId = meshIdsByNodeId.get(nodeId);
+			if (meshId) {
+				matchedMeshIds.add(meshId);
+			}
+		}
+
+		if (matchedMeshIds.size === 0) {
+			return;
+		}
+
+		for (const material of capabilities.materials) {
+			if (material.meshIds.some((meshId) => matchedMeshIds.has(meshId))) {
+				matchedMaterialIds.add(material.id);
+			}
+		}
+	};
+
+	for (const tags of resolution.tagQueries ?? []) {
+		const semanticMaterials = await listSemanticMaterialsByTags(
+			capabilities.assetId,
+			capabilities.generatedAt,
+			tags
+		);
+		for (const material of semanticMaterials) {
+			matchedMaterialIds.add(material.targetId);
+		}
+	}
+
+	for (const query of resolution.groupQueries ?? []) {
+		const groups = await listSemanticGroupsByQuery(
+			capabilities.assetId,
+			capabilities.generatedAt,
+			query
+		);
+		for (const group of groups) {
+			includeSemanticTarget(group);
+		}
+	}
+
+	for (const query of resolution.partQueries ?? []) {
+		const parts = await listSemanticPartsByQuery(
+			capabilities.assetId,
+			capabilities.generatedAt,
+			query
+		);
+		for (const part of parts) {
+			includeSemanticTarget(part);
+		}
+	}
+
+	return capabilities.materials.filter((material) => matchedMaterialIds.has(material.id));
 }
 
 function mergePatchOperations(
@@ -837,7 +947,7 @@ export async function planVehiclePartIntent(
 			.map((material) => ({
 				targetType: 'material' as const,
 				targetId: material.id,
-				targetName: material.name,
+				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
 				op: 'set_overlay_highlight' as const,
 				value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
 			}));
@@ -858,7 +968,7 @@ export async function planVehiclePartIntent(
 			.map((material) => ({
 				targetType: 'material' as const,
 				targetId: material.id,
-				targetName: material.name,
+				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
 				op: 'set_overlay_highlight' as const,
 				value: ISOLATE_HIGHLIGHT_FACTOR
 			}));
@@ -871,7 +981,7 @@ export async function planVehiclePartIntent(
 			.map((material) => ({
 				targetType: 'material' as const,
 				targetId: material.id,
-				targetName: material.name,
+				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
 				op: 'set_alpha' as const,
 				value: REMOVE_PART_ALPHA
 			}));
@@ -892,12 +1002,12 @@ export async function planVehiclePartIntent(
 		operations,
 		summary:
 			mode === 'highlight'
-				? `Matched ${matchedEntities.length} semantic grouping(s) for highlight.`
+				? `Highlighted ${matchedPartLabels.join(', ')}.`
 				: mode === 'isolate'
-					? `Isolated ${matchedEntities.length} semantic grouping(s).`
+					? `Isolated ${matchedPartLabels.join(', ')}.`
 					: mode === 'remove'
-						? `Removed ${matchedEntities.length} semantic grouping(s) by reducing matched-part alpha.`
-						: `Matched ${matchedEntities.length} semantic grouping(s) for ${mode}.`
+						? `Removed ${matchedPartLabels.join(', ')} by reducing matched-part alpha.`
+						: `Matched ${matchedPartLabels.join(', ')} for ${mode}.`
 	};
 }
 
@@ -958,6 +1068,25 @@ export async function planVehicleEditOperations(
 				targetName: material.name,
 				op: 'set_emissive_factor',
 				value: disable ? [0, 0, 0] : HEADLIGHT_ON_EMISSIVE
+			});
+		}
+	}
+
+	if (
+		requestText.includes('taillight') ||
+		requestText.includes('taillights') ||
+		requestText.includes('rear light') ||
+		requestText.includes('rear lights') ||
+		requestText.includes('brake light') ||
+		requestText.includes('brake lights')
+	) {
+		for (const material of await inferTaillightMaterials(capabilities)) {
+			operations.push({
+				targetType: 'material',
+				targetId: material.id,
+				targetName: material.name,
+				op: 'set_emissive_factor',
+				value: disable ? [0, 0, 0] : TAILLIGHT_ON_EMISSIVE
 			});
 		}
 	}
@@ -1152,7 +1281,7 @@ export async function resolveVehicleIntent(
 	let matchedIntent = false;
 	const semanticPartMode = inferPartIntentMode(trimmedRequest);
 
-	if (shouldHighlightPart(trimmedRequest)) {
+	if (shouldHighlightPart(trimmedRequest) && !isLightingGlowRequest(trimmedRequest)) {
 		matchedIntent = true;
 		const query = extractHighlightQuery(trimmedRequest);
 		if (semanticPartMode === 'highlight') {

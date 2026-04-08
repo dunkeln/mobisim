@@ -1,19 +1,21 @@
 <script lang="ts">
-	import { get } from 'svelte/store';
 	import { ArrowUp } from 'lucide-svelte';
 	import { page } from '$app/state';
 	import { toast } from '$lib/components/ui/sonner';
-	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
-	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 	import { resolveVehicleAssetId } from '$lib/vehicles/catalog';
 	import type {
-		FooterChatMessage as ChatMessage,
-		FooterChatPresentationContext,
-		FooterChatPresentationTarget,
-		FooterChatViewerMode,
 		FooterChatResponse as ChatResponse
 	} from '$lib/server/connectors/openai-chat/types';
-	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
+	import {
+		applyChatResponse,
+		beginFooterResponseCycle,
+		getPresentationContext,
+		getSidebarContext,
+		getSupplementaryListContext,
+		getSelectedNodeContext,
+		handleLocalChatCommand,
+		isChatResponse
+	} from '$lib/components/chat/footer-chat-client';
 
 	type ChatErrorResponse = {
 		error?: string;
@@ -22,109 +24,8 @@
 	let pending = $state(false);
 	let draft = $state('');
 	const assetId = $derived.by(() => resolveVehicleAssetId(page.url.searchParams.get('asset')));
-	const selectedNodes = $derived(
-		$vehicleNodeSelection.filter((selection) => selection.assetId === assetId)
-	);
 
 	const canSend = $derived(draft.trim().length > 0 && !pending);
-
-	function isChatResponse(payload: ChatResponse | ChatErrorResponse): payload is ChatResponse {
-		return 'message' in payload && 'model' in payload;
-	}
-
-	function isUndoRequest(content: string): boolean {
-		return /\b(undo|revert|go back|step back)\b/i.test(content.trim());
-	}
-
-	function isRedoRequest(content: string): boolean {
-		return /\b(redo|reapply|do that again)\b/i.test(content.trim());
-	}
-
-	function isResetRequest(content: string): boolean {
-		return /^(reset|reset (the )?(car|vehicle|view|changes)|undo all|revert all|clear changes|start over)$/i.test(
-			content.trim()
-		);
-	}
-
-	function isClearHighlightRequest(content: string): boolean {
-		return /^(clear|remove|undo|reset) (the )?(highlight|highlights)$/i.test(content.trim());
-	}
-
-	function describeIntentLabel(label: string | null | undefined, fallback: string): string {
-		const normalized = label?.trim();
-		return normalized && normalized.length > 0 ? normalized : fallback;
-	}
-
-	function summarizeTargets(
-		operations: VehicleInspectionPatchOperation[],
-		includeOperation = false
-	): FooterChatPresentationTarget[] {
-		const seenKeys: string[] = [];
-		const targets: FooterChatPresentationTarget[] = [];
-
-		for (const operation of operations) {
-			const key = `${operation.targetId}:${operation.op}`;
-			if (seenKeys.includes(key)) {
-				continue;
-			}
-
-			seenKeys.push(key);
-			targets.push({
-				targetId: operation.targetId,
-				targetName: operation.targetName,
-				operation: includeOperation ? operation.op : undefined
-			});
-		}
-
-		return targets;
-	}
-
-	function getPresentationContext(): FooterChatPresentationContext | undefined {
-		if (!assetId) {
-			return undefined;
-		}
-
-		const patchState = get(vehiclePatchState);
-		if (patchState.assetId !== assetId) {
-			return undefined;
-		}
-
-		const viewerModes: FooterChatViewerMode[] = patchState.presentation.viewerOperations
-			.filter(
-				(operation) =>
-					operation.op === 'set_enabled' &&
-					operation.value === true &&
-					(operation.targetId === 'wireframe' ||
-						operation.targetId === 'xray' ||
-						operation.targetId === 'uv_debug' ||
-						operation.targetId === 'postprocess')
-			)
-			.map((operation) => operation.targetId as FooterChatViewerMode);
-
-		const hiddenTargets = patchState.presentation.nodeVisibilityOperations.filter(
-			(operation) => operation.op === 'set_visibility' && operation.value === false
-		);
-
-		const context: FooterChatPresentationContext = {
-			activeIntentLabel: patchState.intentLabel ?? undefined,
-			highlightedTargets: summarizeTargets(patchState.presentation.highlightOperations),
-			materialTargets: summarizeTargets(patchState.presentation.materialOperations, true),
-			hiddenTargets: summarizeTargets(hiddenTargets),
-			viewerModes
-		};
-
-		if (
-			!context.activeIntentLabel &&
-			(context.highlightedTargets?.length ?? 0) === 0 &&
-			(context.materialTargets?.length ?? 0) === 0 &&
-			(context.hiddenTargets?.length ?? 0) === 0 &&
-			(context.viewerModes?.length ?? 0) === 0
-		) {
-			return undefined;
-		}
-
-		return context;
-	}
 
 	function handleKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Enter' || event.shiftKey) {
@@ -144,74 +45,8 @@
 			return;
 		}
 
-		if (isUndoRequest(content)) {
-			const previousState = get(vehiclePatchState);
-			const didUndo = vehiclePatchState.undo(assetId);
-			const nextState = get(vehiclePatchState);
-			const undoneLabel = describeIntentLabel(previousState.intentLabel, 'the last vehicle change');
-			const restoredLabel = describeIntentLabel(
-				nextState.intentLabel,
-				'the previous vehicle state'
-			);
-			const assistantMessage: ChatMessage = {
-				role: 'assistant',
-				content: didUndo
-					? `Undid ${undoneLabel} and restored ${restoredLabel}.`
-					: 'There is no vehicle change to undo.'
-			};
+		if (handleLocalChatCommand(content, assetId)) {
 			draft = '';
-			toast.success(didUndo ? 'Undo applied' : 'Nothing to undo', {
-				description: assistantMessage.content
-			});
-			return;
-		}
-
-		if (isRedoRequest(content)) {
-			const previousState = get(vehiclePatchState);
-			const didRedo = vehiclePatchState.redo(assetId);
-			const nextState = get(vehiclePatchState);
-			const redoneLabel = describeIntentLabel(
-				nextState.intentLabel,
-				previousState.intentLabel ?? 'the last undone change'
-			);
-			const assistantMessage: ChatMessage = {
-				role: 'assistant',
-				content: didRedo ? `Reapplied ${redoneLabel}.` : 'There is no vehicle change to redo.'
-			};
-			draft = '';
-			toast.success(didRedo ? 'Redo applied' : 'Nothing to redo', {
-				description: assistantMessage.content
-			});
-			return;
-		}
-
-		if (isResetRequest(content)) {
-			const didReset = vehiclePatchState.reset(assetId);
-			const assistantMessage: ChatMessage = {
-				role: 'assistant',
-				content: didReset
-					? 'Reset the vehicle to its original GLB state.'
-					: 'There are no vehicle changes to reset.'
-			};
-			draft = '';
-			toast.success(didReset ? 'Vehicle reset' : 'Nothing to reset', {
-				description: assistantMessage.content
-			});
-			return;
-		}
-
-		if (isClearHighlightRequest(content)) {
-			const didClear = vehiclePatchState.clearHighlights(assetId);
-			const assistantMessage: ChatMessage = {
-				role: 'assistant',
-				content: didClear
-					? 'Cleared the active highlight overlays.'
-					: 'There are no highlight overlays to clear.'
-			};
-			draft = '';
-			toast.success(didClear ? 'Highlights cleared' : 'No highlights to clear', {
-				description: assistantMessage.content
-			});
 			return;
 		}
 
@@ -219,7 +54,11 @@
 		pending = true;
 
 		try {
-			const presentation = getPresentationContext();
+			const selectedNodeContext = getSelectedNodeContext(assetId);
+			const presentationContext = getPresentationContext(assetId);
+			const sidebarContext = getSidebarContext();
+			const supplementaryListContext = getSupplementaryListContext();
+			beginFooterResponseCycle();
 			const response = await fetch('/api/chat', {
 				method: 'POST',
 				headers: {
@@ -227,12 +66,10 @@
 				},
 				body: JSON.stringify({
 					message: content,
-					assetId,
-					selectedNodeId: selectedNodes[0]?.nodeId,
-					selectedNodeName: selectedNodes[0]?.nodeName,
-					selectedNodePath: selectedNodes[0]?.nodePath,
-					selectedNodes,
-					presentation
+					...selectedNodeContext,
+					presentation: presentationContext,
+					sidebar: sidebarContext,
+					supplementaryList: supplementaryListContext
 				})
 			});
 
@@ -246,30 +83,7 @@
 				throw new Error('Chat request failed.');
 			}
 
-			if (payload.vehiclePatchOperations && payload.vehiclePatchOperations.length > 0) {
-				const targetAssetId = payload.vehiclePatchAssetId;
-
-				if (targetAssetId && targetAssetId === assetId) {
-					vehiclePatchState.queue(
-						targetAssetId,
-						payload.vehiclePatchOperations,
-						payload.vehiclePatchLabel ?? payload.message.content
-					);
-				} else {
-					throw new Error('Chat returned patch operations for a different vehicle asset.');
-				}
-			}
-
-			if (payload.presentationRestore) {
-				const didRestore = vehiclePatchState.restore(assetId, payload.presentationRestore);
-				if (!didRestore && !payload.vehiclePatchOperations?.length) {
-					throw new Error('No active vehicle presentation matched the restore request.');
-				}
-			}
-
-			if (payload.selectionUpdate?.mode === 'replace') {
-				vehicleNodeSelection.replace(assetId, payload.selectionUpdate.selectedNodes);
-			}
+			applyChatResponse(payload, assetId);
 			toast.success('Message sent', {
 				description: payload.message.content
 			});

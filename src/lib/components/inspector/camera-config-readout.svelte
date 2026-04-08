@@ -18,14 +18,14 @@
 	]}
 >
 	{#if config}
-		<div class="flex flex-wrap items-center gap-2 text-[0.68rem]">
-			<Axis3D class="h-4 w-4 shrink-0 text-boundary-text/58" />
+		<div class="flex flex-wrap items-center gap-2 text-[0.76rem]">
+			<Axis3D class="h-[1.05rem] w-[1.05rem] shrink-0 text-boundary-text/58" />
 			<span class={moving ? 'text-boundary-secondary' : 'text-boundary-text/72'}>
 				{config.azimuthDegrees.toFixed(1)}&deg; &middot; {config.elevationDegrees.toFixed(1)}&deg;
 				&middot; {config.distance.toFixed(2)} units
 			</span>
 		</div>
 	{:else}
-		<p class="text-xs text-shell-subtle">Waiting for viewport camera sync.</p>
+		<p class="text-[0.76rem] text-shell-subtle">Waiting for viewport camera sync.</p>
 	{/if}
 </section>

@@ -52,6 +52,21 @@ export function resolveSemanticProposalsPath(
 	return path.join(resolveSemanticProposalsDirectory(assetId), `${structuralGeneratedAt}.json`);
 }
 
+export function resolveSemanticIngressDirectory(assetId: VehicleAssetId): string {
+	return path.resolve(resolveSemanticIngressRootDirectory(), assetId);
+}
+
+export function resolveSemanticIngressRootDirectory(): string {
+	return path.resolve(resolveSemanticStorageRoot(), 'semantic-ingress');
+}
+
+export function resolveSemanticIngressPath(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string
+): string {
+	return path.join(resolveSemanticIngressDirectory(assetId), `${structuralGeneratedAt}.json`);
+}
+
 export function resolveVersionedSemanticOverlayPath(
 	assetId: VehicleAssetId,
 	structuralGeneratedAt: string

@@ -10,6 +10,18 @@
 	 */
 
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { resolveVehicleAssetId } from '$lib/vehicles/catalog';
+	import { toast } from '$lib/components/ui/sonner';
+	import {
+		applyChatResponse,
+		beginFooterResponseCycle,
+		getPresentationContext,
+		getSidebarContext,
+		getSupplementaryListContext,
+		getSelectedNodeContext
+	} from '$lib/components/chat/footer-chat-client';
+	import type { FooterChatAudioResponse } from '$lib/server/connectors/openai-chat/types';
 	import * as THREE from 'three';
 
 	type OrbMode = 'idle' | 'listening' | 'processing' | 'responding';
@@ -23,6 +35,299 @@
 	let { mode = 'idle', amplitude = 0, class: className = '' }: Props = $props();
 
 	let canvas: HTMLCanvasElement | undefined = $state();
+	let audioElement: HTMLAudioElement | null = null;
+	let mediaRecorder: MediaRecorder | null = $state(null);
+	let mediaStream: MediaStream | null = $state(null);
+	let recorderChunks: BlobPart[] = [];
+	let activeMode = $state<OrbMode>('idle');
+	let activeAmplitude = $state(0);
+	let busy = $state(false);
+	const assetId = $derived.by(() => resolveVehicleAssetId(page.url.searchParams.get('asset')));
+
+	const RECORDER_MIME_CANDIDATES = [
+		'audio/webm;codecs=opus',
+		'audio/webm',
+		'audio/mp4;codecs=mp4a.40.2',
+		'audio/mp4'
+	] as const;
+
+	$effect(() => {
+		if (!busy && mediaRecorder?.state !== 'recording' && !audioElement) {
+			activeMode = mode;
+			activeAmplitude = amplitude;
+		}
+	});
+
+	function syncVisuals(nextMode: OrbMode, nextAmplitude: number): void {
+		activeMode = nextMode;
+		activeAmplitude = nextAmplitude;
+	}
+
+	function stopRecorderStream(): void {
+		mediaStream?.getTracks().forEach((track) => track.stop());
+		mediaStream = null;
+	}
+
+	function resetOrbState(): void {
+		busy = false;
+		syncVisuals(mode, amplitude);
+	}
+
+	function isTrustedLocalOrigin(hostname: string): boolean {
+		return (
+			hostname === 'localhost' ||
+			hostname === '127.0.0.1' ||
+			hostname === '[::1]' ||
+			hostname.endsWith('.localhost')
+		);
+	}
+
+	function getVoiceInputUnavailableReason(): string | null {
+		if (typeof window === 'undefined') {
+			return 'Voice input is only available in the browser.';
+		}
+
+		if (!window.isSecureContext && !isTrustedLocalOrigin(window.location.hostname)) {
+			return 'Microphone capture requires HTTPS or localhost. Local-network HTTP on iPad will be blocked.';
+		}
+
+		if (!navigator.mediaDevices?.getUserMedia) {
+			return 'This browser context does not expose microphone capture.';
+		}
+
+		if (typeof MediaRecorder === 'undefined') {
+			return 'Microphone permission is available, but recording is not supported in this browser.';
+		}
+
+		return null;
+	}
+
+	function selectRecorderMimeType(): string | undefined {
+		if (typeof MediaRecorder === 'undefined') {
+			return undefined;
+		}
+
+		for (const mimeType of RECORDER_MIME_CANDIDATES) {
+			if (MediaRecorder.isTypeSupported(mimeType)) {
+				return mimeType;
+			}
+		}
+
+		return undefined;
+	}
+
+	function estimateResponseIntensity(content: string): number {
+		const normalized = content.trim();
+		if (!normalized) {
+			return 0.58;
+		}
+
+		const exclamationCount = (normalized.match(/!/g) ?? []).length;
+		const emphaticWordCount = (
+			normalized.match(
+				/\b(certainly|clearly|definitely|precisely|exactly|fully|complete|done|applied|updated|resolved|confirmed|ready)\b/gi
+			) ?? []
+		).length;
+		const hedgeWordCount = (
+			normalized.match(/\b(maybe|might|perhaps|possibly|should|could|likely|seems?)\b/gi) ?? []
+		).length;
+		const sentenceCount = Math.max(1, normalized.split(/[.!?]+/).filter(Boolean).length);
+		const averageSentenceLength = normalized.length / sentenceCount;
+
+		const intensity =
+			0.58 +
+			Math.min(exclamationCount, 2) * 0.08 +
+			Math.min(emphaticWordCount, 3) * 0.07 +
+			Math.min(averageSentenceLength / 120, 0.12) -
+			Math.min(hedgeWordCount, 3) * 0.08;
+
+		return THREE.MathUtils.clamp(intensity, 0.42, 0.96);
+	}
+
+	async function blobToFile(blob: Blob): Promise<File> {
+		const mimeType = blob.type || 'application/octet-stream';
+		const extension = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('wav') ? 'wav' : 'webm';
+		return new File([blob], `footer-orb.${extension}`, {
+			type: mimeType
+		});
+	}
+
+	async function playReplyAudio(payload: FooterChatAudioResponse): Promise<void> {
+		if (!payload.audioBase64 || !payload.audioMimeType) {
+			resetOrbState();
+			return;
+		}
+
+		const binary = atob(payload.audioBase64);
+		const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+		const audioBlob = new Blob([bytes], { type: payload.audioMimeType });
+		const audioUrl = URL.createObjectURL(audioBlob);
+
+		audioElement?.pause();
+		if (audioElement?.src) {
+			URL.revokeObjectURL(audioElement.src);
+		}
+
+		audioElement = new Audio(audioUrl);
+		audioElement.onended = () => {
+			URL.revokeObjectURL(audioUrl);
+			audioElement = null;
+			resetOrbState();
+		};
+		audioElement.onerror = () => {
+			URL.revokeObjectURL(audioUrl);
+			audioElement = null;
+			resetOrbState();
+		};
+
+		syncVisuals('responding', estimateResponseIntensity(payload.chat.message.content));
+		await audioElement.play();
+	}
+
+	async function sendAudioMessage(audioBlob: Blob): Promise<void> {
+		const file = await blobToFile(audioBlob);
+		const selectedNodeContext = getSelectedNodeContext(assetId);
+		const presentation = getPresentationContext(assetId);
+		const sidebarContext = getSidebarContext();
+		const supplementaryListContext = getSupplementaryListContext();
+		beginFooterResponseCycle();
+		const formData = new FormData();
+		formData.set('audio', file);
+		if (assetId) {
+			formData.set('assetId', assetId);
+		}
+		if (selectedNodeContext.selectedNodeId) {
+			formData.set('selectedNodeId', selectedNodeContext.selectedNodeId);
+		}
+		if (selectedNodeContext.selectedNodeName) {
+			formData.set('selectedNodeName', selectedNodeContext.selectedNodeName);
+		}
+		if (selectedNodeContext.selectedNodePath) {
+			formData.set('selectedNodePath', selectedNodeContext.selectedNodePath);
+		}
+		formData.set('selectedNodes', JSON.stringify(selectedNodeContext.selectedNodes));
+		if (presentation) {
+			formData.set('presentation', JSON.stringify(presentation));
+		}
+		formData.set('sidebar', JSON.stringify(sidebarContext));
+		formData.set('supplementaryList', JSON.stringify(supplementaryListContext));
+
+		syncVisuals('processing', 0.35);
+
+		const response = await fetch('/api/chat/audio', {
+			method: 'POST',
+			body: formData
+		});
+		const payload = (await response.json()) as FooterChatAudioResponse | { error?: string };
+
+		if (!response.ok || !('chat' in payload)) {
+			throw new Error(
+				'error' in payload
+					? payload.error || 'Audio chat request failed.'
+					: 'Audio chat request failed.'
+			);
+		}
+
+		applyChatResponse(payload.chat, assetId);
+		toast.success('Voice request sent', {
+			description: `${payload.transcript} -> ${payload.chat.message.content}`
+		});
+		await playReplyAudio(payload);
+	}
+
+	async function stopListening(): Promise<void> {
+		if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+			return;
+		}
+
+		syncVisuals('processing', 0.3);
+		mediaRecorder.stop();
+	}
+
+	async function startListening(): Promise<void> {
+		if (busy) {
+			return;
+		}
+
+		const unavailableReason = getVoiceInputUnavailableReason();
+		if (unavailableReason) {
+			toast.error('Voice input unavailable', {
+				description: unavailableReason
+			});
+			return;
+		}
+
+		busy = true;
+
+		try {
+			mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			recorderChunks = [];
+			const recorderMimeType = selectRecorderMimeType();
+			mediaRecorder = recorderMimeType
+				? new MediaRecorder(mediaStream, { mimeType: recorderMimeType })
+				: new MediaRecorder(mediaStream);
+			mediaRecorder.ondataavailable = (event) => {
+				if (event.data.size > 0) {
+					recorderChunks = [...recorderChunks, event.data];
+				}
+			};
+			mediaRecorder.onerror = () => {
+				stopRecorderStream();
+				resetOrbState();
+				toast.error('Voice capture failed', {
+					description: 'Microphone capture stopped unexpectedly.'
+				});
+			};
+			mediaRecorder.onstop = async () => {
+				const recordedBlob = new Blob(recorderChunks, {
+					type: mediaRecorder?.mimeType || 'audio/webm'
+				});
+				stopRecorderStream();
+				mediaRecorder = null;
+				recorderChunks = [];
+
+				try {
+					await sendAudioMessage(recordedBlob);
+				} catch (error) {
+					resetOrbState();
+					const resolvedError =
+						error instanceof Error ? error.message : 'Unable to process the voice request.';
+					toast.error('Voice request failed', {
+						description: resolvedError
+					});
+				}
+			};
+			mediaRecorder.start();
+			syncVisuals('listening', 0.6);
+		} catch (error) {
+			stopRecorderStream();
+			resetOrbState();
+			const resolvedError =
+				error instanceof DOMException && error.name === 'NotAllowedError'
+					? 'Microphone permission was denied for this site.'
+					: error instanceof DOMException && error.name === 'NotSupportedError'
+						? 'This browser granted the microphone but could not start a supported recording format.'
+						: error instanceof Error
+							? error.message
+							: 'Microphone capture could not be started.';
+			toast.error('Voice input unavailable', {
+				description: resolvedError
+			});
+		}
+	}
+
+	async function toggleListening(): Promise<void> {
+		if (mediaRecorder?.state === 'recording') {
+			await stopListening();
+			return;
+		}
+
+		if (busy) {
+			return;
+		}
+
+		await startListening();
+	}
 
 	// Secondary: hsl(34 75% 73%) ≈ #EBBE7A
 	const SEC = new THREE.Color(0xebbe7a);
@@ -113,7 +418,8 @@
 		const mat = new THREE.LineBasicMaterial({
 			vertexColors: true,
 			transparent: true,
-			opacity: 0.5
+			opacity: 0.5,
+			linewidth: 1.35
 		});
 
 		edgesGeo.dispose();
@@ -226,7 +532,7 @@
 		}
 		baseGeo.dispose();
 
-		const OUTER_R = 0.90;
+		const OUTER_R = 0.9;
 		const INNER_R = 0.87;
 
 		const spokePts: number[] = [];
@@ -242,20 +548,20 @@
 		const spokeMat = new THREE.LineBasicMaterial({
 			color: SEC_BRIGHT,
 			transparent: true,
-			opacity: 0.18
+			opacity: 0.25
 		});
 		const spokeLines = new THREE.LineSegments(spokeGeo, spokeMat);
 		// Spokes co-rotate with the outer net
 		outerLines.add(spokeLines);
 
 		// ── Core ─────────────────────────────────────────────────
-		const coreGeo = new THREE.SphereGeometry(0.065, 16, 16);
+		const coreGeo = new THREE.SphereGeometry(0.54, 16, 16);
 		const coreMat = new THREE.MeshPhongMaterial({
 			color: 0xffffff,
 			emissive: 0xffeecc,
-			emissiveIntensity: 3.5,
+			emissiveIntensity: 2.8,
 			transparent: true,
-			opacity: 0.95
+			opacity: 0.88
 		});
 		const coreMesh = new THREE.Mesh(coreGeo, coreMat);
 		scene.add(coreMesh);
@@ -263,17 +569,52 @@
 		// ── Animation loop ───────────────────────────────────────
 		const clock = new THREE.Clock();
 		let raf: number;
+		let smoothedAmplitude = 0;
+		let idleWeight = 1;
+		let listeningWeight = 0;
+		let processingWeight = 0;
+		let respondingWeight = 0;
 
 		function animate() {
 			raf = requestAnimationFrame(animate);
-			const t = clock.getElapsedTime();
-			const m = mode;
-			const a = Math.min(1, Math.max(0, amplitude));
+			const delta = Math.min(clock.getDelta(), 0.05);
+			const t = clock.elapsedTime;
+			const m = activeMode;
+			const targetAmplitude = Math.min(1, Math.max(0, activeAmplitude));
+			smoothedAmplitude = THREE.MathUtils.damp(smoothedAmplitude, targetAmplitude, 5.4, delta);
+			const a = smoothedAmplitude;
+
+			idleWeight = THREE.MathUtils.damp(idleWeight, m === 'idle' ? 1 : 0, 7.5, delta);
+			listeningWeight = THREE.MathUtils.damp(
+				listeningWeight,
+				m === 'listening' ? 1 : 0,
+				7.5,
+				delta
+			);
+			processingWeight = THREE.MathUtils.damp(
+				processingWeight,
+				m === 'processing' ? 1 : 0,
+				7.5,
+				delta
+			);
+			respondingWeight = THREE.MathUtils.damp(
+				respondingWeight,
+				m === 'responding' ? 1 : 0,
+				6.25,
+				delta
+			);
 
 			// Rotation
 			const outerSpeed =
-				m === 'idle' ? 0.07 : m === 'listening' ? 0.22 : m === 'processing' ? 0.3 : 0.16;
-			const innerSpeed = m === 'idle' ? 0.1 : 0.28;
+				idleWeight * 0.07 +
+				listeningWeight * 0.22 +
+				processingWeight * 0.3 +
+				respondingWeight * (0.16 + a * 0.035);
+			const innerSpeed =
+				idleWeight * 0.1 +
+				listeningWeight * 0.28 +
+				processingWeight * 0.28 +
+				respondingWeight * (0.2 + a * 0.04);
 
 			outerLines.rotation.y = t * outerSpeed;
 			outerLines.rotation.x = t * outerSpeed * 0.38;
@@ -282,16 +623,16 @@
 
 			// Heartbeat parameters
 			const heartFreq =
-				m === 'idle' ? 0.65 : m === 'listening' ? 1.9 : m === 'processing' ? 3.5 : 1.4 + a * 3.2;
+				idleWeight * 0.65 +
+				listeningWeight * 1.9 +
+				processingWeight * 3.5 +
+				respondingWeight * (1.4 + a * 3.2);
 
 			const heartDepth =
-				m === 'idle'
-					? 0.016
-					: m === 'listening'
-						? 0.04
-						: m === 'processing'
-							? 0.03
-							: 0.024 + a * 0.095;
+				idleWeight * 0.016 +
+				listeningWeight * 0.04 +
+				processingWeight * 0.03 +
+				respondingWeight * (0.024 + a * 0.095);
 
 			// Deform outer net vertices
 			deformNet(outerPosBuf, outerVertToSrc, outerOrigSrc, t, heartFreq, heartDepth);
@@ -320,35 +661,42 @@
 
 			// Material opacity by mode
 			outerMat.opacity =
-				m === 'idle'
-					? 0.38
-					: m === 'listening'
-						? 0.72
-						: m === 'processing'
-							? 0.55
-							: 0.45 + a * 0.35;
+				idleWeight * 0.38 +
+				listeningWeight * 0.72 +
+				processingWeight * 0.55 +
+				respondingWeight * (0.45 + a * 0.35);
 
-			innerMat.opacity = m === 'idle' ? 0.2 : 0.25 + a * 0.22;
+			innerMat.opacity =
+				idleWeight * 0.2 +
+				listeningWeight * 0.382 +
+				processingWeight * 0.316 +
+				respondingWeight * (0.25 + a * 0.22);
 
-			spokeMat.opacity = m === 'idle' ? 0.11 : 0.16 + a * 0.32;
+			spokeMat.opacity =
+				idleWeight * 0.11 +
+				listeningWeight * 0.352 +
+				processingWeight * 0.256 +
+				respondingWeight * (0.16 + a * 0.32);
 
-			volMat.opacity = m === 'idle' ? 0.03 : 0.05 + a * 0.08;
+			volMat.opacity =
+				idleWeight * 0.03 +
+				listeningWeight * 0.098 +
+				processingWeight * 0.074 +
+				respondingWeight * (0.05 + a * 0.08);
 
-			// Core pulse
-			const coreScale =
-				m === 'idle'
-					? 1 + Math.sin(t * 0.85) * 0.18
-					: m === 'listening'
-						? 1 + Math.sin(t * 1.9) * 0.28
-						: m === 'processing'
-							? 1 + Math.sin(t * 3.8) * 0.22
-							: 1 + a * 0.65;
-			coreMesh.scale.setScalar(coreScale);
-			coreMat.emissiveIntensity = m === 'idle' ? 2.5 : 3.5 + a * 5.0;
+			// Keep the inner core stable; only the surrounding nets should feel active.
+			coreMesh.scale.setScalar(1);
+			coreMat.emissiveIntensity =
+				idleWeight * 1.95 +
+				listeningWeight * 3.1 +
+				processingWeight * 2.8 +
+				respondingWeight * (2.7 + a * 3.9);
 
 			// Key light breathes with heartbeat
 			keyLight.intensity =
-				m === 'idle' ? 5 + Math.sin(t * 0.7) * 2 : 6 + a * 5 + Math.sin(t * heartFreq * 0.5) * 2;
+				idleWeight * (5 + Math.sin(t * 0.7) * 2) +
+				(listeningWeight + processingWeight + respondingWeight) *
+					(6 + a * 5 + Math.sin(t * heartFreq * 0.5) * 2);
 
 			renderer.render(scene, camera);
 		}
@@ -357,6 +705,12 @@
 
 		return () => {
 			cancelAnimationFrame(raf);
+			audioElement?.pause();
+			if (audioElement?.src) {
+				URL.revokeObjectURL(audioElement.src);
+			}
+			audioElement = null;
+			stopRecorderStream();
 			renderer.dispose();
 			[volGeo, spokeGeo, coreGeo].forEach((g) => g.dispose());
 			[outerLines, innerLines].forEach((ls) => {
@@ -367,15 +721,119 @@
 	});
 </script>
 
-<div class="orb {className}" aria-hidden="true">
-	<canvas bind:this={canvas} class="orb-canvas"></canvas>
-</div>
+<button
+	type="button"
+	class="glass-motion-color glass-motion-transform orb-shell {className}"
+	class:is-active={activeMode !== 'idle'}
+	class:is-busy={busy}
+	onclick={toggleListening}
+	aria-label={mediaRecorder?.state === 'recording' ? 'Stop orb recording' : 'Start orb recording'}
+	aria-pressed={mediaRecorder?.state === 'recording'}
+>
+	<div class="orb">
+		<canvas bind:this={canvas} class="orb-canvas"></canvas>
+	</div>
+</button>
 
 <style>
+	.orb-shell {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.6rem;
+		border-radius: 999px;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		background:
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		backdrop-filter: blur(16px) saturate(106%);
+		-webkit-backdrop-filter: blur(16px) saturate(106%);
+		transition:
+			border-color 160ms ease,
+			background 160ms ease,
+			box-shadow 160ms ease,
+			transform 160ms ease;
+		isolation: isolate;
+	}
+
+	.orb-shell::before {
+		content: '';
+		position: absolute;
+		inset: 1px;
+		border-radius: inherit;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 6%, transparent);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, white 4%, transparent),
+				transparent 18%,
+				transparent 100%
+			),
+			radial-gradient(
+				110% 70% at 18% 0%,
+				color-mix(in srgb, white 3%, transparent),
+				transparent 24%
+			);
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.orb-shell:hover,
+	.orb-shell:focus-visible,
+	.orb-shell.is-busy,
+	.orb-shell.is-active {
+		background:
+			radial-gradient(
+				44% 38% at 24% 18%,
+				color-mix(in srgb, var(--color-boundary-secondary) 10%, transparent),
+				transparent 72%
+			),
+			radial-gradient(
+				34% 32% at 76% 30%,
+				color-mix(in srgb, var(--color-boundary-secondary) 7%, transparent),
+				transparent 78%
+			),
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 5%, transparent), transparent 26%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-secondary) 6%, transparent),
+				color-mix(in srgb, var(--color-boundary-secondary) 2%, transparent) 55%,
+				color-mix(in srgb, var(--color-boundary-text) 1.25%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+			inset 0 0 20px color-mix(in srgb, var(--color-boundary-secondary) 5%, transparent),
+			0 12px 28px color-mix(in srgb, var(--color-boundary-background) 14%, transparent);
+		transform: translateY(-1px);
+	}
+
 	.orb {
+		position: relative;
+		z-index: 1;
 		width: 96px;
 		height: 96px;
 		flex-shrink: 0;
+		border-radius: 999px;
+		background:
+			radial-gradient(
+				circle at 50% 30%,
+				color-mix(in srgb, white 5%, transparent),
+				transparent 52%
+			),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-text) 2%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 0.35%, transparent)
+			);
+		box-shadow: none;
 	}
 
 	.orb-canvas {
