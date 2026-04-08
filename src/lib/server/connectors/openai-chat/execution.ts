@@ -7,11 +7,20 @@ import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import { assignSemanticIngress } from '$lib/server/connectors/semantic-ingress';
 import {
+	createSemanticGroupDefinition,
+	deleteSemanticGroupDefinition,
+	findSemanticGroupDefinition,
+	patchSemanticGroupDefinition
+} from '$lib/server/connectors/semantic-groups';
+import { removeReviewedAssetSemanticAssignments } from '$lib/server/connectors/asset-semantic-assignments';
+import type { SemanticGroupDefinition } from '$lib/server/connectors/semantic-groups/types';
+import {
 	annotateVehicleSemanticGroup,
 	generateVehicleSemanticOverlay,
 	getVehicleSemanticOverlayStatus,
 	mutateVehicleSemanticAssignment,
-	readVehicleSemanticOverlay
+	readVehicleSemanticOverlay,
+	writeVehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay';
 import {
 	planNormalizedVehiclePaintIntent,
@@ -26,6 +35,7 @@ import {
 	APPLY_VEHICLE_APPEARANCE_INTENT_TOOL_NAME,
 	APPLY_VEHICLE_FOCUS_INTENT_TOOL_NAME,
 	GET_VEHICLE_TOOL_CATALOG_TOOL_NAME,
+	MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME,
 	RESTORE_VEHICLE_PRESENTATION_TOOL_NAME,
 	type AssignSemanticIngressToolArgs,
 	type ApplyVehicleAppearanceIntentToolArgs,
@@ -34,6 +44,7 @@ import {
 	type ExpandVehicleSelectionToolArgs,
 	type FooterChatExecutionRoute,
 	type GetVehicleToolCatalogToolArgs,
+	type ManageVehicleSemanticGroupToolArgs,
 	type MutateVehicleSemanticAssignmentToolArgs,
 	type NormalizedFooterChatRequest,
 	type RefreshVehicleSemanticsToolArgs,
@@ -68,6 +79,10 @@ import type {
 } from './types';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { recordSpanError, withActiveSpan } from '$lib/server/telemetry';
+import type {
+	VehicleSemanticGroup,
+	VehicleSemanticOverlay
+} from '$lib/server/connectors/vehicle-semantic-overlay/types';
 
 export const CHAT_TOOLS: ChatCompletionTool[] = [
 	{
@@ -337,6 +352,76 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 	{
 		type: 'function',
 		function: {
+			name: MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME,
+			description:
+				'Create, patch, delete, or get semantic groups and semantic nodes. Use this for explicit semantic group management. Get will resolve a semantic group or node on the active asset and highlight it for inspection.',
+			parameters: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					action: {
+						type: 'string',
+						enum: ['create', 'patch', 'delete', 'get']
+					},
+					targetType: {
+						type: 'string',
+						enum: ['semantic_group', 'semantic_node']
+					},
+					scope: {
+						type: 'string',
+						enum: ['selected', 'highlighted', 'hidden']
+					},
+					query: {
+						type: 'string',
+						description:
+							'Freeform semantic group or node reference such as wheels, body shell, number plate, front lighting, or plate bracket.'
+					},
+					groupId: {
+						type: 'string',
+						description: 'Optional explicit semantic group id.'
+					},
+					nodeId: {
+						type: 'string',
+						description: 'Optional explicit runtime node id when targetType is semantic_node.'
+					},
+					nodeIds: {
+						type: 'array',
+						items: { type: 'string' },
+						description:
+							'Optional explicit runtime node ids to use when creating a semantic group assignment.'
+					},
+					humanLabel: { type: 'string' },
+					aliases: {
+						type: 'array',
+						items: { type: 'string' }
+					},
+					category: {
+						type: 'string',
+						enum: ['wheels', 'doors', 'front_lighting', 'rear_lighting', 'glasshouse', 'body_shell', 'front_face', 'trim', 'interior', 'other']
+					},
+					supports: {
+						type: 'array',
+						items: {
+							type: 'string',
+							enum: ['highlight', 'focus', 'isolate', 'paint', 'tint']
+						}
+					},
+					assignmentMode: {
+						type: 'string',
+						enum: ['exclusive', 'overlay']
+					},
+					exclusiveFamily: {
+						type: ['string', 'null'],
+						description: 'Optional exclusive family. Set null when clearing it during patch.'
+					}
+				},
+				required: ['action']
+			}
+		}
+	},
+	{
+		type: 'function',
+		function: {
 			name: ASSIGN_SEMANTIC_INGRESS_TOOL_NAME,
 			description:
 				'Assign a stable ingress endpoint set to a semantic group or semantic node on the active asset. Use this for endpoint, ingress, stream, feed, or hook requests tied to semantic targets.',
@@ -595,6 +680,54 @@ function parseMutateVehicleSemanticAssignmentToolArgs(
 	};
 }
 
+function parseManageVehicleSemanticGroupToolArgs(
+	input: string
+): ManageVehicleSemanticGroupToolArgs {
+	const parsed = JSON.parse(input) as ManageVehicleSemanticGroupToolArgs;
+	if (!['create', 'patch', 'delete', 'get'].includes(parsed.action)) {
+		throw new OpenAIChatInputError('A valid semantic group management action is required.');
+	}
+
+	return {
+		action: parsed.action,
+		targetType: parsed.targetType === 'semantic_node' ? 'semantic_node' : 'semantic_group',
+		scope:
+			parsed.scope === 'highlighted' || parsed.scope === 'hidden' ? parsed.scope : 'selected',
+		query: typeof parsed.query === 'string' ? parsed.query.trim() || undefined : undefined,
+		groupId: typeof parsed.groupId === 'string' ? parsed.groupId.trim() || undefined : undefined,
+		nodeId: typeof parsed.nodeId === 'string' ? parsed.nodeId.trim() || undefined : undefined,
+		nodeIds: Array.isArray(parsed.nodeIds)
+			? parsed.nodeIds.filter(
+					(value): value is string => typeof value === 'string' && value.trim().length > 0
+			  )
+			: undefined,
+		humanLabel:
+			typeof parsed.humanLabel === 'string' ? parsed.humanLabel.trim() || undefined : undefined,
+		aliases: Array.isArray(parsed.aliases)
+			? parsed.aliases.filter(
+					(value): value is string => typeof value === 'string' && value.trim().length > 0
+			  )
+			: undefined,
+		category: parsed.category,
+		supports: Array.isArray(parsed.supports)
+			? parsed.supports.filter(
+					(value): value is NonNullable<ManageVehicleSemanticGroupToolArgs['supports']>[number] =>
+						['highlight', 'focus', 'isolate', 'paint', 'tint'].includes(value)
+			  )
+			: undefined,
+		assignmentMode:
+			parsed.assignmentMode === 'exclusive' || parsed.assignmentMode === 'overlay'
+				? parsed.assignmentMode
+				: undefined,
+		exclusiveFamily:
+			parsed.exclusiveFamily === null
+				? null
+				: typeof parsed.exclusiveFamily === 'string'
+					? parsed.exclusiveFamily.trim() || undefined
+					: undefined
+	};
+}
+
 function parseAssignSemanticIngressToolArgs(input: string): AssignSemanticIngressToolArgs {
 	const parsed = JSON.parse(input) as AssignSemanticIngressToolArgs;
 	if (
@@ -697,6 +830,19 @@ function buildVehicleToolCatalog(
 			]
 		},
 		{
+			name: MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME,
+			purpose: 'explicit semantic group create, patch, delete, and get operations',
+			useWhen:
+				'the user wants direct semantic group management, wants to delete a wrong semantic group, wants to patch a group definition, or wants to get a semantic group or node and highlight it for inspection',
+			stateInputs: ['active asset for get and delete', 'optional selection or presentation context for create'],
+			examples: [
+				'create a number plate semantic group from the current selection',
+				'patch the body shell semantic group aliases',
+				'delete the number plate semantic group',
+				'get the wheels semantic group'
+			]
+		},
+		{
 			name: REFRESH_VEHICLE_SEMANTICS_TOOL_NAME,
 			purpose: 'refresh semantic overlay cache',
 			useWhen: 'the user explicitly wants semantic refresh, rebuild, regenerate, or reanalysis',
@@ -754,6 +900,125 @@ function buildVehicleToolCatalog(
 		),
 		recommendations
 	};
+}
+
+function normalizeSemanticLookupToken(value: string): string {
+	return value
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+function semanticGroupMatchesReference(
+	group: VehicleSemanticGroup,
+	reference: string
+): boolean {
+	const normalizedReference = normalizeSemanticLookupToken(reference);
+	if (!normalizedReference) {
+		return false;
+	}
+
+	return [group.id, group.humanLabel, group.category, ...group.aliases]
+		.map((value) => normalizeSemanticLookupToken(value))
+		.some(
+			(value) =>
+				value === normalizedReference ||
+				value.includes(normalizedReference) ||
+				normalizedReference.includes(value)
+		);
+}
+
+function nodeMatchesReference(
+	node: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>['nodes'][number],
+	reference: string
+): boolean {
+	const normalizedReference = normalizeSemanticLookupToken(reference);
+	if (!normalizedReference) {
+		return false;
+	}
+
+	return [node.id, node.name, node.path]
+		.map((value) => normalizeSemanticLookupToken(value))
+		.some(
+			(value) =>
+				value === normalizedReference ||
+				value.includes(normalizedReference) ||
+				normalizedReference.includes(value)
+		);
+}
+
+function buildSemanticHighlightOperations(
+	materials: Array<{ id: string; name: string }>,
+	humanLabel: string
+): FooterChatVehiclePatchOperation[] {
+	return materials.map((material) => ({
+		targetType: 'material',
+		targetId: material.id,
+		targetName: `${humanLabel}: ${material.name}`,
+		op: 'set_overlay_highlight',
+		value: [0.58, 0.54, 0.86, 1]
+	}));
+}
+
+function resolveScopedSemanticTargets(input: {
+	activeAssetId: VehicleAssetId;
+	scope: NonNullable<ManageVehicleSemanticGroupToolArgs['scope']>;
+	selectedNodes: VehicleNodeSelection[];
+	presentation?: FooterChatPresentationContext;
+	query?: string;
+}): { nodeIds: string[]; materialIds: string[]; materialSelections?: Array<{ nodeId: string; materialIndex?: number; materialName?: string }> } {
+	const scopedSelections = input.selectedNodes.filter(
+		(selection) => selection.assetId === input.activeAssetId
+	);
+	if (input.scope === 'highlighted') {
+		const materialIds = input.query
+			? selectMatchingPresentationTargetIds(input.query, input.presentation?.highlightedTargets)
+			: (input.presentation?.highlightedTargets ?? []).map((target) => target.targetId);
+		return { nodeIds: [], materialIds };
+	}
+
+	if (input.scope === 'hidden') {
+		const nodeIds = input.query
+			? selectMatchingPresentationTargetIds(input.query, input.presentation?.hiddenTargets)
+			: (input.presentation?.hiddenTargets ?? []).map((target) => target.targetId);
+		return { nodeIds, materialIds: [] };
+	}
+
+	const filteredSelections =
+		input.query && input.query.trim().length > 0
+			? scopedSelections.filter((selection) =>
+					normalizeSemanticLookupToken(
+						`${selection.nodeName} ${selection.nodePath} ${selection.materialName ?? ''} ${selection.nodeId}`
+					).includes(normalizeSemanticLookupToken(input.query ?? ''))
+			  )
+			: scopedSelections;
+
+	return {
+		nodeIds: Array.from(new Set(filteredSelections.map((selection) => selection.nodeId))).sort((left, right) =>
+			left.localeCompare(right)
+		),
+		materialIds: [],
+		materialSelections: filteredSelections.map((selection) => ({
+			nodeId: selection.nodeId,
+			materialIndex: selection.materialIndex,
+			materialName: selection.materialName
+		}))
+	};
+}
+
+async function persistMaterializedSemanticOverlay(
+	activeAssetId: VehicleAssetId,
+): Promise<VehicleSemanticOverlay | null> {
+	const overlay = await readVehicleSemanticOverlay(activeAssetId);
+	if (!overlay) {
+		return null;
+	}
+
+	return writeVehicleSemanticOverlay({
+		...overlay,
+		generatedAt: new Date().toISOString(),
+	});
 }
 
 export function mergePatchOperations(
@@ -1360,6 +1625,298 @@ export async function executeToolCall(
 								label: 'restore original view'
 							}
 						: undefined
+			};
+		} catch (error) {
+			recordSpanError(error);
+			return {
+				message: {
+					role: 'tool',
+					tool_call_id: toolCall.id,
+					content: JSON.stringify({ error: error instanceof Error ? error.message : 'Tool execution failed.' })
+				}
+			};
+		}
+	}
+
+	if (toolCall.function.name === MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME) {
+		try {
+			const args = parseManageVehicleSemanticGroupToolArgs(toolCall.function.arguments);
+
+			if (args.action === 'create') {
+				if (!args.groupId && !args.query && !args.humanLabel && !args.category) {
+					throw new OpenAIChatInputError('A semantic group reference or label is required to create a semantic group.');
+				}
+
+				const existingDefinition =
+					(await findSemanticGroupDefinition({
+						id: args.groupId,
+						semanticGroup: args.query,
+						category: args.category
+					})) ?? null;
+				const definition =
+					existingDefinition ??
+					(await createSemanticGroupDefinition({
+						id: args.groupId,
+						humanLabel:
+							args.humanLabel ?? args.query ?? args.groupId ?? args.category?.replaceAll('_', ' ') ?? '',
+						aliases: args.aliases,
+						category: args.category ?? 'other',
+						supports: args.supports,
+						assignmentMode: args.assignmentMode,
+						exclusiveFamily:
+							typeof args.exclusiveFamily === 'string' ? args.exclusiveFamily : undefined
+					}));
+
+				if (!activeAssetId) {
+					return {
+						message: {
+							role: 'tool',
+							tool_call_id: toolCall.id,
+							content: JSON.stringify({
+								action: args.action,
+								groupId: definition.id,
+								humanLabel: definition.humanLabel,
+								assignedTargetCount: 0
+							})
+						}
+					};
+				}
+
+				const scopedTargets = resolveScopedSemanticTargets({
+					activeAssetId,
+					scope: args.scope ?? 'selected',
+					selectedNodes,
+					presentation,
+					query: args.query
+				});
+
+				if (scopedTargets.nodeIds.length === 0 && scopedTargets.materialIds.length === 0) {
+					return {
+						message: {
+							role: 'tool',
+							tool_call_id: toolCall.id,
+							content: JSON.stringify({
+								action: args.action,
+								groupId: definition.id,
+								humanLabel: definition.humanLabel,
+								assignedTargetCount: 0
+							})
+						}
+					};
+				}
+
+				const overlay = await mutateVehicleSemanticAssignment(activeAssetId, {
+					action: 'assign',
+					nodeIds: scopedTargets.nodeIds,
+					materialIds: scopedTargets.materialIds,
+					semanticGroup: definition.id,
+					materialSelections: scopedTargets.materialSelections
+				});
+
+				return {
+					message: {
+						role: 'tool',
+						tool_call_id: toolCall.id,
+						content: JSON.stringify({
+							action: args.action,
+							groupId: definition.id,
+							humanLabel: definition.humanLabel,
+							assignedTargetCount:
+								scopedTargets.nodeIds.length + scopedTargets.materialIds.length,
+							acceptedGroupCount: overlay.acceptedGroups.length
+						})
+					}
+				};
+			}
+
+			if (args.action === 'patch') {
+				const definition = await patchSemanticGroupDefinition({
+					id: args.groupId,
+					semanticGroup: args.query,
+					category: args.category,
+					humanLabel: args.humanLabel,
+					aliases: args.aliases,
+					supports: args.supports,
+					assignmentMode: args.assignmentMode,
+					exclusiveFamily: args.exclusiveFamily
+				});
+				const overlay = activeAssetId
+					? await persistMaterializedSemanticOverlay(activeAssetId)
+					: null;
+				return {
+					message: {
+						role: 'tool',
+						tool_call_id: toolCall.id,
+						content: JSON.stringify({
+							action: args.action,
+							groupId: definition.id,
+							humanLabel: definition.humanLabel,
+							category: definition.category,
+							acceptedGroupCount: overlay?.acceptedGroups.length
+						})
+					}
+				};
+			}
+
+			if (args.action === 'delete') {
+				if (!activeAssetId) {
+					const definition = await deleteSemanticGroupDefinition({
+						id: args.groupId,
+						semanticGroup: args.query,
+						category: args.category
+					});
+					return {
+						message: {
+							role: 'tool',
+							tool_call_id: toolCall.id,
+							content: JSON.stringify({
+								action: args.action,
+								deletedDefinitionId: definition.id
+							})
+						}
+					};
+				}
+
+				const overlay = await readVehicleSemanticOverlay(activeAssetId);
+				if (!overlay) {
+					throw new OpenAIChatInputError('No semantic overlay is available for semantic group deletion.');
+				}
+
+				const matchedGroups = overlay.acceptedGroups.filter((group) => {
+					if (args.groupId) {
+						return group.id === args.groupId;
+					}
+
+					if (args.category) {
+						return group.category === args.category;
+					}
+
+					return args.query ? semanticGroupMatchesReference(group, args.query) : false;
+				});
+
+				if (matchedGroups.length === 0) {
+					throw new OpenAIChatInputError('No semantic group matched the current delete request.');
+				}
+
+				for (const group of matchedGroups) {
+					await removeReviewedAssetSemanticAssignments({
+						assetId: activeAssetId,
+						structuralGeneratedAt: overlay.structuralGeneratedAt,
+						nodeIds: group.nodeIds,
+						materialIds: group.materialIds,
+						semanticGroupId: group.id
+					});
+				}
+
+				await writeVehicleSemanticOverlay({
+					...overlay,
+					generatedAt: new Date().toISOString(),
+					acceptedGroups: overlay.acceptedGroups.filter(
+						(group) => !matchedGroups.some((matchedGroup) => matchedGroup.id === group.id)
+					)
+				});
+
+				return {
+					message: {
+						role: 'tool',
+						tool_call_id: toolCall.id,
+						content: JSON.stringify({
+							action: args.action,
+							deletedGroupIds: matchedGroups.map((group) => group.id)
+						})
+					}
+				};
+			}
+
+			if (!activeAssetId) {
+				throw new OpenAIChatInputError('No active vehicle asset is available for semantic get.');
+			}
+
+			const structure = await deriveStructuralAssetSnapshot(activeAssetId);
+			const capabilities = await deriveVehicleInspectionCapabilities(activeAssetId);
+			if (args.targetType === 'semantic_node') {
+				const targetNode =
+					(args.nodeId
+						? structure.nodes.find((node) => node.id === args.nodeId)
+						: undefined) ??
+					(args.query
+						? structure.nodes.find((node) => nodeMatchesReference(node, args.query!))
+						: undefined);
+				if (!targetNode) {
+					throw new OpenAIChatInputError('No semantic node matched the current request.');
+				}
+
+				const mesh = targetNode.meshId
+					? structure.meshes.find((entry) => entry.id === targetNode.meshId)
+					: undefined;
+				const materials = capabilities.materials.filter((material) =>
+					mesh?.materialIds.includes(material.id)
+				);
+				return {
+					message: {
+						role: 'tool',
+						tool_call_id: toolCall.id,
+						content: JSON.stringify({
+							action: args.action,
+							targetType: args.targetType,
+							nodeId: targetNode.id,
+							nodeName: targetNode.name,
+							materialCount: materials.length
+						})
+					},
+					plannedOperations: buildSemanticHighlightOperations(materials, targetNode.name),
+					intentLabel: `Highlight semantic node ${targetNode.name}.`
+				};
+			}
+
+			const overlay = await readVehicleSemanticOverlay(activeAssetId);
+			if (!overlay) {
+				throw new OpenAIChatInputError('No semantic overlay is available for semantic group lookup.');
+			}
+			const group =
+				(args.groupId
+					? overlay.acceptedGroups.find((entry) => entry.id === args.groupId)
+					: undefined) ??
+				(args.category
+					? overlay.acceptedGroups.find((entry) => entry.category === args.category)
+					: undefined) ??
+				(args.query
+					? overlay.acceptedGroups.find((entry) => semanticGroupMatchesReference(entry, args.query!))
+					: undefined);
+
+			if (!group) {
+				throw new OpenAIChatInputError('No semantic group matched the current request.');
+			}
+
+			const groupMaterialIds =
+				group.materialIds.length > 0
+					? group.materialIds
+					: group.nodeIds.flatMap((nodeId) => {
+							const node = structure.nodes.find((entry) => entry.id === nodeId);
+							const mesh = node?.meshId
+								? structure.meshes.find((entry) => entry.id === node.meshId)
+								: undefined;
+							return mesh?.materialIds ?? [];
+					  });
+			const materials = capabilities.materials.filter((material) =>
+				groupMaterialIds.includes(material.id)
+			);
+
+			return {
+				message: {
+					role: 'tool',
+					tool_call_id: toolCall.id,
+					content: JSON.stringify({
+						action: args.action,
+						targetType: args.targetType,
+						groupId: group.id,
+						humanLabel: group.humanLabel,
+						materialCount: materials.length,
+						nodeCount: group.nodeIds.length
+					})
+				},
+				plannedOperations: buildSemanticHighlightOperations(materials, group.humanLabel),
+				intentLabel: `Highlight semantic group ${group.humanLabel}.`
 			};
 		} catch (error) {
 			recordSpanError(error);

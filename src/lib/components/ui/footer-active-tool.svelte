@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fly } from 'svelte/transition';
+	import { fade, fly } from 'svelte/transition';
 	import { footerActiveTool } from '$lib/stores/footer-active-tool';
 
 	type Props = {
@@ -42,12 +42,38 @@
 
 		collapse();
 	}
+
+	const visibleHistory = $derived(
+		expanded ? activeTool.toolLabels : activeTool.toolLabels.slice(-1)
+	);
 </script>
 
 <svelte:document onpointerdown={handleDocumentPointerDown} />
 
 {#if activeTool.active && activeTool.label}
 	<div bind:this={root} class="tool-root {className}" aria-live="polite">
+		<div class="tool-history" class:tool-history--expanded={expanded}>
+			<div
+				class="tool-history__scroll"
+				in:fade={{ duration: 120 }}
+				out:fade={{ duration: 100 }}
+			>
+				{#each visibleHistory as toolLabel, index (`${toolLabel}-${index}-${expanded ? 'expanded' : 'collapsed'}`)}
+					<button
+						type="button"
+						class="tool-pill"
+						class:tool-pill--history={expanded}
+						class:tool-pill--ghost={!expanded && index === 0}
+						in:fly={{ y: 12, duration: 180 }}
+						out:fly={{ y: 10, duration: 140 }}
+						onclick={collapse}
+					>
+						{toolLabel}
+					</button>
+				{/each}
+			</div>
+		</div>
+
 		<button
 			type="button"
 			class="tool-shell"
@@ -58,18 +84,6 @@
 		>
 			<div class="tool-label">{activeTool.label}</div>
 		</button>
-
-		{#if expanded}
-			<div class="tool-stack-sheet" in:fly={{ y: 12, duration: 180 }} out:fly={{ y: 10, duration: 140 }}>
-				<div class="tool-stack-scroll">
-					{#each activeTool.toolLabels as toolLabel, index (`${activeTool.toolNames[index] ?? toolLabel}-${index}`)}
-						<button type="button" class="tool-pill" onclick={collapse}>
-							{toolLabel}
-						</button>
-					{/each}
-				</div>
-			</div>
-		{/if}
 	</div>
 {/if}
 
@@ -80,16 +94,48 @@
 		display: inline-flex;
 		flex-direction: column;
 		align-items: flex-end;
-		min-width: 0;
+		width: 8.9rem;
 		pointer-events: auto;
+	}
+
+	.tool-history {
+		position: absolute;
+		right: 0;
+		bottom: 0.9rem;
+		width: 8.9rem;
+		max-height: 2.2rem;
+		pointer-events: auto;
+		overflow: visible;
+	}
+
+	.tool-history--expanded {
+		bottom: calc(100% - 0.55rem);
+		max-height: min(10rem, 34vh);
+	}
+
+	.tool-history__scroll {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.28rem;
+		max-height: inherit;
+		overflow-y: hidden;
+		padding: 0 0 0.2rem;
+		scrollbar-width: thin;
+		scrollbar-color: color-mix(in srgb, var(--color-boundary-text) 20%, transparent) transparent;
+	}
+
+	.tool-history--expanded .tool-history__scroll {
+		overflow-y: auto;
+		padding: 0.2rem 0 0.8rem;
 	}
 
 	.tool-shell {
 		position: relative;
 		z-index: 1;
 		display: inline-flex;
-		min-width: 0;
-		max-width: min(14rem, calc(100vw - 12rem));
+		width: 8.9rem;
+		max-width: 8.9rem;
 		align-items: center;
 		justify-content: center;
 		padding: 0.58rem 0.92rem 0.54rem;
@@ -116,7 +162,6 @@
 	}
 
 	.tool-shell::before,
-	.tool-stack-sheet::before,
 	.tool-pill::before {
 		content: '';
 		position: absolute;
@@ -155,50 +200,12 @@
 		color: color-mix(in srgb, var(--color-boundary-text) 88%, transparent);
 	}
 
-	.tool-stack-sheet {
-		position: absolute;
-		right: calc(100% + 0.7rem);
-		bottom: 50%;
-		width: min(11rem, calc(100vw - 10rem));
-		max-height: min(9.5rem, 34vh);
-		padding: 0.42rem;
-		border-radius: 1rem;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 10%, transparent);
-		background:
-			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
-			linear-gradient(
-				180deg,
-				color-mix(in srgb, var(--color-boundary-text) 2.2%, transparent),
-				color-mix(in srgb, var(--color-boundary-text) 0.7%, transparent)
-			);
-		box-shadow:
-			inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
-			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
-		backdrop-filter: blur(16px) saturate(106%);
-		-webkit-backdrop-filter: blur(16px) saturate(106%);
-		overflow: hidden;
-		transform-origin: right bottom;
-	}
-
-	.tool-stack-scroll {
-		position: relative;
-		z-index: 1;
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		gap: 0.42rem;
-		max-height: calc(min(9.5rem, 34vh) - 0.84rem);
-		overflow-y: auto;
-		padding-right: 0.1rem;
-		scrollbar-width: thin;
-		scrollbar-color: color-mix(in srgb, var(--color-boundary-text) 20%, transparent) transparent;
-	}
-
 	.tool-pill {
 		position: relative;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+		width: 8.9rem;
 		min-height: 2rem;
 		padding: 0.54rem 0.88rem 0.5rem;
 		border-radius: 999px;
@@ -216,5 +223,14 @@
 		color: color-mix(in srgb, var(--color-boundary-text) 76%, transparent);
 		white-space: nowrap;
 		cursor: pointer;
+	}
+
+	.tool-pill--ghost {
+		opacity: 0.38;
+		transform: translate(-0.35rem, -0.15rem);
+	}
+
+	.tool-pill--history {
+		opacity: 0.92;
 	}
 </style>

@@ -715,20 +715,6 @@
 		return color.clone().lerp(fallbackHeadlightWhite, mixRatio);
 	}
 
-	function matchesRuntimeMaterialTargetName(
-		runtimeMaterialName: string,
-		operationTargetName: string
-	): boolean {
-		if (runtimeMaterialName === operationTargetName) {
-			return true;
-		}
-
-		// Semantic intent labels may decorate the original runtime material name,
-		// for example "Paint_Body (body shell)". Preserve the extra label for chat
-		// and restore matching, but still resolve the runtime material deterministically.
-		return operationTargetName.startsWith(`${runtimeMaterialName} (`);
-	}
-
 	function applyMaterialPatch(
 		scene: THREE.Object3D,
 		operation: VehicleInspectionPatchOperation
@@ -741,7 +727,7 @@
 
 		scene.traverse((node) => {
 			for (const material of listNodeMaterials(node)) {
-				if (!matchesRuntimeMaterialTargetName(material.name, targetName)) {
+				if (material.name !== targetName && !targetName.startsWith(`${material.name} (`)) {
 					continue;
 				}
 
@@ -915,6 +901,20 @@
 
 		const node = nodeLookup.get(operation.targetId);
 		if (!node) {
+			return;
+		}
+
+		if (
+			operation.op === 'set_overlay_highlight' &&
+			Array.isArray(operation.value) &&
+			operation.value.length === 4
+		) {
+			addHighlightOverlay(node, [
+				operation.value[0] ?? 1,
+				operation.value[1] ?? 1,
+				operation.value[2] ?? 1,
+				operation.value[3] ?? 0.48
+			]);
 			return;
 		}
 

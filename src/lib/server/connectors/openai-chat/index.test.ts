@@ -11,6 +11,12 @@ const generateVehicleSemanticOverlayMock = vi.fn();
 const getVehicleSemanticOverlayStatusMock = vi.fn();
 const assignSemanticIngressMock = vi.fn();
 const mutateVehicleSemanticAssignmentMock = vi.fn();
+const createSemanticGroupDefinitionMock = vi.fn();
+const findSemanticGroupDefinitionMock = vi.fn();
+const patchSemanticGroupDefinitionMock = vi.fn();
+const deleteSemanticGroupDefinitionMock = vi.fn();
+const removeReviewedAssetSemanticAssignmentsMock = vi.fn();
+const writeVehicleSemanticOverlayMock = vi.fn();
 
 vi.mock('$env/dynamic/private', () => ({
 	env: {
@@ -54,10 +60,22 @@ vi.mock('$lib/server/connectors/gltf-structure', () => ({
 vi.mock('$lib/server/connectors/vehicle-semantic-overlay', () => ({
 	getVehicleSemanticOverlayStatus: getVehicleSemanticOverlayStatusMock,
 	readVehicleSemanticOverlay: readVehicleSemanticOverlayMock,
+	writeVehicleSemanticOverlay: writeVehicleSemanticOverlayMock,
 	generateVehicleSemanticOverlay: generateVehicleSemanticOverlayMock,
 	annotateVehicleSemanticGroup: annotateVehicleSemanticGroupMock,
 	mutateVehicleSemanticAssignment: mutateVehicleSemanticAssignmentMock,
 	refreshVehicleSemanticOverlayInBackground: vi.fn()
+}));
+
+vi.mock('$lib/server/connectors/semantic-groups', () => ({
+	createSemanticGroupDefinition: createSemanticGroupDefinitionMock,
+	findSemanticGroupDefinition: findSemanticGroupDefinitionMock,
+	patchSemanticGroupDefinition: patchSemanticGroupDefinitionMock,
+	deleteSemanticGroupDefinition: deleteSemanticGroupDefinitionMock
+}));
+
+vi.mock('$lib/server/connectors/asset-semantic-assignments', () => ({
+	removeReviewedAssetSemanticAssignments: removeReviewedAssetSemanticAssignmentsMock
 }));
 
 vi.mock('$lib/server/connectors/semantic-ingress', () => ({
@@ -77,6 +95,12 @@ describe('createFooterChatResponse', () => {
 		getVehicleSemanticOverlayStatusMock.mockReset();
 		assignSemanticIngressMock.mockReset();
 		mutateVehicleSemanticAssignmentMock.mockReset();
+		createSemanticGroupDefinitionMock.mockReset();
+		findSemanticGroupDefinitionMock.mockReset();
+		patchSemanticGroupDefinitionMock.mockReset();
+		deleteSemanticGroupDefinitionMock.mockReset();
+		removeReviewedAssetSemanticAssignmentsMock.mockReset();
+		writeVehicleSemanticOverlayMock.mockReset();
 	});
 
 	it('refreshes semantic overlays through the chat tool loop', async () => {
@@ -1901,6 +1925,292 @@ describe('createFooterChatResponse', () => {
 		expect(response.message.content).toBe(
 			'Removed the highlighted wheel regions from headlights.'
 		);
+	});
+
+	it('gets a semantic group and highlights it through the semantic group management tool', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-get',
+			materials: [{ id: 'material-wheel', name: 'Wheel Alloy' }]
+		});
+		deriveStructuralAssetSnapshotMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-get',
+			nodes: [],
+			meshes: []
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-get',
+			structuralGeneratedAt: 'structural-semantic-get',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'Wheels',
+					aliases: ['wheel'],
+					confidence: 0.98,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: [],
+					materialIds: ['material-wheel']
+				}
+			],
+			discardedSuggestions: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-semantic-get',
+									type: 'function',
+									function: {
+										name: 'manage_vehicle_semantic_group',
+										arguments: JSON.stringify({
+											action: 'get',
+											targetType: 'semantic_group',
+											query: 'wheels'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Highlighted the wheels semantic group.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'get the wheels semantic group'
+		});
+
+		expect(response.vehiclePatchOperations).toEqual([
+			{
+				targetType: 'material',
+				targetId: 'material-wheel',
+				targetName: 'Wheels: Wheel Alloy',
+				op: 'set_overlay_highlight',
+				value: [0.58, 0.54, 0.86, 1]
+			}
+		]);
+		expect(response.message.content).toBe('Highlighted the wheels semantic group.');
+	});
+
+	it('patches a semantic group on the active asset and persists the materialized overlay', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-patch'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		patchSemanticGroupDefinitionMock.mockResolvedValue({
+			id: 'number_plate',
+			humanLabel: 'Plate Assembly',
+			aliases: ['plate', 'plate assembly'],
+			category: 'other',
+			supports: ['highlight', 'focus', 'isolate'],
+			assignmentMode: 'overlay'
+		});
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-patch',
+			structuralGeneratedAt: 'structural-semantic-patch',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'number_plate',
+					humanLabel: 'Plate Assembly',
+					aliases: ['plate', 'plate assembly'],
+					confidence: 1,
+					category: 'other',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-plate'],
+					meshIds: [],
+					materialIds: ['material-plate'],
+					derivedFrom: ['user']
+				}
+			],
+			discardedSuggestions: []
+		});
+		writeVehicleSemanticOverlayMock.mockImplementation(async (overlay) => overlay);
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-semantic-patch',
+									type: 'function',
+									function: {
+										name: 'manage_vehicle_semantic_group',
+										arguments: JSON.stringify({
+											action: 'patch',
+											targetType: 'semantic_group',
+											query: 'number plate',
+											humanLabel: 'Plate Assembly',
+											aliases: ['plate', 'plate assembly']
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Updated the number plate semantic group.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'patch the number plate semantic group aliases'
+		});
+
+		expect(patchSemanticGroupDefinitionMock).toHaveBeenCalledWith({
+			id: undefined,
+			semanticGroup: 'number plate',
+			category: undefined,
+			humanLabel: 'Plate Assembly',
+			aliases: ['plate', 'plate assembly'],
+			supports: undefined,
+			assignmentMode: undefined,
+			exclusiveFamily: undefined
+		});
+		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				assetId: 'audi_r8',
+				structuralGeneratedAt: 'structural-semantic-patch',
+				acceptedGroups: [
+					expect.objectContaining({
+						id: 'number_plate',
+						humanLabel: 'Plate Assembly'
+					})
+				]
+			})
+		);
+		expect(response.message.content).toBe('Updated the number plate semantic group.');
+	});
+
+	it('deletes a semantic group from the active overlay through the semantic group management tool', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-delete'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-delete',
+			structuralGeneratedAt: 'structural-semantic-delete',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'number_plate',
+					humanLabel: 'Number Plate',
+					aliases: ['plate'],
+					confidence: 0.91,
+					category: 'other',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-plate'],
+					meshIds: [],
+					materialIds: ['material-plate']
+				}
+			],
+			discardedSuggestions: []
+		});
+		writeVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-delete-2',
+			structuralGeneratedAt: 'structural-semantic-delete',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-semantic-delete',
+									type: 'function',
+									function: {
+										name: 'manage_vehicle_semantic_group',
+										arguments: JSON.stringify({
+											action: 'delete',
+											targetType: 'semantic_group',
+											query: 'number plate'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed the number plate semantic group.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'delete the number plate semantic group'
+		});
+
+		expect(removeReviewedAssetSemanticAssignmentsMock).toHaveBeenCalledWith({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: 'structural-semantic-delete',
+			nodeIds: ['node-plate'],
+			materialIds: ['material-plate'],
+			semanticGroupId: 'number_plate'
+		});
+		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalled();
+		expect(response.message.content).toBe('Removed the number plate semantic group.');
 	});
 
 	it('expands the current selection into a semantic group through the chat tool loop', async () => {

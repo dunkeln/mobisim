@@ -27,6 +27,7 @@ const TOOL_LABELS: Record<string, string> = {
 	expand_vehicle_selection: 'Selection',
 	annotate_vehicle_semantic_group: 'Semantic Group',
 	mutate_vehicle_semantic_assignment: 'Semantic Assignment',
+	manage_vehicle_semantic_group: 'Semantic Group',
 	refresh_vehicle_semantics: 'Semantic Refresh',
 	set_intent_sidebar: 'Intent Sidebar',
 	assign_semantic_ingress: 'Semantic Ingress'
@@ -40,6 +41,7 @@ const TOOL_PRIORITY = [
 	'expand_vehicle_selection',
 	'annotate_vehicle_semantic_group',
 	'mutate_vehicle_semantic_assignment',
+	'manage_vehicle_semantic_group',
 	'refresh_vehicle_semantics',
 	'set_intent_sidebar',
 	'assign_semantic_ingress',

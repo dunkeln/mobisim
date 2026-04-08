@@ -152,6 +152,22 @@
 		});
 	}
 
+	function describeReplyAudioError(error: unknown): string {
+		if (error instanceof DOMException && error.name === 'NotAllowedError') {
+			return 'Reply audio playback was blocked by this browser session. The message still went through.';
+		}
+
+		if (error instanceof DOMException && error.name === 'NotSupportedError') {
+			return 'Reply audio was returned, but this browser could not play the format.';
+		}
+
+		if (error instanceof Error && error.message.trim().length > 0) {
+			return error.message;
+		}
+
+		return 'Reply audio could not be played on this device. The message still went through.';
+	}
+
 	async function playReplyAudio(payload: FooterChatAudioResponse): Promise<void> {
 		if (!payload.audioBase64 || !payload.audioMimeType) {
 			resetOrbState();
@@ -178,10 +194,24 @@
 			URL.revokeObjectURL(audioUrl);
 			audioElement = null;
 			resetOrbState();
+			toast.error('Reply audio unavailable', {
+				description:
+					'The message was sent, but this browser could not play the reply audio on this device.'
+			});
 		};
 
 		syncVisuals('responding', estimateResponseIntensity(payload.chat.message.content));
-		await audioElement.play();
+		try {
+			await audioElement.play();
+		} catch (error) {
+			audioElement.pause();
+			URL.revokeObjectURL(audioUrl);
+			audioElement = null;
+			resetOrbState();
+			toast.error('Reply audio blocked', {
+				description: describeReplyAudioError(error)
+			});
+		}
 	}
 
 	async function sendAudioMessage(audioBlob: Blob): Promise<void> {

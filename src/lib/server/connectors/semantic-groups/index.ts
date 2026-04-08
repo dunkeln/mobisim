@@ -175,9 +175,7 @@ function validateDefinitions(definitions: SemanticGroupDefinition[]): SemanticGr
 	const unique = new Map<string, SemanticGroupDefinition>();
 
 	for (const definition of definitions) {
-		if (!unique.has(definition.id)) {
-			unique.set(definition.id, definition);
-		}
+		unique.set(definition.id, definition);
 	}
 
 	return Array.from(unique.values()).sort((left, right) => left.id.localeCompare(right.id));
@@ -193,6 +191,52 @@ function slugify(input: string): string {
 
 function normalizeLookupKey(value: string): string {
 	return slugify(value);
+}
+
+function defaultSupportsForCategory(
+	category: VehicleSemanticGroup['category']
+): VehicleSemanticActionSupport[] {
+	if (category === 'glasshouse') {
+		return ['focus', 'highlight', 'isolate', 'tint'];
+	}
+
+	if (category === 'body_shell') {
+		return ['focus', 'highlight', 'isolate', 'paint'];
+	}
+
+	return ['focus', 'highlight', 'isolate'];
+}
+
+function resolveDefinitionReference(
+	store: SemanticGroupDefinitionsStore,
+	input: {
+		id?: string;
+		semanticGroup?: string;
+		category?: VehicleSemanticGroup['category'];
+	}
+): SemanticGroupDefinition | null {
+	if (input.id?.trim()) {
+		return store.definitions.find((definition) => definition.id === input.id?.trim()) ?? null;
+	}
+
+	if (input.category) {
+		return store.definitions.find((definition) => definition.category === input.category) ?? null;
+	}
+
+	const semanticGroup = input.semanticGroup?.trim();
+	if (!semanticGroup) {
+		return null;
+	}
+
+	const lookupKey = normalizeLookupKey(semanticGroup);
+	return (
+		store.definitions.find((definition) => {
+			const keys = [definition.id, definition.humanLabel, ...definition.aliases].map((value) =>
+				normalizeLookupKey(value)
+			);
+			return keys.includes(lookupKey);
+		}) ?? null
+	);
 }
 
 export async function readSemanticGroupDefinitions(): Promise<SemanticGroupDefinitionsStore> {
@@ -254,12 +298,7 @@ export async function ensureSemanticGroupDefinition(input: {
 		humanLabel,
 		aliases: normalizeStringArray(input.aliases),
 		category: input.category,
-		supports:
-			input.category === 'glasshouse'
-				? ['focus', 'highlight', 'isolate', 'tint']
-				: input.category === 'body_shell'
-					? ['focus', 'highlight', 'isolate', 'paint']
-					: ['focus', 'highlight', 'isolate'],
+		supports: defaultSupportsForCategory(input.category),
 		assignmentMode: input.category === 'other' ? 'overlay' : 'overlay'
 	};
 
@@ -310,29 +349,123 @@ export async function resolveSemanticGroupDefinition(input: {
 }
 
 export async function findSemanticGroupDefinition(input: {
+	id?: string;
 	semanticGroup?: string;
 	category?: VehicleSemanticGroup['category'];
 }): Promise<SemanticGroupDefinition | null> {
 	const store = await readSemanticGroupDefinitions();
+	return resolveDefinitionReference(store, input);
+}
 
-	if (input.category) {
-		return (
-			store.definitions.find((definition) => definition.category === input.category) ?? null
+export async function createSemanticGroupDefinition(input: {
+	id?: string;
+	humanLabel: string;
+	aliases?: string[];
+	category: VehicleSemanticGroup['category'];
+	supports?: VehicleSemanticActionSupport[];
+	assignmentMode?: SemanticGroupAssignmentMode;
+	exclusiveFamily?: string;
+}): Promise<SemanticGroupDefinition> {
+	const humanLabel = input.humanLabel.trim();
+	if (!humanLabel) {
+		throw new Error('A semantic group label is required.');
+	}
+
+	const store = await readSemanticGroupDefinitions();
+	const id = input.id?.trim() || slugify(humanLabel) || 'semantic_group';
+	if (store.definitions.some((definition) => definition.id === id)) {
+		throw new Error(`Semantic group ${id} already exists.`);
+	}
+
+	const definition: SemanticGroupDefinition = {
+		id,
+		humanLabel,
+		aliases: normalizeStringArray(input.aliases),
+		category: input.category,
+		supports:
+			input.supports && input.supports.length > 0
+				? Array.from(new Set(input.supports)).sort((left, right) => left.localeCompare(right))
+				: defaultSupportsForCategory(input.category),
+		assignmentMode: input.assignmentMode ?? 'overlay',
+		exclusiveFamily:
+			typeof input.exclusiveFamily === 'string' && input.exclusiveFamily.trim().length > 0
+				? input.exclusiveFamily.trim()
+				: undefined
+	};
+
+	await writeSemanticGroupDefinitions({
+		definitions: [...store.definitions, definition]
+	});
+
+	return definition;
+}
+
+export async function patchSemanticGroupDefinition(input: {
+	id?: string;
+	semanticGroup?: string;
+	category?: VehicleSemanticGroup['category'];
+	humanLabel?: string;
+	aliases?: string[];
+	supports?: VehicleSemanticActionSupport[];
+	assignmentMode?: SemanticGroupAssignmentMode;
+	exclusiveFamily?: string | null;
+}): Promise<SemanticGroupDefinition> {
+	const store = await readSemanticGroupDefinitions();
+	const existing = resolveDefinitionReference(store, input);
+	if (!existing) {
+		throw new Error('Semantic group definition was not found.');
+	}
+
+	const nextDefinition: SemanticGroupDefinition = {
+		...existing,
+		humanLabel:
+			typeof input.humanLabel === 'string' && input.humanLabel.trim().length > 0
+				? input.humanLabel.trim()
+				: existing.humanLabel,
+		aliases: input.aliases ? normalizeStringArray(input.aliases) : existing.aliases,
+		category: input.category ?? existing.category,
+		supports:
+			input.supports && input.supports.length > 0
+				? Array.from(new Set(input.supports)).sort((left, right) => left.localeCompare(right))
+				: existing.supports,
+		assignmentMode: input.assignmentMode ?? existing.assignmentMode,
+		exclusiveFamily:
+			input.exclusiveFamily === null
+				? undefined
+				: typeof input.exclusiveFamily === 'string' && input.exclusiveFamily.trim().length > 0
+					? input.exclusiveFamily.trim()
+					: existing.exclusiveFamily
+	};
+
+	await writeSemanticGroupDefinitions({
+		definitions: store.definitions.map((definition) =>
+			definition.id === existing.id ? nextDefinition : definition
+		)
+	});
+
+	return nextDefinition;
+}
+
+export async function deleteSemanticGroupDefinition(input: {
+	id?: string;
+	semanticGroup?: string;
+	category?: VehicleSemanticGroup['category'];
+}): Promise<SemanticGroupDefinition> {
+	const store = await readSemanticGroupDefinitions();
+	const existing = resolveDefinitionReference(store, input);
+	if (!existing) {
+		throw new Error('Semantic group definition was not found.');
+	}
+
+	if (DEFAULT_DEFINITIONS.some((definition) => definition.id === existing.id)) {
+		throw new Error(
+			'Built-in semantic group definitions cannot be deleted. Remove asset assignments instead.'
 		);
 	}
 
-	const semanticGroup = input.semanticGroup?.trim();
-	if (!semanticGroup) {
-		return null;
-	}
+	await writeSemanticGroupDefinitions({
+		definitions: store.definitions.filter((definition) => definition.id !== existing.id)
+	});
 
-	const lookupKey = normalizeLookupKey(semanticGroup);
-	return (
-		store.definitions.find((definition) => {
-			const keys = [definition.id, definition.humanLabel, ...definition.aliases].map((value) =>
-				normalizeLookupKey(value)
-			);
-			return keys.includes(lookupKey);
-		}) ?? null
-	);
+	return existing;
 }

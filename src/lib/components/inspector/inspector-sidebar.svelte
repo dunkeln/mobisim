@@ -23,12 +23,15 @@
 			id: string;
 			label: string;
 			highlightTargetIds: string[];
+			highlightTargetType: 'node' | 'material';
 		}>;
 		highlightTargetIds: string[];
+		highlightTargetType: 'node' | 'material';
 	};
 
 	type HighlightScopeDescriptor = {
 		targetIds: string[];
+		targetType: 'node' | 'material';
 		scope: 'group' | 'node';
 		groupId: string;
 	};
@@ -61,27 +64,20 @@
 		return currentOverlay.acceptedGroups
 			.map((group) => {
 				const matchedParts = currentOverlay.acceptedParts.filter((part) => partMatchesGroup(part, group));
-				const semanticNodes = matchedParts.length > 0
-					? matchedParts.map((part) => ({
-							id: part.id,
-							label: part.humanLabel,
-							highlightTargetIds: [...part.materialIds]
-					  }))
-					: group.nodeIds.map((nodeId) => ({
-							id: nodeId,
-							label: nodeId,
-							highlightTargetIds: [...group.materialIds]
-					  }));
+				const semanticNodes = group.nodeIds.map((nodeId) => ({
+					id: nodeId,
+					label: matchedParts.find((part) => part.nodeIds.includes(nodeId))?.humanLabel ?? nodeId,
+					highlightTargetIds: [nodeId],
+					highlightTargetType: 'node' as const
+				}));
 
 				return {
 					id: group.id,
 					label: group.humanLabel,
 					category: group.category,
 					nodes: semanticNodes,
-					highlightTargetIds:
-						group.materialIds.length > 0
-							? [...group.materialIds]
-							: Array.from(new Set(semanticNodes.flatMap((node) => node.highlightTargetIds)))
+					highlightTargetIds: [...group.nodeIds],
+					highlightTargetType: 'node' as const
 				};
 			})
 			.filter((group) => group.nodes.length > 0)
@@ -103,6 +99,7 @@
 		for (const group of semanticGroups) {
 			descriptors.set(getGroupHighlightKey(group.id), {
 				targetIds: Array.from(new Set(group.highlightTargetIds)),
+				targetType: group.highlightTargetType,
 				scope: 'group',
 				groupId: group.id
 			});
@@ -110,6 +107,7 @@
 			for (const node of group.nodes) {
 				descriptors.set(getNodeHighlightKey(group.id, node.id), {
 					targetIds: Array.from(new Set(node.highlightTargetIds)),
+					targetType: node.highlightTargetType,
 					scope: 'node',
 					groupId: group.id
 				});
@@ -199,11 +197,12 @@
 	function toggleHighlight(
 		highlightKey: string,
 		targetIds: string[],
+		targetType: 'node' | 'material',
 		label: string
 	): void {
 		if (targetIds.length === 0) {
 			toast.error('Highlight failed', {
-				description: 'No semantic material targets were available for that item.'
+				description: 'No semantic targets were available for that item.'
 			});
 			return;
 		}
@@ -227,7 +226,7 @@
 		activeHighlightKey = highlightKey;
 		vehiclePatchState.setHighlights(
 			assetId,
-			buildSemanticPanelHighlightOperations(targetIds, label),
+			buildSemanticPanelHighlightOperations(targetIds, targetType, label),
 			`highlight ${label}`
 		);
 	}
@@ -265,6 +264,7 @@
 
 	function buildSemanticPanelHighlightOperations(
 		targetIds: string[],
+		targetType: 'node' | 'material',
 		label: string
 	): VehicleInspectionPatchOperation[] {
 		const materialNameById = new Map(
@@ -272,9 +272,9 @@
 		);
 
 		return Array.from(new Set(targetIds)).map((targetId) => ({
-			targetType: 'material' as const,
+			targetType,
 			targetId,
-			targetName: materialNameById.get(targetId) ?? label,
+			targetName: targetType === 'material' ? (materialNameById.get(targetId) ?? label) : label,
 			op: 'set_overlay_highlight' as const,
 			value: [...SEMANTIC_PANEL_HIGHLIGHT_FACTOR]
 		}));
@@ -368,6 +368,7 @@
 										toggleHighlight(
 											groupHighlightKey,
 											group.highlightTargetIds,
+											group.highlightTargetType,
 											group.label
 										);
 									}}
@@ -400,6 +401,7 @@
 											toggleHighlight(
 												nodeHighlightKey,
 												node.highlightTargetIds,
+												node.highlightTargetType,
 												node.label
 											)}
 									>

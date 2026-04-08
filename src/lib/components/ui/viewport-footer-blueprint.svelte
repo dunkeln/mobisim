@@ -145,9 +145,9 @@
 
 	.footer-blueprint__stack--right {
 		position: absolute;
-		left: calc(100% - 0.45rem);
+		left: calc(100% + 0.4rem);
 		top: 50%;
-		transform: translateY(-62%);
+		transform: translateY(-58%);
 		z-index: 1;
 	}
 
@@ -244,7 +244,7 @@
 	}
 
 	.footer-blueprint__reference-list {
-		--footer-reference-width: 10.6rem;
+		--footer-reference-width: 14.5rem;
 		position: relative;
 		display: inline-flex;
 		min-width: var(--footer-reference-width);
@@ -262,9 +262,9 @@
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
-		gap: 0.42rem;
+		gap: 0.58rem;
 		width: var(--footer-reference-width);
-		padding: 0.9rem 0.82rem 0.86rem;
+		padding: 1rem 1rem 0.96rem;
 		border-radius: 1.1rem;
 		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
 		background:
@@ -308,10 +308,10 @@
 		z-index: 1;
 		width: 100%;
 		font-family: var(--font-mono);
-		font-size: 0.62rem;
-		letter-spacing: 0.08em;
-		color: color-mix(in srgb, var(--color-boundary-text) 78%, transparent);
-		line-height: 1.35;
+		font-size: 0.64rem;
+		letter-spacing: 0.065em;
+		color: color-mix(in srgb, var(--color-boundary-text) 76%, transparent);
+		line-height: 1.5;
 		white-space: normal;
 		overflow: visible;
 	}

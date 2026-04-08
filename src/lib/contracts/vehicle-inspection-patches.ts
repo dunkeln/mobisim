@@ -2,8 +2,8 @@ export type VehicleInspectionNodePatchOperation = {
 	targetType: 'node';
 	targetId: string;
 	targetName?: string;
-	op: 'set_visibility';
-	value: boolean;
+	op: 'set_visibility' | 'set_overlay_highlight';
+	value: boolean | [number, number, number, number];
 };
 
 export type VehicleInspectionMaterialPatchOperation = {

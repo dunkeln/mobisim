@@ -173,6 +173,7 @@ Use the tool catalog deliberately:
 - view mode tool: wireframe, xray, uv debug, postprocess
 - semantic annotation tool: assign selected nodes/material regions into semantic groups
 - semantic assignment mutation tool: assign, reassign, or unassign selected, highlighted, hidden, or otherwise described runtime targets from semantic groups when the user speaks naturally about what something is or is no longer
+- semantic group management tool: create, patch, delete, or get semantic groups directly; get should highlight the matched semantic group or node for inspection
 - expand selection tool: lift the current selection to node, part, or semantic group
 - semantic refresh tool: explicitly rebuild or refresh semantics
 - semantic ingress tool: assign a stable REST+SSE or stream ingress to a semantic group or semantic node when the user explicitly asks for an endpoint, ingress, hook, feed, or stream

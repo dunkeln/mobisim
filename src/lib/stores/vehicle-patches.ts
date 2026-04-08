@@ -68,7 +68,7 @@ const INITIAL_STATE: VehiclePatchState = {
 };
 
 function isHighlightOperation(operation: VehicleInspectionPatchOperation): boolean {
-	return operation.targetType === 'material' && operation.op === 'set_overlay_highlight';
+	return operation.op === 'set_overlay_highlight';
 }
 
 function stripHighlightOperations(presentation: VehiclePresentationState): VehiclePresentationState {
@@ -278,6 +278,10 @@ function getChangeSearchText(change: VehiclePresentationChangeEntry): string {
 
 			if (operation.targetType === 'material' && operation.op === 'set_overlay_highlight') {
 				return ['highlight', 'focus', 'glow'];
+			}
+
+			if (operation.targetType === 'node' && operation.op === 'set_overlay_highlight') {
+				return ['highlight', 'focus', 'glow', 'node'];
 			}
 
 			if (operation.targetType === 'node' && operation.op === 'set_visibility') {

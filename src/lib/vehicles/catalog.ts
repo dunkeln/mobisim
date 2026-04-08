@@ -5,7 +5,7 @@ export type VehicleAssetId =
 	| '2006_chevrolet_camaro_concept_2007_bumblebee'
 	| '2015_cadillac_escalade_esv'
 	| '2021_koenigsegg_gemera'
-	| 'humvee'
+	| 'northrop_grumman_b_2_spirit_free'
 	| 'ks_blade_runner_spinner'
 	| 'arkham_knight_batmobile_advanced_rig';
 
@@ -82,14 +82,14 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 			'Four-seat hypercar asset kept for low-slung exotic proportions and alternate high-end review framing. Copy is editable placeholder text.',
 		lengthMeters: 4.98
 	},
-	humvee: {
-		id: 'humvee',
-		fileName: 'humvee.glb',
-		displayName: 'Humvee',
-		title: 'Humvee',
+	northrop_grumman_b_2_spirit_free: {
+		id: 'northrop_grumman_b_2_spirit_free',
+		fileName: 'northrop_grumman_b-2_spirit_-_free.glb',
+		displayName: 'Northrop Grumman B-2 Spirit',
+		title: 'Northrop Grumman B-2 Spirit',
 		description:
-			'Military utility vehicle asset retained for boxier off-road proportions and rugged lighting checks. Copy and dimensions are editable placeholders.',
-		lengthMeters: 4.6
+			'Flying-wing stealth bomber asset retained as an extreme wide-body contrast case for framing, material, and semantic-surface checks.',
+		lengthMeters: 21.0
 	},
 	ks_blade_runner_spinner: {
 		id: 'ks_blade_runner_spinner',
