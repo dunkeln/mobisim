@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import FooterChatbox from '$lib/components/chat/footer-chatbox.svelte';
 	import Sonner from '$lib/components/ui/sonner.svelte';
+	import FooterOrb from '$lib/components/ui/footer-orb.svelte';
 
 	let { children }: { children: import('svelte').Snippet } = $props();
 </script>
@@ -26,6 +27,7 @@
 
 			<footer class="flex min-h-8 items-end justify-center gap-4 pt-2 text-xs text-shell-subtle">
 				<FooterChatbox />
+				<FooterOrb />
 			</footer>
 		</section>
 	</main>

@@ -36,6 +36,78 @@
 	--font-mono: 'JetBrains Mono', 'SFMono-Regular', 'SF Mono', 'Roboto Mono', monospace;
 }
 
+/* ─────────────────────────────────────────────────────────────
+   Jarvis / Griot typography system
+   ─────────────────────────────────────────────────────────────
+   Usage:
+     hud-label   — mode labels, corner badges, section headers
+     hud-value   — data readouts, coordinates, counts
+     hud-dim     — secondary / ambient text
+     hud-intent  — active command text (primary accent color)
+   ──────────────────────────────────────────────────────────── */
+@layer components {
+	.hud-label {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		font-weight: 400;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--boundary-text);
+		opacity: 0.3;
+		line-height: 1;
+	}
+
+	.hud-value {
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		font-weight: 400;
+		letter-spacing: 0.06em;
+		color: var(--boundary-text);
+		opacity: 0.7;
+		line-height: 1.2;
+	}
+
+	.hud-dim {
+		font-family: var(--font-mono);
+		font-size: 0.58rem;
+		font-weight: 400;
+		letter-spacing: 0.12em;
+		color: var(--boundary-text);
+		opacity: 0.2;
+		line-height: 1;
+	}
+
+	.hud-intent {
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		font-weight: 400;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: color-mix(in oklab, var(--boundary-primary) 80%, var(--boundary-text));
+		opacity: 0.75;
+		line-height: 1;
+	}
+
+	/* Hairline divider — use as <hr class="hud-rule" /> */
+	.hud-rule {
+		border: none;
+		border-top: 1px solid color-mix(in oklab, var(--boundary-text) 8%, transparent);
+		margin: 0;
+	}
+
+	/* Node / part name — inside lists and sidebars */
+	.node-label {
+		font-family: var(--font-mono);
+		font-size: 0.64rem;
+		letter-spacing: 0.03em;
+		color: var(--boundary-text);
+		opacity: 0.55;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+}
+
 @layer base {
 	:root {
 		color-scheme: dark;
