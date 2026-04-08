@@ -82,9 +82,14 @@ In `Done`:
 - [x] T-026 | Add semantic part-unit overlay schema | completed: 2026-04-06
 - [x] T-027 | Add deterministic part-intent planner | completed: 2026-04-06
 - [x] T-028 | Add validated isolate-part execution path | completed: 2026-04-06
-- [x] T-029 | Add deterministic explode-part presentation state | completed: 2026-04-06
+- [x] T-029 | Add deterministic remove-part xray presentation state | completed: 2026-04-06
 - [x] T-030 | Replace flat patch queue with presentation state model | completed: 2026-04-06
 - [x] T-031 | Add headlight toggle and beam rendering slice | completed: 2026-04-06
+- [x] T-032 | Add central semantic group definitions store | completed: 2026-04-07
+- [x] T-033 | Add reviewed asset node assignment store | completed: 2026-04-07
+- [x] T-034 | Rebuild semantic overlay groups from reviewed assignments | completed: 2026-04-07
+- [x] T-035 | Split LLM semantic proposals from reviewed assignments | completed: 2026-04-07
+- [x] T-036 | Derive reusable semantic examples from reviewed assignments | completed: 2026-04-07
 
 ## Updates
 
@@ -109,17 +114,21 @@ In `Done`:
 - 2026-04-06 22:10 PT | Extended the footer chat tool loop with explicit semantic refresh support so overlay-aware intent planning can self-prime on the active asset
 - 2026-04-06 22:14 PT | Switched semantic refresh to stale-while-revalidate so interactive tool calls use cache-first behavior and only explicit refresh requests block on overlay generation
 - 2026-04-06 22:16 PT | Added `T-024` to `Backlog` for shared semantic refresh locks and persisted job state across multiple server instances
-- 2026-04-06 22:35 PT | Added `T-025` through `T-030` to `Backlog` to stage the structural snapshot, semantic part-unit, planner, isolate, explode, and presentation-state rewrite as incremental vertical slices
+- 2026-04-06 22:35 PT | Added `T-025` through `T-030` to `Backlog` to stage the structural snapshot, semantic part-unit, planner, isolate, remove-part, and presentation-state rewrite as incremental vertical slices
 - 2026-04-06 22:40 PT | Added `T-025` to `In Progress` to extract a dedicated structural snapshot connector and make preprocessing consume it as a compatibility layer
 - 2026-04-06 22:43 PT | Marked `T-025` done after extracting a dedicated `gltf-structure` connector and refactoring preprocessing to derive capabilities from the structural snapshot
 - 2026-04-06 22:48 PT | Added `T-026` to `In Progress` to extend semantic overlays with validated part-unit assemblies without changing planner behavior yet
 - 2026-04-06 22:48 PT | Marked `T-026` done after extending semantic overlays, validation, prompt schema, and storage to include reviewed part-unit assemblies
-- 2026-04-06 23:05 PT | Added `T-027` to `In Progress` to resolve semantic part units deterministically before isolate and explode execution paths are wired
+- 2026-04-06 23:05 PT | Added `T-027` to `In Progress` to resolve semantic part units deterministically before isolate and remove-part execution paths are wired
 - 2026-04-06 23:05 PT | Marked `T-027` done after adding semantic part query helpers, planner-level part intent resolution, and deterministic highlight fallback tests
 - 2026-04-06 23:18 PT | Added `T-028` to `In Progress` to execute semantic isolate intents through validated node visibility patches and the existing viewer patch flow
 - 2026-04-06 23:18 PT | Marked `T-028` done after wiring isolate planning to emit node visibility patches and teaching the viewport to restore and apply node visibility state deterministically
-- 2026-04-06 23:32 PT | Added `T-029` to `In Progress` to execute one semantic explode intent through deterministic node translations and the existing patch application path
-- 2026-04-06 23:32 PT | Marked `T-029` done after wiring explode planning to emit node translation patches and teaching the viewport to restore and apply node translation state deterministically
+- 2026-04-06 23:32 PT | Added `T-029` to `In Progress` to execute one semantic remove-part intent through deterministic xray material edits and the existing patch application path
+- 2026-04-06 23:32 PT | Marked `T-029` done after wiring remove-part planning to emit xray-style material patches and teaching the viewport to restore and apply that state deterministically
 - 2026-04-06 23:44 PT | Added `T-030` to `In Progress` to replace batch-history patch storage with layered presentation state while preserving the existing footer and viewport integrations
 - 2026-04-06 23:44 PT | Marked `T-030` done after splitting patch storage into highlight, material, visibility, transform, and viewer presentation layers with reversible history snapshots
 - 2026-04-06 23:58 PT | Marked `T-031` done after adding a REST-backed headlight support/toggle path and deriving spotlight beams from identified headlight emitters in the viewport
+- 2026-04-07 14:12 PT | Marked `T-032`, `T-033`, and `T-034` done after adding shared semantic group definitions, reviewed asset node assignments, and rebuilding planner-visible overlay groups from reviewed assignments instead of direct overlay mutation
+- 2026-04-07 14:12 PT | Added `T-035` and `T-036` to `Backlog` to separate pending LLM semantic proposals from reviewed assignments and feed reviewed examples back into proposal generation
+- 2026-04-07 14:18 PT | Marked `T-035` done after adding a file-backed pending semantic proposal store and persisting LLM node-to-group proposals without exposing them to planners
+- 2026-04-07 14:20 PT | Marked `T-036` done after deriving compact reviewed semantic examples from assignment files and feeding them into semantic proposal prompt input without adding a new persisted example store

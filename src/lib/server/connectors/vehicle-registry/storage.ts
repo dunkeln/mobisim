@@ -15,9 +15,52 @@ export function resolveLocalAssetPath(assetId: VehicleAssetId): string {
 export function resolveSemanticOverlayDirectory(): string {
 	return env.SEMANTIC_MANIFEST_LOCAL_DIR
 		? path.resolve(env.SEMANTIC_MANIFEST_LOCAL_DIR)
-		: path.resolve(process.cwd(), 'storage/vehicle-semantic-overlays');
+		: path.resolve(resolveSemanticStorageRoot(), 'vehicle-semantic-overlays');
 }
 
 export function resolveSemanticOverlayPath(assetId: VehicleAssetId): string {
 	return path.join(resolveSemanticOverlayDirectory(), `${assetId}.semantic-overlay.json`);
+}
+
+export function resolveSemanticGroupDefinitionsPath(): string {
+	return path.resolve(resolveSemanticStorageRoot(), 'semantic-group-definitions.json');
+}
+
+export function resolveSemanticAssignmentsDirectory(assetId: VehicleAssetId): string {
+	return path.resolve(resolveSemanticAssignmentsRootDirectory(), assetId);
+}
+
+export function resolveSemanticAssignmentsRootDirectory(): string {
+	return path.resolve(resolveSemanticStorageRoot(), 'semantic-assignments');
+}
+
+export function resolveSemanticAssignmentsPath(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string
+): string {
+	return path.join(resolveSemanticAssignmentsDirectory(assetId), `${structuralGeneratedAt}.json`);
+}
+
+export function resolveSemanticProposalsDirectory(assetId: VehicleAssetId): string {
+	return path.resolve(resolveSemanticStorageRoot(), 'semantic-proposals', assetId);
+}
+
+export function resolveSemanticProposalsPath(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string
+): string {
+	return path.join(resolveSemanticProposalsDirectory(assetId), `${structuralGeneratedAt}.json`);
+}
+
+export function resolveVersionedSemanticOverlayPath(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string
+): string {
+	return path.join(resolveSemanticOverlayDirectory(), `${assetId}.${structuralGeneratedAt}.json`);
+}
+
+function resolveSemanticStorageRoot(): string {
+	return env.SEMANTIC_MANIFEST_LOCAL_DIR
+		? path.resolve(env.SEMANTIC_MANIFEST_LOCAL_DIR)
+		: path.resolve(process.cwd(), 'storage');
 }

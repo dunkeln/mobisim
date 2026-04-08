@@ -47,9 +47,7 @@ function deriveDebugMeshes(meshes: StructuralMesh[]): {
 
 	return {
 		wireframeMeshes: meshes.filter((mesh) => mesh.primitiveCount > 0).map(toDebugMesh),
-		uvDebugMeshes: meshes
-			.filter((mesh) => mesh.hasTexcoord0 || mesh.hasTexcoord1)
-			.map(toDebugMesh)
+		uvDebugMeshes: meshes.filter((mesh) => mesh.hasTexcoord0 || mesh.hasTexcoord1).map(toDebugMesh)
 	};
 }
 
@@ -244,12 +242,6 @@ function validatePatchOperation(
 			}
 
 			switch (operation.op) {
-				case 'set_translation':
-				case 'set_rotation':
-				case 'set_scale':
-					return isVec3(operation.value)
-						? { accepted: operation }
-						: { reason: `Node operation ${operation.op} requires a 3-number tuple` };
 				case 'set_visibility':
 					return isBoolean(operation.value)
 						? { accepted: operation }
@@ -393,10 +385,7 @@ export async function planVehiclePartHighlight(
 		assetId,
 		partQuery,
 		matchedPaths: Array.from(
-			new Set([
-				...matchedPaths,
-				...matchedMaterials.flatMap((material) => material.nodePaths)
-			])
+			new Set([...matchedPaths, ...matchedMaterials.flatMap((material) => material.nodePaths)])
 		),
 		matchedMaterialNames: matchedMaterials.map((material) => material.name),
 		operations: matchedMaterials.map((material) => ({

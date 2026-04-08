@@ -23,10 +23,9 @@ import type {
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 
 const HEADLIGHT_ON_EMISSIVE: [number, number, number] = [1, 0.95, 0.82];
-const EXPLODE_SCALE = 0.5; // explosion distance as a fraction of radial distance from vehicle center
-const EXPLODE_MIN_RATIO = 0.1; // minimum explosion distance as a fraction of vehicle bounding diagonal
 const ISOLATE_CONTEXT_ALPHA = 0.18;
 const ISOLATE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.64, 0.68, 0.9, 0.96];
+const REMOVE_PART_ALPHA = 0.08;
 const NAMED_PAINT_COLORS: Record<string, [number, number, number]> = {
 	black: [0.08, 0.08, 0.1],
 	white: [0.92, 0.92, 0.94],
@@ -41,16 +40,24 @@ const NAMED_PAINT_COLORS: Record<string, [number, number, number]> = {
 	purple: [0.56, 0.42, 0.82]
 };
 const PAINT_COLOR_ALIASES: Record<string, [number, number, number]> = {
-	'black panther purple': [0.29, 0.18, 0.46],
-	'midnight purple': [0.19, 0.12, 0.31],
-	'dark purple': [0.22, 0.12, 0.34],
-	'deep purple': [0.28, 0.14, 0.42],
-	'royal purple': [0.45, 0.28, 0.7],
-	'metallic black': [0.09, 0.09, 0.12],
-	'matte black': [0.06, 0.06, 0.07],
-	'gunmetal gray': [0.3, 0.32, 0.36],
-	'gunmetal grey': [0.3, 0.32, 0.36],
-	'pearl white': [0.95, 0.95, 0.98]
+  'black panther purple': [0.29, 0.18, 0.46],
+  'midnight purple': [0.19, 0.12, 0.31],
+  'dark purple': [0.22, 0.12, 0.34],
+  'deep purple': [0.28, 0.14, 0.42],
+  'royal purple': [0.45, 0.28, 0.7],
+  'metallic black': [0.09, 0.09, 0.12],
+  'matte black': [0.06, 0.06, 0.07],
+  'gunmetal gray': [0.3, 0.32, 0.36],
+  'gunmetal grey': [0.3, 0.32, 0.36],
+  'pearl white': [0.95, 0.95, 0.98],
+  'off white': [0.92, 0.9, 0.84],
+  ivory: [0.94, 0.92, 0.82],
+  cream: [0.93, 0.89, 0.78],
+  eggshell: [0.91, 0.89, 0.82],
+  champagne: [0.84, 0.78, 0.68],
+  beige: [0.8, 0.74, 0.64],
+  bone: [0.88, 0.86, 0.78],
+  sand: [0.78, 0.72, 0.58]
 };
 const WINDOW_TINT_PRESETS: Array<{
 	match: RegExp;
@@ -88,15 +95,7 @@ export type PlannedVehicleIntentResult = {
 	summary: string;
 };
 
-export type VehicleHeadlightSupport = {
-	assetId: VehicleAssetId;
-	supported: boolean;
-	materialNames: string[];
-	materialIds: string[];
-	taillightMaterialNames: string[];
-};
-
-export type VehiclePartIntentMode = 'highlight' | 'focus' | 'isolate' | 'explode';
+export type VehiclePartIntentMode = 'highlight' | 'focus' | 'isolate' | 'remove';
 
 export type PlannedVehiclePartIntentResult = {
 	assetId: VehicleAssetId;
@@ -154,10 +153,7 @@ function scaleColorChannels(
 	];
 }
 
-function desaturateColor(
-	color: [number, number, number],
-	ratio: number
-): [number, number, number] {
+function desaturateColor(color: [number, number, number], ratio: number): [number, number, number] {
 	const average = (color[0] + color[1] + color[2]) / 3;
 	return mixColorChannels(color, [average, average, average], ratio);
 }
@@ -272,7 +268,7 @@ function parseHexColor(hexInput: string): [number, number, number] | null {
 }
 
 export function parsePaintColor(color: string): [number, number, number, number] | null {
-	const trimmed = color.trim().toLowerCase();
+  const trimmed = color.trim().toLowerCase();
 	const directAlias = PAINT_COLOR_ALIASES[trimmed];
 	if (directAlias) {
 		return [directAlias[0], directAlias[1], directAlias[2], 1];
@@ -305,14 +301,40 @@ export function parsePaintColor(color: string): [number, number, number, number]
 		}
 	}
 
-	for (const [name, namedColor] of Object.entries(NAMED_PAINT_COLORS)) {
-		if (trimmed.includes(name)) {
-			const modifiedColor = applyPaintModifiers(trimmed, namedColor);
-			return [modifiedColor[0], modifiedColor[1], modifiedColor[2], 1];
-		}
-	}
+  for (const [name, namedColor] of Object.entries(NAMED_PAINT_COLORS)) {
+    if (trimmed.includes(name)) {
+      const modifiedColor = applyPaintModifiers(trimmed, namedColor);
+      return [modifiedColor[0], modifiedColor[1], modifiedColor[2], 1];
+    }
+  }
 
-	return null;
+  if (/\b(off[-\s]?white|warm white|dirty white)\b/i.test(trimmed)) {
+    return [0.92, 0.9, 0.84, 1];
+  }
+
+  if (/\b(ivory|cream|eggshell|bone)\b/i.test(trimmed)) {
+    const base =
+      /\bivory\b/i.test(trimmed)
+        ? PAINT_COLOR_ALIASES.ivory
+        : /\bcream\b/i.test(trimmed)
+          ? PAINT_COLOR_ALIASES.cream
+          : /\beggshell\b/i.test(trimmed)
+            ? PAINT_COLOR_ALIASES.eggshell
+            : PAINT_COLOR_ALIASES.bone;
+    return [base[0], base[1], base[2], 1];
+  }
+
+  if (/\b(champagne|beige|sand)\b/i.test(trimmed)) {
+    const base =
+      /\bchampagne\b/i.test(trimmed)
+        ? PAINT_COLOR_ALIASES.champagne
+        : /\bbeige\b/i.test(trimmed)
+          ? PAINT_COLOR_ALIASES.beige
+          : PAINT_COLOR_ALIASES.sand;
+    return [base[0], base[1], base[2], 1];
+  }
+
+  return null;
 }
 
 export function parsePaintRequest(input: string): {
@@ -416,7 +438,9 @@ export function parseWindowTint(
 }
 
 function shouldHighlightPart(request: string): boolean {
-	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|explode|pull out|bring out|expand out|separate out)\b/i.test(request);
+	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(
+		request
+	);
 }
 
 function shouldTintWindows(request: string): boolean {
@@ -434,13 +458,18 @@ export function isVehicleEditRequest(request: string): boolean {
 		shouldHighlightPart(request) ||
 		shouldTintWindows(request) ||
 		shouldPaintBody(request) ||
-		/\b(headlight|headlights|wireframe|xray|x-ray|postprocess|post-processing)\b/i.test(request)
+		/\b(headlight|headlights|wireframe|xray|x-ray|uv|uvs|uv debug|uv_debug|postprocess|post-processing)\b/i.test(
+			request
+		)
 	);
 }
 
 function extractHighlightQuery(request: string): string {
 	return request
-		.replace(/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|explode|pull out|bring out|expand out|separate out)\b/gi, ' ')
+		.replace(
+			/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/gi,
+			' '
+		)
 		.replace(/\b(the|a|an|please|car|vehicle|part|parts)\b/gi, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
@@ -451,9 +480,50 @@ function normalizePartQuery(request: string): string {
 	return normalized || request.trim();
 }
 
+function tokenizeSemanticQuery(value: string): string[] {
+	return Array.from(
+		new Set(
+			value
+				.toLowerCase()
+				.split(/[^a-z0-9]+/)
+				.map((term) => term.trim())
+				.filter((term) => term.length > 0)
+		)
+	);
+}
+
+function scoreSemanticEntityMatch(
+	entity:
+		| Pick<VehicleSemanticGroup, 'id' | 'humanLabel' | 'aliases'>
+		| Pick<VehicleSemanticPartUnit, 'id' | 'humanLabel' | 'aliases'>,
+	query: string
+): number {
+	const normalizedQuery = query.trim().toLowerCase();
+	const queryTerms = tokenizeSemanticQuery(query);
+	const entityTerms = [
+		entity.id.replaceAll('_', ' ').replaceAll('-', ' '),
+		entity.humanLabel,
+		...entity.aliases
+	].map((value) => value.toLowerCase());
+	const combined = entityTerms.join(' ');
+	let score = 0;
+
+	if (entityTerms.includes(normalizedQuery)) {
+		score += 100;
+	}
+
+	if (entityTerms.some((value) => value.includes(normalizedQuery))) {
+		score += 40;
+	}
+
+	score += queryTerms.reduce((total, term) => total + (combined.includes(term) ? 10 : 0), 0);
+
+	return score;
+}
+
 function inferPartIntentMode(request: string): VehiclePartIntentMode {
-	if (/\bexplode|pull out|bring out|expand out|separate out\b/i.test(request)) {
-		return 'explode';
+	if (/\b(remove|removed|strip out|take out|xray out|pull out|bring out|expand out|separate out)\b/i.test(request)) {
+		return 'remove';
 	}
 
 	if (/\bisolate|show only|only show\b/i.test(request)) {
@@ -539,72 +609,6 @@ async function inferTaillightMaterials(
 	});
 }
 
-export async function getVehicleHeadlightSupport(
-	assetId: VehicleAssetId
-): Promise<VehicleHeadlightSupport> {
-	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
-	const materials = await inferHeadlightMaterials(capabilities);
-	const taillightMaterials = await inferTaillightMaterials(capabilities);
-
-	return {
-		assetId,
-		supported: materials.length > 0,
-		materialNames: materials.map((material) => material.name),
-		materialIds: materials.map((material) => material.id),
-		taillightMaterialNames: taillightMaterials.map((material) => material.name)
-	};
-}
-
-export async function planVehicleHeadlightIntent(
-	assetId: VehicleAssetId,
-	enabled: boolean
-): Promise<PlannedVehicleIntentResult & VehicleHeadlightSupport> {
-	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
-	const materials = await inferHeadlightMaterials(capabilities);
-
-	if (materials.length === 0) {
-		return {
-			assetId,
-			supported: false,
-			materialNames: [],
-			materialIds: [],
-			taillightMaterialNames: [],
-			operations: [],
-			rejected: [],
-			summary: 'No headlight materials were identified for this asset.'
-		};
-	}
-
-	const validation = await validatePlannedOperations(
-		assetId,
-		'vehicle-intent-headlights',
-		materials.map((material) => ({
-			targetType: 'material' as const,
-			targetId: material.id,
-			targetName: material.name,
-			op: 'set_emissive_factor' as const,
-			value: enabled ? HEADLIGHT_ON_EMISSIVE : [0, 0, 0]
-		})),
-		capabilities.generatedAt
-	);
-
-	return {
-		assetId,
-		supported: true,
-		materialNames: materials.map((material) => material.name),
-		materialIds: materials.map((material) => material.id),
-		taillightMaterialNames: [],
-		operations: validation.operations,
-		rejected: validation.rejected,
-		summary:
-			validation.operations.length > 0
-				? enabled
-					? 'Turned headlights on.'
-					: 'Turned headlights off.'
-				: 'No valid headlight operations were accepted.'
-	};
-}
-
 function mergePatchOperations(
 	current: SharedVehicleInspectionPatchOperation[],
 	incoming: SharedVehicleInspectionPatchOperation[]
@@ -629,8 +633,8 @@ function mapIntentModeToActionSupport(mode: VehiclePartIntentMode): VehicleSeman
 			return 'focus';
 		case 'isolate':
 			return 'isolate';
-		case 'explode':
-			return 'explode';
+		case 'remove':
+			return 'isolate';
 		default:
 			return 'highlight';
 	}
@@ -648,45 +652,6 @@ function collectEntityMatchedNodeIds(
 	entities: Array<Pick<VehicleSemanticPartUnit, 'nodeIds' | 'meshIds' | 'materialIds'>>
 ): string[] {
 	return collectPartMatchedNodeIds(structure, entities as VehicleSemanticPartUnit[]);
-}
-
-function collectNodeIdsByNameQuery(
-	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
-	query: string
-): string[] {
-	const baseTerms = query
-		.toLowerCase()
-		.split(/[^a-z0-9]+/)
-		.filter((term) => term.length > 1);
-
-	// Expand with singular/plural variants so "wheels" matches "Wheel_FL" and vice versa
-	const terms = Array.from(
-		new Set(
-			baseTerms.flatMap((term) =>
-				term.endsWith('s') && term.length > 2
-					? [term, term.slice(0, -1)]
-					: [term, `${term}s`]
-			)
-		)
-	);
-
-	if (terms.length === 0) {
-		return [];
-	}
-
-	const matched = new Set<string>();
-	for (const node of structure.nodes) {
-		if (!node.meshId) {
-			continue;
-		}
-
-		const haystack = `${node.name} ${node.path}`.toLowerCase();
-		if (terms.some((term) => haystack.includes(term))) {
-			matched.add(node.id);
-		}
-	}
-
-	return Array.from(matched).sort((left, right) => left.localeCompare(right));
 }
 
 function collectPartMatchedPaths(
@@ -801,148 +766,6 @@ function collectVisibleNodeIdsForIsolation(
 	return visibleNodeIds;
 }
 
-function getVehicleCenter(structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>): [
-	number,
-	number,
-	number
-] {
-	const primaryScene = structure.scenes[0];
-	if (!primaryScene) {
-		return [0, 0, 0];
-	}
-
-	return [
-		(primaryScene.bounds.min[0] + primaryScene.bounds.max[0]) / 2,
-		(primaryScene.bounds.min[1] + primaryScene.bounds.max[1]) / 2,
-		(primaryScene.bounds.min[2] + primaryScene.bounds.max[2]) / 2
-	];
-}
-
-function getSelectionCentroid(
-	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
-	matchedNodeIds: string[]
-): [number, number, number] {
-	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
-	const matchedNodes = matchedNodeIds
-		.map((nodeId) => nodeById.get(nodeId))
-		.filter((node): node is NonNullable<typeof node> => node !== undefined);
-
-	if (matchedNodes.length === 0) {
-		return getVehicleCenter(structure);
-	}
-
-	const bounds = matchedNodes.reduce<{
-		min: [number, number, number];
-		max: [number, number, number];
-	}>(
-		(accumulator, node) => {
-			const min = node.bounds?.min ?? node.worldTranslation;
-			const max = node.bounds?.max ?? node.worldTranslation;
-			return {
-				min: [
-					Math.min(accumulator.min[0], min[0]),
-					Math.min(accumulator.min[1], min[1]),
-					Math.min(accumulator.min[2], min[2])
-				],
-				max: [
-					Math.max(accumulator.max[0], max[0]),
-					Math.max(accumulator.max[1], max[1]),
-					Math.max(accumulator.max[2], max[2])
-				]
-			};
-		},
-		{
-			min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
-			max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY]
-		}
-	);
-
-	return [
-		(bounds.min[0] + bounds.max[0]) / 2,
-		(bounds.min[1] + bounds.max[1]) / 2,
-		(bounds.min[2] + bounds.max[2]) / 2
-	];
-}
-
-function getNodeCenter(
-	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
-	nodeId: string
-): [number, number, number] {
-	const node = structure.nodes.find((entry) => entry.id === nodeId);
-	return node?.bounds?.center ?? node?.worldTranslation ?? getSelectionCentroid(structure, [nodeId]);
-}
-
-function scaleExplodeVector(
-	vector: [number, number, number],
-	distance: number
-): [number, number, number] {
-	const magnitude = Math.hypot(vector[0], vector[1], vector[2]);
-	if (magnitude === 0) {
-		return [0, 0, distance];
-	}
-
-	return [
-		(vector[0] / magnitude) * distance,
-		(vector[1] / magnitude) * distance,
-		(vector[2] / magnitude) * distance
-	];
-}
-
-function computeExplodeOffsetForNode(
-	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
-	nodeId: string
-): [number, number, number] {
-	const vehicleCenter = getVehicleCenter(structure);
-	const nodeCenter = getNodeCenter(structure, nodeId);
-
-	const primaryScene = structure.scenes[0];
-	const vehicleDiagonal = primaryScene
-		? Math.hypot(
-				primaryScene.bounds.max[0] - primaryScene.bounds.min[0],
-				primaryScene.bounds.max[1] - primaryScene.bounds.min[1],
-				primaryScene.bounds.max[2] - primaryScene.bounds.min[2]
-			)
-		: 2;
-	const minDistance = vehicleDiagonal * EXPLODE_MIN_RATIO;
-
-	// Project onto the horizontal plane: parts spread outward in XZ only.
-	// Using the full 3D vehicle center as the Y reference pulls low-mounted parts
-	// (wheels, sills) downward, causing the "implosion" effect. Ignoring Y keeps
-	// the explosion a clean radial spread with no unintended vertical pull.
-	const radialVector: [number, number, number] = [
-		nodeCenter[0] - vehicleCenter[0],
-		0,
-		nodeCenter[2] - vehicleCenter[2]
-	];
-	const radialMagnitude = Math.hypot(radialVector[0], radialVector[2]);
-
-	if (radialMagnitude > 0.0001) {
-		return scaleExplodeVector(radialVector, Math.max(radialMagnitude * EXPLODE_SCALE, minDistance));
-	}
-
-	// Node sits on the vehicle's vertical axis (e.g. central interior) — push straight up
-	return [0, minDistance, 0];
-}
-
-function computeGroundClearanceLift(
-	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
-	explodeOffsets: Map<string, [number, number, number]>
-): number {
-	let minimumY = Number.POSITIVE_INFINITY;
-
-	for (const node of structure.nodes) {
-		const offset = explodeOffsets.get(node.id) ?? [0, 0, 0];
-		const baseMinY = node.bounds?.min[1] ?? node.worldTranslation[1];
-		minimumY = Math.min(minimumY, baseMinY + offset[1]);
-	}
-
-	if (!Number.isFinite(minimumY) || minimumY >= 0) {
-		return 0;
-	}
-
-	return -minimumY;
-}
-
 export async function planVehiclePartIntent(
 	assetId: VehicleAssetId,
 	partQuery: string,
@@ -957,23 +780,29 @@ export async function planVehiclePartIntent(
 		normalizedQuery,
 		mapIntentModeToActionSupport(mode)
 	);
-	const matchedParts = matchedGroups.length
-		? []
-		: await listSemanticPartsByQuery(assetId, capabilities.generatedAt, normalizedQuery);
+	const matchedParts = await listSemanticPartsByQuery(
+		assetId,
+		capabilities.generatedAt,
+		normalizedQuery
+	);
+	const bestGroupScore = matchedGroups.length
+		? Math.max(...matchedGroups.map((group) => scoreSemanticEntityMatch(group, normalizedQuery)))
+		: Number.NEGATIVE_INFINITY;
+	const bestPartScore = matchedParts.length
+		? Math.max(...matchedParts.map((part) => scoreSemanticEntityMatch(part, normalizedQuery)))
+		: Number.NEGATIVE_INFINITY;
 	const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
-		matchedGroups.length > 0 ? matchedGroups : matchedParts;
+		matchedParts.length > 0 && bestPartScore >= bestGroupScore
+			? matchedParts
+			: matchedGroups.length > 0
+				? matchedGroups
+				: matchedParts;
 
 	const semanticNodeIds = Array.from(
 		new Set(collectEntityMatchedNodeIds(structure, matchedEntities))
 	).sort((left, right) => left.localeCompare(right));
 
-	// For explode, fall back to name-based node matching when semantic yields nothing.
-	// This covers two cases: no semantic entities at all, and semantic entities whose
-	// materialIds were sanitized to empty by the group validator.
-	const matchedNodeIds =
-		semanticNodeIds.length === 0 && mode === 'explode'
-			? collectNodeIdsByNameQuery(structure, normalizedQuery)
-			: semanticNodeIds;
+	const matchedNodeIds = semanticNodeIds;
 
 	if (matchedEntities.length === 0 && matchedNodeIds.length === 0) {
 		return {
@@ -1036,38 +865,16 @@ export async function planVehiclePartIntent(
 		operations = [...contextMaterialOperations, ...highlightMaterialOperations];
 	}
 
-	if (mode === 'explode') {
-		const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
-		const explodeOffsets = new Map<string, [number, number, number]>(
-			matchedNodeIds.map((nodeId) => [nodeId, computeExplodeOffsetForNode(structure, nodeId)])
-		);
-		const groundLift = computeGroundClearanceLift(structure, explodeOffsets);
-		operations = matchedNodeIds
-			.map((nodeId) => nodeById.get(nodeId))
-			.filter((node): node is NonNullable<typeof node> => node !== undefined)
-			.map((node) => {
-				const explodeOffset = explodeOffsets.get(node.id) ?? [0, 0, 0];
-				return {
-					targetType: 'node' as const,
-					targetId: node.id,
-					targetName: node.name,
-					op: 'set_translation' as const,
-					value: [
-						node.translation[0] + explodeOffset[0],
-						node.translation[1] + explodeOffset[1],
-						node.translation[2] + explodeOffset[2]
-					] as [number, number, number]
-				};
-			});
-
-		if (groundLift > 0) {
-			operations.push({
-				targetType: 'viewer',
-				targetId: 'scene_y_offset',
-				op: 'set_target',
-				value: groundLift
-			});
-		}
+	if (mode === 'remove') {
+		operations = capabilities.materials
+			.filter((material) => matchedMaterialIds.includes(material.id))
+			.map((material) => ({
+				targetType: 'material' as const,
+				targetId: material.id,
+				targetName: material.name,
+				op: 'set_alpha' as const,
+				value: REMOVE_PART_ALPHA
+			}));
 	}
 
 	return {
@@ -1088,9 +895,9 @@ export async function planVehiclePartIntent(
 				? `Matched ${matchedEntities.length} semantic grouping(s) for highlight.`
 				: mode === 'isolate'
 					? `Isolated ${matchedEntities.length} semantic grouping(s).`
-					: mode === 'explode'
-						? `Exploded ${matchedEntities.length} semantic grouping(s).`
-					: `Matched ${matchedEntities.length} semantic grouping(s) for ${mode}.`
+					: mode === 'remove'
+						? `Removed ${matchedEntities.length} semantic grouping(s) by reducing matched-part alpha.`
+						: `Matched ${matchedEntities.length} semantic grouping(s) for ${mode}.`
 	};
 }
 
@@ -1116,6 +923,19 @@ export async function planVehicleEditOperations(
 		operations.push({
 			targetType: 'viewer',
 			targetId: 'xray',
+			op: 'set_enabled',
+			value: !disable
+		});
+	}
+
+	if (
+		requestText.includes('uv debug') ||
+		requestText.includes('uv_debug') ||
+		/\buv\b/.test(requestText)
+	) {
+		operations.push({
+			targetType: 'viewer',
+			targetId: 'uv_debug',
 			op: 'set_enabled',
 			value: !disable
 		});
@@ -1211,7 +1031,11 @@ export async function planVehiclePaintIntent(
 		};
 	}
 
-	const plan = await planVehicleBodyPaint(assetId, resolvedPaint.color, resolvedPaint.finish ?? undefined);
+	const plan = await planVehicleBodyPaint(
+		assetId,
+		resolvedPaint.color,
+		resolvedPaint.finish ?? undefined
+	);
 	const validation = await validatePlannedOperations(
 		assetId,
 		'vehicle-intent-body-paint',
@@ -1245,7 +1069,11 @@ export async function planNormalizedVehiclePaintIntent(
 		};
 	}
 
-	const plan = await planVehicleBodyPaint(assetId, resolvedPaint.color, resolvedPaint.finish ?? undefined);
+	const plan = await planVehicleBodyPaint(
+		assetId,
+		resolvedPaint.color,
+		resolvedPaint.finish ?? undefined
+	);
 	const validation = await validatePlannedOperations(
 		assetId,
 		'vehicle-intent-body-paint-normalized',
@@ -1334,7 +1162,11 @@ export async function resolveVehicleIntent(
 			rejected.push(...highlightPlan.rejected);
 			summaryParts.push(highlightPlan.summary);
 		} else {
-			const partPlan = await planVehiclePartIntent(assetId, query || trimmedRequest, semanticPartMode);
+			const partPlan = await planVehiclePartIntent(
+				assetId,
+				query || trimmedRequest,
+				semanticPartMode
+			);
 			plannedOperations = mergePatchOperations(plannedOperations, partPlan.operations);
 			summaryParts.push(partPlan.summary);
 		}

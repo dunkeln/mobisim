@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
-	import { ArrowUp, Plus } from 'lucide-svelte';
+	import { ArrowUp } from 'lucide-svelte';
 	import { page } from '$app/state';
 	import { toast } from '$lib/components/ui/sonner';
 	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
@@ -8,8 +8,12 @@
 	import { resolveVehicleAssetId } from '$lib/vehicles/catalog';
 	import type {
 		FooterChatMessage as ChatMessage,
+		FooterChatPresentationContext,
+		FooterChatPresentationTarget,
+		FooterChatViewerMode,
 		FooterChatResponse as ChatResponse
 	} from '$lib/server/connectors/openai-chat/types';
+	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 
 	type ChatErrorResponse = {
 		error?: string;
@@ -18,7 +22,9 @@
 	let pending = $state(false);
 	let draft = $state('');
 	const assetId = $derived.by(() => resolveVehicleAssetId(page.url.searchParams.get('asset')));
-	const selectedNode = $derived($vehicleNodeSelection);
+	const selectedNodes = $derived(
+		$vehicleNodeSelection.filter((selection) => selection.assetId === assetId)
+	);
 
 	const canSend = $derived(draft.trim().length > 0 && !pending);
 
@@ -49,6 +55,87 @@
 		return normalized && normalized.length > 0 ? normalized : fallback;
 	}
 
+	function summarizeTargets(
+		operations: VehicleInspectionPatchOperation[],
+		includeOperation = false
+	): FooterChatPresentationTarget[] {
+		const seenKeys: string[] = [];
+		const targets: FooterChatPresentationTarget[] = [];
+
+		for (const operation of operations) {
+			const key = `${operation.targetId}:${operation.op}`;
+			if (seenKeys.includes(key)) {
+				continue;
+			}
+
+			seenKeys.push(key);
+			targets.push({
+				targetId: operation.targetId,
+				targetName: operation.targetName,
+				operation: includeOperation ? operation.op : undefined
+			});
+		}
+
+		return targets;
+	}
+
+	function getPresentationContext(): FooterChatPresentationContext | undefined {
+		if (!assetId) {
+			return undefined;
+		}
+
+		const patchState = get(vehiclePatchState);
+		if (patchState.assetId !== assetId) {
+			return undefined;
+		}
+
+		const viewerModes: FooterChatViewerMode[] = patchState.presentation.viewerOperations
+			.filter(
+				(operation) =>
+					operation.op === 'set_enabled' &&
+					operation.value === true &&
+					(operation.targetId === 'wireframe' ||
+						operation.targetId === 'xray' ||
+						operation.targetId === 'uv_debug' ||
+						operation.targetId === 'postprocess')
+			)
+			.map((operation) => operation.targetId as FooterChatViewerMode);
+
+		const hiddenTargets = patchState.presentation.nodeVisibilityOperations.filter(
+			(operation) => operation.op === 'set_visibility' && operation.value === false
+		);
+
+		const context: FooterChatPresentationContext = {
+			activeIntentLabel: patchState.intentLabel ?? undefined,
+			highlightedTargets: summarizeTargets(patchState.presentation.highlightOperations),
+			materialTargets: summarizeTargets(patchState.presentation.materialOperations, true),
+			hiddenTargets: summarizeTargets(hiddenTargets),
+			viewerModes
+		};
+
+		if (
+			!context.activeIntentLabel &&
+			(context.highlightedTargets?.length ?? 0) === 0 &&
+			(context.materialTargets?.length ?? 0) === 0 &&
+			(context.hiddenTargets?.length ?? 0) === 0 &&
+			(context.viewerModes?.length ?? 0) === 0
+		) {
+			return undefined;
+		}
+
+		return context;
+	}
+
+	function handleKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter' || event.shiftKey) {
+			return;
+		}
+
+		event.preventDefault();
+		const form = event.currentTarget instanceof HTMLTextAreaElement ? event.currentTarget.form : null;
+		form?.requestSubmit();
+	}
+
 	async function handleSubmit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 
@@ -62,7 +149,10 @@
 			const didUndo = vehiclePatchState.undo(assetId);
 			const nextState = get(vehiclePatchState);
 			const undoneLabel = describeIntentLabel(previousState.intentLabel, 'the last vehicle change');
-			const restoredLabel = describeIntentLabel(nextState.intentLabel, 'the previous vehicle state');
+			const restoredLabel = describeIntentLabel(
+				nextState.intentLabel,
+				'the previous vehicle state'
+			);
 			const assistantMessage: ChatMessage = {
 				role: 'assistant',
 				content: didUndo
@@ -80,12 +170,13 @@
 			const previousState = get(vehiclePatchState);
 			const didRedo = vehiclePatchState.redo(assetId);
 			const nextState = get(vehiclePatchState);
-			const redoneLabel = describeIntentLabel(nextState.intentLabel, previousState.intentLabel ?? 'the last undone change');
+			const redoneLabel = describeIntentLabel(
+				nextState.intentLabel,
+				previousState.intentLabel ?? 'the last undone change'
+			);
 			const assistantMessage: ChatMessage = {
 				role: 'assistant',
-				content: didRedo
-					? `Reapplied ${redoneLabel}.`
-					: 'There is no vehicle change to redo.'
+				content: didRedo ? `Reapplied ${redoneLabel}.` : 'There is no vehicle change to redo.'
 			};
 			draft = '';
 			toast.success(didRedo ? 'Redo applied' : 'Nothing to redo', {
@@ -128,6 +219,7 @@
 		pending = true;
 
 		try {
+			const presentation = getPresentationContext();
 			const response = await fetch('/api/chat', {
 				method: 'POST',
 				headers: {
@@ -136,9 +228,11 @@
 				body: JSON.stringify({
 					message: content,
 					assetId,
-					selectedNodeId: selectedNode?.assetId === assetId ? selectedNode.nodeId : undefined,
-					selectedNodeName: selectedNode?.assetId === assetId ? selectedNode.nodeName : undefined,
-					selectedNodePath: selectedNode?.assetId === assetId ? selectedNode.nodePath : undefined
+					selectedNodeId: selectedNodes[0]?.nodeId,
+					selectedNodeName: selectedNodes[0]?.nodeName,
+					selectedNodePath: selectedNodes[0]?.nodePath,
+					selectedNodes,
+					presentation
 				})
 			});
 
@@ -165,6 +259,17 @@
 					throw new Error('Chat returned patch operations for a different vehicle asset.');
 				}
 			}
+
+			if (payload.presentationRestore) {
+				const didRestore = vehiclePatchState.restore(assetId, payload.presentationRestore);
+				if (!didRestore && !payload.vehiclePatchOperations?.length) {
+					throw new Error('No active vehicle presentation matched the restore request.');
+				}
+			}
+
+			if (payload.selectionUpdate?.mode === 'replace') {
+				vehicleNodeSelection.replace(assetId, payload.selectionUpdate.selectedNodes);
+			}
 			toast.success('Message sent', {
 				description: payload.message.content
 			});
@@ -189,20 +294,10 @@
 			bind:value={draft}
 			rows="2"
 			class="max-h-32 min-h-12 w-full resize-none border-0 bg-transparent px-0 py-0 text-[0.98rem] leading-7 text-boundary-text caret-boundary-text ring-0 outline-none placeholder:text-boundary-text/82 focus:border-transparent focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none"
-			placeholder=""
+			onkeydown={handleKeydown}
 		></textarea>
 
-		<div class="mt-3 flex items-center justify-between gap-3">
-			<div class="flex min-w-0 items-center gap-1.5 text-shell-subtle">
-				<button
-					type="button"
-					class="inline-flex h-7 w-7 items-center justify-center rounded-full ring-0 transition outline-none hover:text-boundary-text focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none"
-					aria-label="Add context"
-				>
-					<Plus class="h-4 w-4" />
-				</button>
-			</div>
-
+		<div class="mt-3 flex items-center justify-end gap-3">
 			<div class="flex items-center gap-2">
 				<button
 					type="submit"

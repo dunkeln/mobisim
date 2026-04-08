@@ -177,10 +177,7 @@ function collectMeshSummaries(
 	return { meshes: summaries, meshIds };
 }
 
-function collectNodeSummaries(
-	scenes: Scene[],
-	meshIds: WeakMap<Mesh, string>
-): StructuralNode[] {
+function collectNodeSummaries(scenes: Scene[], meshIds: WeakMap<Mesh, string>): StructuralNode[] {
 	const nodes: StructuralNode[] = [];
 	const seenNodes = new Set<Node>();
 	const nodeIds = new WeakMap<Node, string>();

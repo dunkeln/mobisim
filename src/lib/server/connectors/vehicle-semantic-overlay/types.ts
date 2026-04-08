@@ -40,7 +40,6 @@ export type VehicleSemanticActionSupport =
 	| 'highlight'
 	| 'focus'
 	| 'isolate'
-	| 'explode'
 	| 'paint'
 	| 'tint';
 
@@ -107,8 +106,14 @@ export type GenerateVehicleSemanticOverlayOptions = {
 };
 
 export type VehicleSemanticGroupAnnotation = {
-	nodeId: string;
-	category: VehicleSemanticGroup['category'];
+	nodeIds: string[];
+	category?: VehicleSemanticGroup['category'];
+	semanticGroup?: string;
 	humanLabel?: string;
 	aliases?: string[];
+	materialSelections?: Array<{
+		nodeId: string;
+		materialIndex?: number;
+		materialName?: string;
+	}>;
 };

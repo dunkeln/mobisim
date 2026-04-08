@@ -1,12 +1,12 @@
 import { writable } from 'svelte/store';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
+import type { FooterChatPresentationRestore } from '$lib/server/connectors/openai-chat/types';
 
 export type VehiclePresentationState = {
 	highlightOperations: VehicleInspectionPatchOperation[];
 	materialOperations: VehicleInspectionPatchOperation[];
 	nodeVisibilityOperations: VehicleInspectionPatchOperation[];
-	nodeTransformOperations: VehicleInspectionPatchOperation[];
 	viewerOperations: VehicleInspectionPatchOperation[];
 };
 
@@ -31,7 +31,6 @@ const EMPTY_PRESENTATION_STATE: VehiclePresentationState = {
 	highlightOperations: [],
 	materialOperations: [],
 	nodeVisibilityOperations: [],
-	nodeTransformOperations: [],
 	viewerOperations: []
 };
 
@@ -82,15 +81,15 @@ function clonePresentation(presentation: VehiclePresentationState): VehiclePrese
 		highlightOperations: [...presentation.highlightOperations],
 		materialOperations: [...presentation.materialOperations],
 		nodeVisibilityOperations: [...presentation.nodeVisibilityOperations],
-		nodeTransformOperations: [...presentation.nodeTransformOperations],
 		viewerOperations: [...presentation.viewerOperations]
 	};
 }
 
-function deriveOperations(presentation: VehiclePresentationState): VehicleInspectionPatchOperation[] {
+function deriveOperations(
+	presentation: VehiclePresentationState
+): VehicleInspectionPatchOperation[] {
 	return [
 		...presentation.nodeVisibilityOperations,
-		...presentation.nodeTransformOperations,
 		...presentation.materialOperations,
 		...presentation.viewerOperations,
 		...presentation.highlightOperations
@@ -108,28 +107,15 @@ function mergePresentationOperations(
 	const nextNodeVisibilityOperations = incoming.filter(
 		(operation) => operation.targetType === 'node' && operation.op === 'set_visibility'
 	);
-	const nextNodeTransformOperations = incoming.filter(
-		(operation) =>
-			operation.targetType === 'node' &&
-			(operation.op === 'set_translation' ||
-				operation.op === 'set_rotation' ||
-				operation.op === 'set_scale')
-	);
 	const nextViewerOperations = incoming.filter((operation) => operation.targetType === 'viewer');
 
 	return {
 		highlightOperations:
-			nextHighlights.length > 0
-				? mergeOperations([], nextHighlights)
-				: current.highlightOperations,
+			nextHighlights.length > 0 ? mergeOperations([], nextHighlights) : current.highlightOperations,
 		materialOperations: mergeOperations(current.materialOperations, nextMaterialOperations),
 		nodeVisibilityOperations: mergeOperations(
 			current.nodeVisibilityOperations,
 			nextNodeVisibilityOperations
-		),
-		nodeTransformOperations: mergeOperations(
-			current.nodeTransformOperations,
-			nextNodeTransformOperations
 		),
 		viewerOperations: mergeOperations(current.viewerOperations, nextViewerOperations)
 	};
@@ -140,15 +126,17 @@ function isPresentationEqual(
 	right: VehiclePresentationState
 ): boolean {
 	const toKeys = (operations: VehicleInspectionPatchOperation[]) =>
-		operations.map((operation) => `${getOperationKey(operation)}:${JSON.stringify(operation.value)}`);
+		operations.map(
+			(operation) => `${getOperationKey(operation)}:${JSON.stringify(operation.value)}`
+		);
 
 	return (
-		JSON.stringify(toKeys(left.highlightOperations)) === JSON.stringify(toKeys(right.highlightOperations)) &&
-		JSON.stringify(toKeys(left.materialOperations)) === JSON.stringify(toKeys(right.materialOperations)) &&
+		JSON.stringify(toKeys(left.highlightOperations)) ===
+			JSON.stringify(toKeys(right.highlightOperations)) &&
+		JSON.stringify(toKeys(left.materialOperations)) ===
+			JSON.stringify(toKeys(right.materialOperations)) &&
 		JSON.stringify(toKeys(left.nodeVisibilityOperations)) ===
 			JSON.stringify(toKeys(right.nodeVisibilityOperations)) &&
-		JSON.stringify(toKeys(left.nodeTransformOperations)) ===
-			JSON.stringify(toKeys(right.nodeTransformOperations)) &&
 		JSON.stringify(toKeys(left.viewerOperations)) === JSON.stringify(toKeys(right.viewerOperations))
 	);
 }
@@ -190,22 +178,25 @@ function createVehiclePatchStore() {
 
 			update((state) => {
 				const basePresentation =
-					state.assetId === assetId ? state.presentation : clonePresentation(EMPTY_PRESENTATION_STATE);
+					state.assetId === assetId
+						? state.presentation
+						: clonePresentation(EMPTY_PRESENTATION_STATE);
 				const baseIntentLabel = state.assetId === assetId ? state.intentLabel : null;
 				const nextPresentation = mergePresentationOperations(basePresentation, operations);
 				if (state.assetId === assetId && isPresentationEqual(basePresentation, nextPresentation)) {
 					return state;
 				}
 
-				const nextPast = state.assetId === assetId
-					? [
-							...state.past,
-							{
-								presentation: clonePresentation(basePresentation),
-								intentLabel: baseIntentLabel
-							}
-						]
-					: [];
+				const nextPast =
+					state.assetId === assetId
+						? [
+								...state.past,
+								{
+									presentation: clonePresentation(basePresentation),
+									intentLabel: baseIntentLabel
+								}
+							]
+						: [];
 				return withDerivedState(
 					assetId,
 					nextPresentation,
@@ -336,6 +327,84 @@ function createVehiclePatchStore() {
 			});
 
 			return didClear;
+		},
+		restore(assetId: VehicleAssetId | undefined, restore: FooterChatPresentationRestore): boolean {
+			if (!assetId) {
+				return false;
+			}
+
+			let didRestore = false;
+
+			update((state) => {
+				if (state.assetId !== assetId) {
+					return state;
+				}
+
+				const basePresentation = state.presentation;
+				const nextPresentation = clonePresentation(basePresentation);
+
+				if (restore.restoreAll) {
+					if (state.operations.length === 0) {
+						return state;
+					}
+
+					didRestore = true;
+					return withDerivedState(
+						assetId,
+						clonePresentation(EMPTY_PRESENTATION_STATE),
+						restore.label?.trim() || 'restore original view',
+						[
+							...state.past,
+							{
+								presentation: clonePresentation(basePresentation),
+								intentLabel: state.intentLabel
+							}
+						],
+						[],
+						state.revision + 1
+					);
+				}
+
+				const highlightedTargetIds = new Set(restore.highlightedTargetIds ?? []);
+				const materialTargetIds = new Set(restore.materialTargetIds ?? []);
+				const hiddenTargetIds = new Set(restore.hiddenTargetIds ?? []);
+				const viewerModes = new Set(restore.viewerModes ?? []);
+
+				nextPresentation.highlightOperations = nextPresentation.highlightOperations.filter(
+					(operation) => !highlightedTargetIds.has(operation.targetId)
+				);
+				nextPresentation.materialOperations = nextPresentation.materialOperations.filter(
+					(operation) => !materialTargetIds.has(operation.targetId)
+				);
+				nextPresentation.nodeVisibilityOperations = nextPresentation.nodeVisibilityOperations.filter(
+					(operation) => !hiddenTargetIds.has(operation.targetId)
+				);
+				nextPresentation.viewerOperations = nextPresentation.viewerOperations.filter(
+					(operation) => !viewerModes.has(operation.targetId as 'wireframe' | 'xray' | 'uv_debug' | 'postprocess')
+				);
+
+				if (isPresentationEqual(basePresentation, nextPresentation)) {
+					return state;
+				}
+
+				didRestore = true;
+				return withDerivedState(
+					assetId,
+					nextPresentation,
+					restore.label?.trim() || 'restore original view',
+					[
+						...state.past,
+						{
+							presentation: clonePresentation(basePresentation),
+							intentLabel: state.intentLabel
+						}
+					],
+					[],
+					state.revision + 1
+				);
+			});
+
+			return didRestore;
 		}
 	};
 }

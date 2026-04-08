@@ -6,27 +6,66 @@ export type VehicleNodeSelection = {
 	nodeId: string;
 	nodeName: string;
 	nodePath: string;
+	materialIndex?: number;
+	materialName?: string;
 };
 
+function getSelectionKey(selection: VehicleNodeSelection): string {
+	return [
+		selection.assetId,
+		selection.nodeId,
+		typeof selection.materialIndex === 'number' ? `slot:${selection.materialIndex}` : 'slot:none',
+		selection.materialName?.trim() ? `material:${selection.materialName.trim()}` : 'material:none'
+	].join('|');
+}
+
 function createVehicleNodeSelectionStore() {
-	const { subscribe, set, update } = writable<VehicleNodeSelection | null>(null);
+	const { subscribe, set, update } = writable<VehicleNodeSelection[]>([]);
 
 	return {
 		subscribe,
-		select(selection: VehicleNodeSelection): void {
-			set(selection);
+		select(selection: VehicleNodeSelection, additive = false): void {
+			update((current) => {
+				const scoped = current.filter((entry) => entry.assetId === selection.assetId);
+				const otherAssets = current.filter((entry) => entry.assetId !== selection.assetId);
+				const selectionKey = getSelectionKey(selection);
+				const existing = scoped.find((entry) => getSelectionKey(entry) === selectionKey);
+
+				if (additive) {
+					const nextScoped = existing
+						? scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)
+						: [...scoped, selection];
+					return [...otherAssets, ...nextScoped];
+				}
+
+				if (existing) {
+					return [
+						...otherAssets,
+						...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)
+					];
+				}
+
+				return [...otherAssets, selection];
+			});
 		},
 		clear(assetId?: VehicleAssetId): void {
 			update((current) => {
-				if (!current) {
-					return null;
-				}
-
-				if (assetId && current.assetId !== assetId) {
+				if (current.length === 0) {
 					return current;
 				}
 
-				return null;
+				if (assetId) {
+					return current.filter((entry) => entry.assetId !== assetId);
+				}
+
+				return [];
+			});
+		},
+		replace(assetId: VehicleAssetId, selections: VehicleNodeSelection[]): void {
+			update((current) => {
+				const otherAssets = current.filter((entry) => entry.assetId !== assetId);
+				const scopedSelections = selections.filter((entry) => entry.assetId === assetId);
+				return [...otherAssets, ...scopedSelections];
 			});
 		}
 	};

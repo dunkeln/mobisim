@@ -4,6 +4,17 @@ import OpenAI from 'openai';
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
 import {
+	readAssetSemanticAssignments,
+	listReviewedSemanticGroupExamples,
+	upsertReviewedAssetSemanticAssignments
+} from '$lib/server/connectors/asset-semantic-assignments';
+import { upsertPendingAssetSemanticProposals } from '$lib/server/connectors/asset-semantic-proposals';
+import {
+	ensureSemanticGroupDefinition,
+	resolveSemanticGroupDefinition,
+	readSemanticGroupDefinitions
+} from '$lib/server/connectors/semantic-groups';
+import {
 	resolveSemanticOverlayDirectory,
 	resolveSemanticOverlayPath
 } from '$lib/server/connectors/vehicle-registry/storage';
@@ -140,7 +151,8 @@ function scoreSemanticPriority(value: string): number {
 
 function sortBySemanticPriority<T>(items: T[], getValue: (item: T) => string): T[] {
 	return [...items].sort((left, right) => {
-		const scoreDelta = scoreSemanticPriority(getValue(right)) - scoreSemanticPriority(getValue(left));
+		const scoreDelta =
+			scoreSemanticPriority(getValue(right)) - scoreSemanticPriority(getValue(left));
 		if (scoreDelta !== 0) {
 			return scoreDelta;
 		}
@@ -181,9 +193,7 @@ function normalizeStringArray(value: unknown): string[] {
 	).sort((left, right) => left.localeCompare(right));
 }
 
-function normalizeSuggestion(
-	value: unknown
-): VehicleSemanticMaterialSuggestion | null {
+function normalizeSuggestion(value: unknown): VehicleSemanticMaterialSuggestion | null {
 	if (!value || typeof value !== 'object') {
 		return null;
 	}
@@ -244,7 +254,9 @@ function isVehicleSemanticPartSide(value: unknown): value is VehicleSemanticPart
 }
 
 function isVehicleSemanticPartRegion(value: unknown): value is VehicleSemanticPartRegion {
-	return value === 'front' || value === 'rear' || value === 'mid' || value === 'roof' || value === 'full';
+	return (
+		value === 'front' || value === 'rear' || value === 'mid' || value === 'roof' || value === 'full'
+	);
 }
 
 const VEHICLE_SEMANTIC_GROUP_CATEGORIES = [
@@ -265,15 +277,12 @@ function isVehicleSemanticActionSupport(value: unknown): value is VehicleSemanti
 		value === 'highlight' ||
 		value === 'focus' ||
 		value === 'isolate' ||
-		value === 'explode' ||
 		value === 'paint' ||
 		value === 'tint'
 	);
 }
 
-function isVehicleSemanticGroupCategory(
-	value: unknown
-): value is VehicleSemanticGroup['category'] {
+function isVehicleSemanticGroupCategory(value: unknown): value is VehicleSemanticGroup['category'] {
 	return (
 		typeof value === 'string' &&
 		VEHICLE_SEMANTIC_GROUP_CATEGORIES.includes(value as VehicleSemanticGroup['category'])
@@ -293,9 +302,7 @@ function normalizePartUnit(value: unknown): VehicleSemanticPartUnit | null {
 		typeof candidate.confidence === 'number' && Number.isFinite(candidate.confidence)
 			? candidate.confidence
 			: Number.NaN;
-	const category = isVehicleSemanticPartCategory(candidate.category)
-		? candidate.category
-		: 'other';
+	const category = isVehicleSemanticPartCategory(candidate.category) ? candidate.category : 'other';
 	const nodeIds = normalizeStringArray(candidate.nodeIds);
 	const meshIds = normalizeStringArray(candidate.meshIds);
 	const materialIds = normalizeStringArray(candidate.materialIds);
@@ -409,15 +416,22 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 	};
 }
 
-function buildPrompt(
+async function buildPrompt(
 	capabilities: VehicleInspectionCapabilities,
 	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
 	budget: SemanticPromptBudget
-): string {
-	const prioritizedMaterials = sortBySemanticPriority(capabilities.materials, (material) => material.name).slice(
-		0,
-		budget.maxMaterials
-	);
+): Promise<string> {
+	const [{ definitions }, reviewedExamplesByGroup] = await Promise.all([
+		readSemanticGroupDefinitions(),
+		listReviewedSemanticGroupExamples({
+			excludeAssetId: capabilities.assetId,
+			maxExamplesPerGroup: 2
+		})
+	]);
+	const prioritizedMaterials = sortBySemanticPriority(
+		capabilities.materials,
+		(material) => material.name
+	).slice(0, budget.maxMaterials);
 	const prioritizedCandidates = sortBySemanticPriority(
 		capabilities.controlCandidates,
 		(candidate) => `${candidate.name} ${candidate.path}`
@@ -478,6 +492,35 @@ function buildPrompt(
 					budget.maxStringLength
 				)
 			})),
+			semanticGroupDefinitions: definitions.map((definition) => ({
+				id: definition.id,
+				humanLabel: definition.humanLabel,
+				aliases: definition.aliases.slice(0, 6),
+				category: definition.category,
+				supports: definition.supports,
+				assignmentMode: definition.assignmentMode,
+				exclusiveFamily: definition.exclusiveFamily
+			})),
+			reviewedSemanticExamples: Object.fromEntries(
+				Object.entries(reviewedExamplesByGroup).map(([semanticGroupId, examples]) => [
+					semanticGroupId,
+					examples.map((example) => ({
+						assetId: example.assetId,
+						nodeNames: example.nodeNames.map((value) =>
+							truncateString(value, budget.maxStringLength)
+						),
+						pathHints: example.pathHints.map((value) =>
+							truncateString(value, budget.maxStringLength)
+						),
+						meshNames: example.meshNames.map((value) =>
+							truncateString(value, budget.maxStringLength)
+						),
+						materialNames: example.materialNames.map((value) =>
+							truncateString(value, budget.maxStringLength)
+						)
+					}))
+				])
+			),
 			targetSemanticGroups: [...VEHICLE_SEMANTIC_GROUP_CATEGORIES]
 		},
 		null,
@@ -590,7 +633,7 @@ async function requestSemanticSuggestions(
 												type: 'array',
 												items: {
 													type: 'string',
-													enum: ['highlight', 'focus', 'isolate', 'explode', 'paint', 'tint']
+													enum: ['highlight', 'focus', 'isolate', 'paint', 'tint']
 												}
 											},
 											nodeIds: { type: 'array', items: { type: 'string' } },
@@ -625,27 +668,31 @@ async function requestSemanticSuggestions(
 				messages: [
 					{
 						role: 'developer',
-						content: `You enrich deterministic GLB manifests with semantic material labels.
+						content: `You enrich deterministic GLB manifests with semantic material labels and node-to-group proposals.
 Only use material IDs supplied in the input.
 Do not invent missing IDs, nodes, meshes, materials, or vehicle parts.
 Prefer precision over recall. Skip uncertain labels instead of guessing.
 Return only material-level suggestions for these stable semantic tags: ${VEHICLE_SEMANTIC_TAGS.join(', ')}.
 Return part assemblies only when they can be grounded to real nodeIds, meshIds, or materialIds from the input.
-Return semantic operational groups when they are useful abstractions over real IDs, even if they are not precise assemblies.
-Good examples: wheels, doors, front lighting, rear lighting, glasshouse, body shell, front face, trim, interior, and inferred units like propeller or number plate.
-Groups must declare which actions they support, such as highlight, focus, isolate, explode, paint, or tint.
+Return semantic operational groups only when they can be grounded to real nodeIds, meshIds, or materialIds and align with the shared semantic group definitions in the input.
+Use reviewed semantic examples as reusable hints for how existing group definitions map onto node names, paths, meshes, and materials across assets.
+Prefer proposing assignments to existing definitions over inventing new abstractions.
+Good examples: wheels, doors, front lighting, rear lighting, glasshouse, body shell, front face, trim, interior, and inferred units like propeller or number plate when the definition exists or must be justified.
+Groups must declare which actions they support, such as highlight, focus, isolate, paint, or tint.
 Use aliases that help a planner match human requests like body color, glass tint, headlights, grille, or wheels.`
 					},
 					{
 						role: 'user',
-						content: buildPrompt(capabilities, structure, budget)
+						content: await buildPrompt(capabilities, structure, budget)
 					}
 				]
 			});
 
 			const content = completion.choices[0]?.message.content;
 			if (!content) {
-				throw new VehicleSemanticOverlayUpstreamError('OpenAI returned no semantic overlay content.');
+				throw new VehicleSemanticOverlayUpstreamError(
+					'OpenAI returned no semantic overlay content.'
+				);
 			}
 
 			const parsed = JSON.parse(content) as VehicleSemanticSuggestionEnvelope;
@@ -717,9 +764,12 @@ function validateMaterials(
 
 		accepted.set(key, {
 			...existing,
-			humanLabel: existing.humanLabel.length >= suggestion.humanLabel.length ? existing.humanLabel : suggestion.humanLabel,
-			aliases: Array.from(new Set([...existing.aliases, ...suggestion.aliases])).sort((left, right) =>
-				left.localeCompare(right)
+			humanLabel:
+				existing.humanLabel.length >= suggestion.humanLabel.length
+					? existing.humanLabel
+					: suggestion.humanLabel,
+			aliases: Array.from(new Set([...existing.aliases, ...suggestion.aliases])).sort(
+				(left, right) => left.localeCompare(right)
 			),
 			semanticTags: Array.from(
 				new Set<VehicleSemanticTag>([...existing.semanticTags, ...suggestion.semanticTags])
@@ -790,7 +840,10 @@ function validateParts(
 
 		accepted.set(part.id, {
 			...existing,
-			humanLabel: existing.humanLabel.length >= part.humanLabel.length ? existing.humanLabel : part.humanLabel,
+			humanLabel:
+				existing.humanLabel.length >= part.humanLabel.length
+					? existing.humanLabel
+					: part.humanLabel,
 			aliases: Array.from(new Set([...existing.aliases, ...part.aliases])).sort((left, right) =>
 				left.localeCompare(right)
 			),
@@ -811,7 +864,9 @@ function validateParts(
 	}
 
 	return {
-		acceptedParts: Array.from(accepted.values()).sort((left, right) => left.id.localeCompare(right.id)),
+		acceptedParts: Array.from(accepted.values()).sort((left, right) =>
+			left.id.localeCompare(right.id)
+		),
 		discardedSuggestions
 	};
 }
@@ -828,8 +883,12 @@ function validateGroups(
 	const validNodeIds = new Set(structure.nodes.map((node) => node.id));
 	const validMeshIds = new Set(structure.meshes.map((mesh) => mesh.id));
 	const validMaterialIds = new Set(structure.materials.map((material) => material.id));
-	const structuralMaterialsById = new Map(structure.materials.map((material) => [material.id, material]));
-	const semanticMaterialsById = new Map(acceptedMaterials.map((material) => [material.targetId, material]));
+	const structuralMaterialsById = new Map(
+		structure.materials.map((material) => [material.id, material])
+	);
+	const semanticMaterialsById = new Map(
+		acceptedMaterials.map((material) => [material.targetId, material])
+	);
 	const accepted = new Map<string, VehicleSemanticGroup>();
 	const discardedSuggestions: VehicleSemanticOverlayDiscard[] = [];
 
@@ -901,32 +960,32 @@ function validateGroups(
 				existing.humanLabel.length >= normalizedGroup.humanLabel.length
 					? existing.humanLabel
 					: normalizedGroup.humanLabel,
-			aliases: Array.from(new Set([...existing.aliases, ...normalizedGroup.aliases])).sort((left, right) =>
-				left.localeCompare(right)
+			aliases: Array.from(new Set([...existing.aliases, ...normalizedGroup.aliases])).sort(
+				(left, right) => left.localeCompare(right)
 			),
 			confidence: Math.max(existing.confidence, normalizedGroup.confidence),
-			supports: Array.from(new Set([...existing.supports, ...normalizedGroup.supports])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			nodeIds: Array.from(new Set([...existing.nodeIds, ...normalizedGroup.nodeIds])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			meshIds: Array.from(new Set([...existing.meshIds, ...normalizedGroup.meshIds])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			materialIds: Array.from(new Set([...existing.materialIds, ...normalizedGroup.materialIds])).sort(
+			supports: Array.from(new Set([...existing.supports, ...normalizedGroup.supports])).sort(
 				(left, right) => left.localeCompare(right)
 			),
+			nodeIds: Array.from(new Set([...existing.nodeIds, ...normalizedGroup.nodeIds])).sort(
+				(left, right) => left.localeCompare(right)
+			),
+			meshIds: Array.from(new Set([...existing.meshIds, ...normalizedGroup.meshIds])).sort(
+				(left, right) => left.localeCompare(right)
+			),
+			materialIds: Array.from(
+				new Set([...existing.materialIds, ...normalizedGroup.materialIds])
+			).sort((left, right) => left.localeCompare(right)),
 			derivedFrom: Array.from(
 				new Set([...(existing.derivedFrom ?? []), ...(normalizedGroup.derivedFrom ?? [])])
-			).sort(
-				(left, right) => left.localeCompare(right)
-			)
+			).sort((left, right) => left.localeCompare(right))
 		});
 	}
 
 	return {
-		acceptedGroups: Array.from(accepted.values()).sort((left, right) => left.id.localeCompare(right.id)),
+		acceptedGroups: Array.from(accepted.values()).sort((left, right) =>
+			left.id.localeCompare(right.id)
+		),
 		discardedSuggestions
 	};
 }
@@ -945,7 +1004,9 @@ function isMaterialCompatibleWithGroupCategory(
 	);
 	const positiveMatches = (pattern: RegExp) => countPatternMatches(contexts, pattern);
 
-	const glassSignals = positiveMatches(/\b(window|windshield|windscreen|glass|rearglass|backglass|quarter)\b/i);
+	const glassSignals = positiveMatches(
+		/\b(window|windshield|windscreen|glass|rearglass|backglass|quarter)\b/i
+	);
 	const wheelSignals = positiveMatches(/\b(wheel|rim|tire|tyre|spoke|brake|caliper|rotor|disc)\b/i);
 	const lightSignals = positiveMatches(/\b(light|lamp|headlight|taillight|tail light)\b/i);
 	const grilleSignals = positiveMatches(/\b(grille|grill|fascia|bumper|nose|front)\b/i);
@@ -1027,7 +1088,9 @@ function synthesizeSemanticGroups(
 			supports,
 			nodeIds: [],
 			meshIds: [],
-			materialIds: matched.map((entry) => entry.targetId).sort((left, right) => left.localeCompare(right)),
+			materialIds: matched
+				.map((entry) => entry.targetId)
+				.sort((left, right) => left.localeCompare(right)),
 			derivedFrom: ['materials', 'synthetic']
 		};
 	};
@@ -1070,7 +1133,7 @@ function synthesizeSemanticGroups(
 			'group_wheels',
 			'wheels',
 			'wheels',
-			['highlight', 'focus', 'isolate', 'explode'],
+			['highlight', 'focus', 'isolate'],
 			(material) => material.semanticTags.includes('wheel_outer_face'),
 			['wheel', 'wheels', 'rim', 'rims']
 		)
@@ -1100,7 +1163,7 @@ function synthesizeSemanticGroups(
 			'group_front_face',
 			'front face',
 			'front_face',
-			['highlight', 'focus', 'isolate', 'explode'],
+			['highlight', 'focus', 'isolate'],
 			(material) =>
 				material.semanticTags.includes('front_grille') ||
 				material.semanticTags.includes('left_headlight') ||
@@ -1113,13 +1176,41 @@ function synthesizeSemanticGroups(
 			'group_doors',
 			'doors',
 			'doors',
-			['highlight', 'focus', 'isolate', 'explode'],
-			(part) => part.category === 'door' || /door/i.test(`${part.id} ${part.humanLabel} ${part.aliases.join(' ')}`),
+			['highlight', 'focus', 'isolate'],
+			(part) =>
+				part.category === 'door' ||
+				/door/i.test(`${part.id} ${part.humanLabel} ${part.aliases.join(' ')}`),
 			['door']
 		)
 	);
 
 	return synthesized;
+}
+
+function mapGroupCategoryToPartCategory(
+	category: VehicleSemanticGroup['category']
+): VehicleSemanticPartCategory {
+	switch (category) {
+		case 'wheels':
+			return 'wheel';
+		case 'doors':
+			return 'door';
+		case 'front_lighting':
+		case 'rear_lighting':
+			return 'light';
+		case 'glasshouse':
+			return 'glass';
+		case 'body_shell':
+			return 'body';
+		case 'trim':
+			return 'trim';
+		case 'interior':
+			return 'interior';
+		case 'front_face':
+		case 'other':
+		default:
+			return 'other';
+	}
 }
 
 function normalizeOverlay(value: unknown): VehicleSemanticOverlay | null {
@@ -1165,21 +1256,21 @@ function normalizeOverlay(value: unknown): VehicleSemanticOverlay | null {
 						record.kind === 'group'
 							? 'group'
 							: record.kind === 'part'
-							? 'part'
-							: record.kind === 'material'
-								? 'material'
-								: record.suggestion
+								? 'part'
+								: record.kind === 'material'
 									? 'material'
-									: null;
+									: record.suggestion
+										? 'material'
+										: null;
 					const reason = typeof record.reason === 'string' ? record.reason : '';
 					const payload =
 						kind === 'group'
 							? normalizeGroup(record.payload)
 							: kind === 'part'
-							? normalizePartUnit(record.payload)
-							: kind === 'material'
-								? normalizeSuggestion(record.payload ?? record.suggestion)
-								: null;
+								? normalizePartUnit(record.payload)
+								: kind === 'material'
+									? normalizeSuggestion(record.payload ?? record.suggestion)
+									: null;
 					if (!kind || !payload || reason.length === 0) {
 						return null;
 					}
@@ -1202,7 +1293,7 @@ function normalizeOverlay(value: unknown): VehicleSemanticOverlay | null {
 	};
 }
 
-export async function readVehicleSemanticOverlay(
+async function readStoredVehicleSemanticOverlay(
 	assetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
 	try {
@@ -1213,11 +1304,244 @@ export async function readVehicleSemanticOverlay(
 	}
 }
 
+async function deriveReviewedSemanticGroups(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string,
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>
+): Promise<VehicleSemanticGroup[]> {
+	const [{ assignments }, { definitions }] = await Promise.all([
+		readAssetSemanticAssignments(assetId, structuralGeneratedAt),
+		readSemanticGroupDefinitions()
+	]);
+	const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
+	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
+	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
+	const materialById = new Map(structure.materials.map((material) => [material.id, material]));
+	const groupedAssignments = new Map<string, { nodeIds: string[]; materialIds: string[] }>();
+
+	for (const assignment of assignments) {
+		const existing = groupedAssignments.get(assignment.semanticGroupId) ?? {
+			nodeIds: [],
+			materialIds: []
+		};
+		if (assignment.nodeId) {
+			existing.nodeIds.push(assignment.nodeId);
+		}
+		if (assignment.materialId) {
+			existing.materialIds.push(assignment.materialId);
+		}
+		groupedAssignments.set(assignment.semanticGroupId, existing);
+	}
+
+	const groups: VehicleSemanticGroup[] = [];
+
+	for (const [semanticGroupId, assignedTargets] of groupedAssignments) {
+		const definition = definitionById.get(semanticGroupId);
+		if (!definition) {
+			continue;
+		}
+
+		const nodeIds = Array.from(
+			new Set([
+				...assignedTargets.nodeIds.filter((nodeId) => nodeById.has(nodeId)),
+				...assignedTargets.materialIds.flatMap(
+					(materialId) => materialById.get(materialId)?.nodeIds ?? []
+				)
+			])
+		).sort((left, right) => left.localeCompare(right));
+		const directMaterialIds = Array.from(
+			new Set(assignedTargets.materialIds.filter((materialId) => materialById.has(materialId)))
+		).sort((left, right) => left.localeCompare(right));
+		if (nodeIds.length === 0 && directMaterialIds.length === 0) {
+			continue;
+		}
+
+		const meshIds = Array.from(
+			new Set(
+				nodeIds.flatMap((nodeId) => {
+					const meshId = nodeById.get(nodeId)?.meshId;
+					return meshId ? [meshId] : [];
+				})
+			)
+		).sort((left, right) => left.localeCompare(right));
+		const materialIds = Array.from(
+			new Set([
+				...directMaterialIds,
+				...meshIds.flatMap((meshId) => meshById.get(meshId)?.materialIds ?? [])
+			])
+		).sort((left, right) => left.localeCompare(right));
+
+		groups.push({
+			id: definition.category === 'other' ? definition.id : `group_${definition.id}`,
+			humanLabel: definition.humanLabel,
+			aliases: definition.aliases,
+			confidence: 1,
+			category: definition.category,
+			supports: definition.supports,
+			nodeIds,
+			meshIds,
+			materialIds,
+			derivedFrom: ['user']
+		});
+	}
+
+	return groups.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function mergePlannerVisibleGroups(
+	baseGroups: VehicleSemanticGroup[],
+	reviewedGroups: VehicleSemanticGroup[]
+): VehicleSemanticGroup[] {
+	const accepted = new Map<string, VehicleSemanticGroup>();
+	const deterministicGroups = baseGroups.filter(
+		(group) =>
+			!(group.derivedFrom ?? []).includes('llm') && !(group.derivedFrom ?? []).includes('user')
+	);
+
+	for (const group of deterministicGroups) {
+		accepted.set(group.id, group);
+	}
+
+	for (const group of reviewedGroups) {
+		accepted.set(group.id, group);
+	}
+
+	return Array.from(accepted.values()).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function syncAcceptedPartsWithReviewedGroups(
+	baseParts: VehicleSemanticPartUnit[],
+	reviewedGroups: VehicleSemanticGroup[]
+): VehicleSemanticPartUnit[] {
+	const partCountByCategory = new Map<VehicleSemanticPartCategory, number>();
+
+	for (const part of baseParts) {
+		partCountByCategory.set(part.category, (partCountByCategory.get(part.category) ?? 0) + 1);
+	}
+
+	return baseParts.map((part) => {
+		if ((partCountByCategory.get(part.category) ?? 0) !== 1 || part.category === 'other') {
+			return part;
+		}
+
+		const compatibleGroups = reviewedGroups.filter(
+			(group) => mapGroupCategoryToPartCategory(group.category) === part.category
+		);
+		if (compatibleGroups.length !== 1) {
+			return part;
+		}
+
+		const compatibleGroup = compatibleGroups[0]!;
+		return {
+			...part,
+			nodeIds: Array.from(new Set([...part.nodeIds, ...compatibleGroup.nodeIds])).sort((left, right) =>
+				left.localeCompare(right)
+			),
+			meshIds: Array.from(new Set([...part.meshIds, ...compatibleGroup.meshIds])).sort((left, right) =>
+				left.localeCompare(right)
+			),
+			materialIds: Array.from(new Set([...part.materialIds, ...compatibleGroup.materialIds])).sort(
+				(left, right) => left.localeCompare(right)
+			)
+		};
+	});
+}
+
+function resolveGroupNodeIds(
+	group: VehicleSemanticGroup,
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>
+): string[] {
+	const nodeByMeshId = new Map<string, string[]>();
+
+	for (const node of structure.nodes) {
+		if (!node.meshId) {
+			continue;
+		}
+
+		const current = nodeByMeshId.get(node.meshId) ?? [];
+		current.push(node.id);
+		nodeByMeshId.set(node.meshId, current);
+	}
+
+	const materialById = new Map(structure.materials.map((material) => [material.id, material]));
+
+	return Array.from(
+		new Set([
+			...group.nodeIds,
+			...group.meshIds.flatMap((meshId) => nodeByMeshId.get(meshId) ?? []),
+			...group.materialIds.flatMap((materialId) => materialById.get(materialId)?.nodeIds ?? [])
+		])
+	).sort((left, right) => left.localeCompare(right));
+}
+
+async function persistSemanticGroupProposals(
+	assetId: VehicleAssetId,
+	structuralGeneratedAt: string,
+	groups: VehicleSemanticGroup[],
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>
+): Promise<VehicleSemanticOverlayDiscard[]> {
+	const discards: VehicleSemanticOverlayDiscard[] = [];
+
+	for (const group of groups) {
+		const definition = await ensureSemanticGroupDefinition({
+			category: group.category,
+			humanLabel: group.humanLabel,
+			aliases: group.aliases
+		});
+		const nodeIds = resolveGroupNodeIds(group, structure);
+
+		if (nodeIds.length === 0) {
+			discards.push({
+				kind: 'group',
+				payload: group,
+				reason: 'LLM semantic group proposal could not be grounded to structural node IDs'
+			});
+			continue;
+		}
+
+		await upsertPendingAssetSemanticProposals({
+			assetId,
+			structuralGeneratedAt,
+			nodeIds,
+			semanticGroupId: definition.id,
+			confidence: group.confidence
+		});
+	}
+
+	return discards;
+}
+
+export async function readVehicleSemanticOverlay(
+	assetId: VehicleAssetId
+): Promise<VehicleSemanticOverlay | null> {
+	const overlay = await readStoredVehicleSemanticOverlay(assetId);
+	if (!overlay) {
+		return null;
+	}
+
+	const structure = await deriveStructuralAssetSnapshot(assetId);
+	const reviewedGroups = await deriveReviewedSemanticGroups(
+		assetId,
+		overlay.structuralGeneratedAt,
+		structure
+	);
+
+	return {
+		...overlay,
+		acceptedParts: syncAcceptedPartsWithReviewedGroups(overlay.acceptedParts, reviewedGroups),
+		acceptedGroups: mergePlannerVisibleGroups(overlay.acceptedGroups, reviewedGroups)
+	};
+}
+
 export async function writeVehicleSemanticOverlay(
 	overlay: VehicleSemanticOverlay
 ): Promise<VehicleSemanticOverlay> {
 	await mkdir(resolveSemanticOverlayDirectory(), { recursive: true });
-	await writeFile(resolveSemanticOverlayPath(overlay.assetId), JSON.stringify(overlay, null, 2), 'utf8');
+	await writeFile(
+		resolveSemanticOverlayPath(overlay.assetId),
+		JSON.stringify(overlay, null, 2),
+		'utf8'
+	);
 	return overlay;
 }
 
@@ -1228,7 +1552,7 @@ export async function generateVehicleSemanticOverlay(
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
 	const structure = await deriveStructuralAssetSnapshot(assetId);
 	const minAcceptedConfidence = options.minAcceptedConfidence ?? DEFAULT_MIN_ACCEPTED_CONFIDENCE;
-	const existing = await readVehicleSemanticOverlay(assetId);
+	const existing = await readStoredVehicleSemanticOverlay(assetId);
 
 	if (
 		existing &&
@@ -1249,6 +1573,12 @@ export async function generateVehicleSemanticOverlay(
 	const normalizedGroups = raw.groups
 		.map((entry) => normalizeGroup(entry))
 		.filter((entry): entry is VehicleSemanticGroup => entry !== null);
+	const proposalDiscards = await persistSemanticGroupProposals(
+		assetId,
+		capabilities.generatedAt,
+		normalizedGroups,
+		structure
+	);
 	const validatedMaterials = validateMaterials(
 		normalizedMaterials,
 		capabilities,
@@ -1256,11 +1586,21 @@ export async function generateVehicleSemanticOverlay(
 	);
 	const validatedParts = validateParts(normalizedParts, structure, minAcceptedConfidence);
 	const validatedGroups = validateGroups(
-		[...normalizedGroups, ...synthesizeSemanticGroups(validatedMaterials.acceptedMaterials, validatedParts.acceptedParts)],
+		synthesizeSemanticGroups(validatedMaterials.acceptedMaterials, validatedParts.acceptedParts),
 		structure,
 		validatedMaterials.acceptedMaterials,
 		minAcceptedConfidence
 	);
+	const reviewedGroups = await deriveReviewedSemanticGroups(
+		assetId,
+		capabilities.generatedAt,
+		structure
+	);
+	const mergedGroups = mergePlannerVisibleGroups(
+		validatedGroups.acceptedGroups,
+		reviewedGroups
+	);
+	const mergedParts = syncAcceptedPartsWithReviewedGroups(validatedParts.acceptedParts, reviewedGroups);
 
 	return writeVehicleSemanticOverlay({
 		assetId,
@@ -1269,33 +1609,15 @@ export async function generateVehicleSemanticOverlay(
 		model: getSemanticModel(),
 		minAcceptedConfidence,
 		acceptedMaterials: validatedMaterials.acceptedMaterials,
-		acceptedParts: validatedParts.acceptedParts,
-		acceptedGroups: validatedGroups.acceptedGroups,
+		acceptedParts: mergedParts,
+		acceptedGroups: mergedGroups,
 		discardedSuggestions: [
 			...validatedMaterials.discardedSuggestions,
 			...validatedParts.discardedSuggestions,
-			...validatedGroups.discardedSuggestions
+			...validatedGroups.discardedSuggestions,
+			...proposalDiscards
 		]
 	});
-}
-
-function defaultSupportsForGroupCategory(
-	category: VehicleSemanticGroup['category']
-): VehicleSemanticActionSupport[] {
-	switch (category) {
-		case 'glasshouse':
-			return ['focus', 'highlight', 'isolate', 'tint'];
-		case 'body_shell':
-			return ['focus', 'highlight', 'isolate', 'paint'];
-		case 'other':
-			return ['explode', 'focus', 'highlight', 'isolate'];
-		default:
-			return ['explode', 'focus', 'highlight', 'isolate'];
-	}
-}
-
-function humanizeGroupCategory(category: VehicleSemanticGroup['category']): string {
-	return category.replaceAll('_', ' ');
 }
 
 export async function annotateVehicleSemanticGroup(
@@ -1304,13 +1626,20 @@ export async function annotateVehicleSemanticGroup(
 ): Promise<VehicleSemanticOverlay> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
 	const structure = await deriveStructuralAssetSnapshot(assetId);
-	const node = structure.nodes.find((entry) => entry.id === annotation.nodeId);
+	const annotationNodeIds = Array.from(new Set(annotation.nodeIds)).sort((left, right) =>
+		left.localeCompare(right)
+	);
+	const nodes = annotationNodeIds
+		.map((nodeId) => structure.nodes.find((entry) => entry.id === nodeId))
+		.filter((node): node is NonNullable<typeof node> => node !== undefined);
 
-	if (!node) {
-		throw new Error(`Unknown node ID: ${annotation.nodeId}`);
+	if (nodes.length !== annotationNodeIds.length) {
+		const knownNodeIds = new Set(nodes.map((node) => node.id));
+		const unknownNodeIds = annotationNodeIds.filter((nodeId) => !knownNodeIds.has(nodeId));
+		throw new Error(`Unknown node ID: ${unknownNodeIds.join(', ')}`);
 	}
 
-	const existing = await readVehicleSemanticOverlay(assetId);
+	const existing = await readStoredVehicleSemanticOverlay(assetId);
 	const baseOverlay: VehicleSemanticOverlay =
 		existing && existing.structuralGeneratedAt === capabilities.generatedAt
 			? existing
@@ -1326,72 +1655,68 @@ export async function annotateVehicleSemanticGroup(
 					discardedSuggestions: []
 				};
 
-	const mesh = node.meshId ? structure.meshes.find((entry) => entry.id === node.meshId) : undefined;
-	const materialIds = mesh?.materialIds ?? [];
-	const aliases = normalizeStringArray(annotation.aliases);
-	const humanLabel = annotation.humanLabel?.trim() || humanizeGroupCategory(annotation.category);
-	const selectionKey =
-		annotation.category === 'other'
-			? `${annotation.category}:${slugifyPartId(humanLabel)}`
-			: annotation.category;
-	const existingIndex = baseOverlay.acceptedGroups.findIndex((group) => {
-		const groupKey =
-			group.category === 'other'
-				? `${group.category}:${slugifyPartId(group.humanLabel)}`
-				: group.category;
-		return groupKey === selectionKey;
-	});
-	const nextGroup: VehicleSemanticGroup = {
-		id:
-			annotation.category === 'other'
-				? slugifyPartId(humanLabel) || 'group_other'
-				: `group_${annotation.category}`,
-		humanLabel,
-		aliases,
-		confidence: 1,
+	const definition = await resolveSemanticGroupDefinition({
+		semanticGroup: annotation.semanticGroup,
 		category: annotation.category,
-		supports: defaultSupportsForGroupCategory(annotation.category),
-		nodeIds: [node.id],
-		meshIds: mesh ? [mesh.id] : [],
+		humanLabel: annotation.humanLabel,
+		aliases: annotation.aliases
+	});
+	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
+	const materialIds = Array.from(
+		new Set(
+			(annotation.materialSelections ?? []).flatMap((selection) => {
+				const node = nodes.find((entry) => entry.id === selection.nodeId);
+				if (!node?.meshId) {
+					return [];
+				}
+
+				const mesh = meshById.get(node.meshId);
+				if (!mesh) {
+					return [];
+				}
+
+				if (
+					typeof selection.materialIndex === 'number' &&
+					selection.materialIndex >= 0 &&
+					selection.materialIndex < mesh.materialIds.length
+				) {
+					return [mesh.materialIds[selection.materialIndex]!];
+				}
+
+				if (selection.materialName) {
+					return mesh.materialIds.filter((materialId, index) => {
+						const materialName = mesh.materialNames[index];
+						return materialName === selection.materialName;
+					});
+				}
+
+				return [];
+			})
+		)
+	).sort((left, right) => left.localeCompare(right));
+
+	await upsertReviewedAssetSemanticAssignments({
+		assetId,
+		structuralGeneratedAt: capabilities.generatedAt,
+		nodeIds: annotationNodeIds,
 		materialIds,
-		derivedFrom: ['user']
+		semanticGroupId: definition.id,
+		reviewer: 'user'
+	});
+
+	const reviewedGroups = await deriveReviewedSemanticGroups(
+		assetId,
+		capabilities.generatedAt,
+		structure
+	);
+	const nextOverlay: VehicleSemanticOverlay = {
+		...baseOverlay,
+		generatedAt: new Date().toISOString(),
+		acceptedParts: syncAcceptedPartsWithReviewedGroups(baseOverlay.acceptedParts, reviewedGroups),
+		acceptedGroups: mergePlannerVisibleGroups(baseOverlay.acceptedGroups, reviewedGroups)
 	};
 
-	if (existingIndex >= 0) {
-		const existingGroup = baseOverlay.acceptedGroups[existingIndex]!;
-		baseOverlay.acceptedGroups[existingIndex] = {
-			...existingGroup,
-			humanLabel: nextGroup.humanLabel,
-			aliases: Array.from(new Set([...existingGroup.aliases, ...nextGroup.aliases])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			confidence: 1,
-			supports: Array.from(new Set([...existingGroup.supports, ...nextGroup.supports])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			nodeIds: Array.from(new Set([...existingGroup.nodeIds, node.id])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			meshIds: Array.from(new Set([...existingGroup.meshIds, ...nextGroup.meshIds])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			materialIds: Array.from(
-				new Set([...existingGroup.materialIds, ...nextGroup.materialIds])
-			).sort((left, right) => left.localeCompare(right)),
-			derivedFrom: Array.from(
-				new Set([...(existingGroup.derivedFrom ?? []), 'user'])
-			).sort((left, right) => left.localeCompare(right)) as Array<
-				'llm' | 'synthetic' | 'materials' | 'parts' | 'user'
-			>
-		};
-	} else {
-		baseOverlay.acceptedGroups = [...baseOverlay.acceptedGroups, nextGroup].sort((left, right) =>
-			left.id.localeCompare(right.id)
-		);
-	}
-
-	baseOverlay.generatedAt = new Date().toISOString();
-	return writeVehicleSemanticOverlay(baseOverlay);
+	return writeVehicleSemanticOverlay(nextOverlay);
 }
 
 function createRefreshKey(
@@ -1518,7 +1843,12 @@ function groupMatchesQuery(group: VehicleSemanticGroup, query: string): boolean 
 		return false;
 	}
 
-	const haystack = [group.id.replaceAll('_', ' '), group.humanLabel, group.category, ...group.aliases]
+	const haystack = [
+		group.id.replaceAll('_', ' '),
+		group.humanLabel,
+		group.category,
+		...group.aliases
+	]
 		.join(' ')
 		.toLowerCase();
 
@@ -1578,7 +1908,9 @@ export async function listSemanticGroupsByQuery(
 	}
 
 	const structure = await deriveStructuralAssetSnapshot(assetId);
-	const structuralMaterialsById = new Map(structure.materials.map((material) => [material.id, material]));
+	const structuralMaterialsById = new Map(
+		structure.materials.map((material) => [material.id, material])
+	);
 	const semanticMaterialsById = new Map(
 		overlay.acceptedMaterials.map((material) => [material.targetId, material])
 	);
@@ -1608,11 +1940,14 @@ export async function listSemanticGroupsByQuery(
 	);
 	const rankedGroups = matchedGroups.sort((left, right) => {
 		const leftCoverageScore =
-			(left.nodeIds.length > 0 ? 1000 : 0) + (left.meshIds.length > 0 ? 100 : 0) + left.materialIds.length;
+			(left.nodeIds.length > 0 ? 1000 : 0) +
+			(left.meshIds.length > 0 ? 100 : 0) +
+			left.materialIds.length;
 		const rightCoverageScore =
-			(right.nodeIds.length > 0 ? 1000 : 0) + (right.meshIds.length > 0 ? 100 : 0) + right.materialIds.length;
-		const preferStructuralCoverage =
-			support === 'explode' || support === 'focus' || support === 'isolate';
+			(right.nodeIds.length > 0 ? 1000 : 0) +
+			(right.meshIds.length > 0 ? 100 : 0) +
+			right.materialIds.length;
+		const preferStructuralCoverage = support === 'focus' || support === 'isolate';
 
 		if (preferStructuralCoverage && leftCoverageScore !== rightCoverageScore) {
 			return rightCoverageScore - leftCoverageScore;
@@ -1638,7 +1973,9 @@ export async function listSemanticGroupsByQuery(
 
 	for (const group of rankedGroups) {
 		const selectionKey =
-			group.category === 'other' ? `${group.category}:${slugifyPartId(group.humanLabel)}` : group.category;
+			group.category === 'other'
+				? `${group.category}:${slugifyPartId(group.humanLabel)}`
+				: group.category;
 		if (!deduped.has(selectionKey)) {
 			deduped.set(selectionKey, group);
 		}

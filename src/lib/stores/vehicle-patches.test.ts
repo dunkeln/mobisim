@@ -142,7 +142,7 @@ describe('vehiclePatchState highlight behavior', () => {
 		expect(get(vehiclePatchState).intentLabel).toBe('isolate wheels');
 	});
 
-	it('keeps isolate and explode node layers composable alongside material edits', () => {
+	it('keeps node visibility, material, and viewer layers composable', () => {
 		vehiclePatchState.reset();
 
 		vehiclePatchState.queue('audi_r8', [
@@ -156,11 +156,10 @@ describe('vehiclePatchState highlight behavior', () => {
 		]);
 		vehiclePatchState.queue('audi_r8', [
 			{
-				targetType: 'node',
-				targetId: 'node-2',
-				targetName: 'Grille',
-				op: 'set_translation',
-				value: [0.2, 0.4, 1.1]
+				targetType: 'viewer',
+				targetId: 'xray',
+				op: 'set_enabled',
+				value: true
 			}
 		]);
 		vehiclePatchState.queue('audi_r8', [
@@ -176,11 +175,59 @@ describe('vehiclePatchState highlight behavior', () => {
 		const state = get(vehiclePatchState);
 
 		expect(state.presentation.nodeVisibilityOperations).toHaveLength(1);
-		expect(state.presentation.nodeTransformOperations).toHaveLength(1);
 		expect(state.presentation.materialOperations).toHaveLength(1);
+		expect(state.presentation.viewerOperations).toHaveLength(1);
 		expect(state.operations).toHaveLength(3);
 		expect(state.operations[0]?.op).toBe('set_visibility');
-		expect(state.operations[1]?.op).toBe('set_translation');
-		expect(state.operations[2]?.op).toBe('set_base_color_factor');
+		expect(state.operations[1]?.op).toBe('set_base_color_factor');
+		expect(state.operations[2]?.op).toBe('set_enabled');
+	});
+
+	it('restores targeted presentation layers back to the original rendered state', () => {
+		vehiclePatchState.reset();
+
+		vehiclePatchState.queue('audi_r8', [
+			{
+				targetType: 'node',
+				targetId: 'node-wheel-left',
+				targetName: 'Left Wheel',
+				op: 'set_visibility',
+				value: false
+			},
+			{
+				targetType: 'viewer',
+				targetId: 'uv_debug',
+				op: 'set_enabled',
+				value: true
+			},
+			{
+				targetType: 'material',
+				targetId: 'material-body',
+				targetName: 'Body',
+				op: 'set_base_color_factor',
+				value: [0.2, 0.1, 0.4, 1]
+			},
+			{
+				targetType: 'material',
+				targetId: 'material-wheel',
+				targetName: 'Wheel',
+				op: 'set_overlay_highlight',
+				value: [0.5, 0.5, 0.8, 0.48]
+			}
+		]);
+
+		const didRestore = vehiclePatchState.restore('audi_r8', {
+			hiddenTargetIds: ['node-wheel-left'],
+			viewerModes: ['uv_debug'],
+			label: 'restore original view'
+		});
+		const state = get(vehiclePatchState);
+
+		expect(didRestore).toBe(true);
+		expect(state.presentation.nodeVisibilityOperations).toHaveLength(0);
+		expect(state.presentation.viewerOperations).toHaveLength(0);
+		expect(state.presentation.materialOperations).toHaveLength(1);
+		expect(state.presentation.highlightOperations).toHaveLength(1);
+		expect(state.intentLabel).toBe('restore original view');
 	});
 });

@@ -41,8 +41,8 @@ describe('deriveVehicleInspectionCapabilities', () => {
 				{
 					targetType: 'node',
 					targetId: firstNode!.nodeId,
-					op: 'set_rotation',
-					value: [0, 45, 0]
+					op: 'set_visibility',
+					value: false
 				},
 				{
 					targetType: 'material',
@@ -105,15 +105,17 @@ describe('deriveVehicleInspectionCapabilities', () => {
 	});
 
 	it('adds finish operations for expressive body paint requests', async () => {
-		const plan = await planVehicleBodyPaint(
-			'audi_r8',
-			[0.22, 0.12, 0.34, 1],
-			{ metalness: 1, roughness: 0.08, envMapIntensity: 1.85 }
-		);
+		const plan = await planVehicleBodyPaint('audi_r8', [0.22, 0.12, 0.34, 1], {
+			metalness: 1,
+			roughness: 0.08,
+			envMapIntensity: 1.85
+		});
 
 		expect(plan.operations.some((operation) => operation.op === 'set_metalness_factor')).toBe(true);
 		expect(plan.operations.some((operation) => operation.op === 'set_roughness_factor')).toBe(true);
-		expect(plan.operations.some((operation) => operation.op === 'set_env_map_intensity')).toBe(true);
+		expect(plan.operations.some((operation) => operation.op === 'set_env_map_intensity')).toBe(
+			true
+		);
 	});
 
 	it('plans window tint operations for configured glass materials', async () => {
