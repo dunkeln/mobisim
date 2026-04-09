@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const createMock = vi.fn();
 const resolveVehicleIntentMock = vi.fn();
 const planNormalizedVehiclePaintIntentMock = vi.fn();
-const annotateVehicleSemanticGroupMock = vi.fn();
 const deriveVehicleInspectionCapabilitiesMock = vi.fn();
 const deriveStructuralAssetSnapshotMock = vi.fn();
 const readVehicleSemanticOverlayMock = vi.fn();
 const generateVehicleSemanticOverlayMock = vi.fn();
 const getVehicleSemanticOverlayStatusMock = vi.fn();
 const assignSemanticIngressMock = vi.fn();
+const listSemanticIngressBindingsMock = vi.fn();
 const mutateVehicleSemanticAssignmentMock = vi.fn();
 const createSemanticGroupDefinitionMock = vi.fn();
 const findSemanticGroupDefinitionMock = vi.fn();
@@ -62,7 +62,6 @@ vi.mock('$lib/server/connectors/vehicle-semantic-overlay', () => ({
 	readVehicleSemanticOverlay: readVehicleSemanticOverlayMock,
 	writeVehicleSemanticOverlay: writeVehicleSemanticOverlayMock,
 	generateVehicleSemanticOverlay: generateVehicleSemanticOverlayMock,
-	annotateVehicleSemanticGroup: annotateVehicleSemanticGroupMock,
 	mutateVehicleSemanticAssignment: mutateVehicleSemanticAssignmentMock,
 	refreshVehicleSemanticOverlayInBackground: vi.fn()
 }));
@@ -79,7 +78,8 @@ vi.mock('$lib/server/connectors/asset-semantic-assignments', () => ({
 }));
 
 vi.mock('$lib/server/connectors/semantic-ingress', () => ({
-	assignSemanticIngress: assignSemanticIngressMock
+	assignSemanticIngress: assignSemanticIngressMock,
+	listSemanticIngressBindings: listSemanticIngressBindingsMock
 }));
 
 describe('createFooterChatResponse', () => {
@@ -87,13 +87,13 @@ describe('createFooterChatResponse', () => {
 		createMock.mockReset();
 		resolveVehicleIntentMock.mockReset();
 		planNormalizedVehiclePaintIntentMock.mockReset();
-		annotateVehicleSemanticGroupMock.mockReset();
 		deriveVehicleInspectionCapabilitiesMock.mockReset();
 		deriveStructuralAssetSnapshotMock.mockReset();
 		readVehicleSemanticOverlayMock.mockReset();
 		generateVehicleSemanticOverlayMock.mockReset();
 		getVehicleSemanticOverlayStatusMock.mockReset();
 		assignSemanticIngressMock.mockReset();
+		listSemanticIngressBindingsMock.mockReset();
 		mutateVehicleSemanticAssignmentMock.mockReset();
 		createSemanticGroupDefinitionMock.mockReset();
 		findSemanticGroupDefinitionMock.mockReset();
@@ -133,8 +133,8 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-1',
 									type: 'function',
 									function: {
-										name: 'refresh_vehicle_semantics',
-										arguments: JSON.stringify({ force: true })
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({ action: 'refresh', force: true })
 									}
 								}
 							]
@@ -160,6 +160,153 @@ describe('createFooterChatResponse', () => {
 
 		expect(generateVehicleSemanticOverlayMock).toHaveBeenCalledWith('audi_r8', { force: true });
 		expect(response.message.content).toBe('Semantic overlay refreshed.');
+	});
+
+	it('supports a catalog-to-action-to-ui tool chain in one turn', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			revision: 1,
+			generatedAt: 'semantic-1',
+			structuralGeneratedAt: 'structural-1',
+			model: 'gpt-5.2',
+			minAcceptedConfidence: 0.5,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		resolveVehicleIntentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			operations: [
+				{
+					targetType: 'material',
+					targetId: 'wheel-material',
+					op: 'set_overlay_highlight',
+					value: true
+				}
+			],
+			rejected: [],
+			summary: 'Highlighted the wheels.'
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-1',
+									type: 'function',
+									function: {
+										name: 'get_vehicle_tool_catalog',
+										arguments: JSON.stringify({
+											goal: 'highlight the wheels and summarize the result in the footer'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-2',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_presentation',
+										arguments: JSON.stringify({
+											action: 'focus',
+											request: 'highlight the wheels',
+											scope: 'asset'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-3',
+									type: 'function',
+									function: {
+										name: 'set_assistant_ui',
+										arguments: JSON.stringify({
+											action: 'supplementary_list',
+											active: true,
+											entries: {
+												focus: 'Wheels',
+												status: 'Highlighted'
+											}
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Wheels are highlighted. The footer has the detail.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'highlight the wheels and then put the changed targets in the footer list'
+		});
+
+		expect(createMock).toHaveBeenCalledTimes(4);
+		expect(response.message.content).toBe('Wheels are highlighted. The footer has the detail.');
+		expect(response.vehiclePatchOperations).toEqual([
+			{
+				targetType: 'material',
+				targetId: 'wheel-material',
+				op: 'set_overlay_highlight',
+				value: true
+			}
+		]);
+		expect(response.supplementaryList).toEqual({
+			active: true,
+			entries: {
+				focus: 'Wheels',
+				status: 'Highlighted'
+			}
+		});
+		expect(response.trace?.toolCalls).toEqual([
+			'get_vehicle_tool_catalog',
+			'edit_vehicle_presentation',
+			'set_assistant_ui'
+		]);
 	});
 
 	it('does not auto-refresh semantics during normal edit requests', async () => {
@@ -257,8 +404,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-3',
 									type: 'function',
 									function: {
-										name: 'apply_vehicle_appearance_intent',
+										name: 'edit_vehicle_presentation',
 										arguments: JSON.stringify({
+											action: 'appearance',
 											colorFamily: 'purple',
 											shade: 'dark',
 											finish: 'chrome',
@@ -358,8 +506,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-3b',
 									type: 'function',
 									function: {
-										name: 'apply_vehicle_focus_intent',
+										name: 'edit_vehicle_presentation',
 										arguments: JSON.stringify({
+											action: 'focus',
 											request: 'highlight these',
 											scope: 'selection'
 										})
@@ -441,10 +590,10 @@ describe('createFooterChatResponse', () => {
 		const developerPrompt = createMock.mock.calls[0]?.[0]?.messages?.[0]?.content;
 		expect(typeof developerPrompt).toBe('string');
 		expect(developerPrompt).toContain(
-			'When the user says select, selected, pick, choose, call out, or mark while referring to a visible region or the current selection, prefer the focus tool unless they are explicitly asking for semantic grouping, selection expansion, or a viewer mode.'
+			'When the user says select, selected, pick, choose, call out, or mark while referring to a visible region or the current selection, prefer the presentation domain tool with focus action unless they are explicitly asking for semantic grouping, selection expansion, or a viewer mode.'
 		);
 		expect(developerPrompt).toContain(
-			'focus tool: highlight, focus, isolate, select, pick out, choose, remove, bring out'
+			'presentation domain tool: use for appearance, focus, restore, and viewer mode actions'
 		);
 	});
 
@@ -679,7 +828,7 @@ describe('createFooterChatResponse', () => {
 			'Latest semantic overlay summary: generated semantic-1; structural basis structural-semantic-1; accepted materials 1; accepted parts 1; accepted groups 1; top groups Body Shell; top material tags body_paint_candidate (1).'
 		);
 		expect(developerPrompt).toContain(
-			'Semantic panel inventory available for tool grounding: Body Shell [group-shell] -> Body Shell [part-shell]. Group and node labels from this inventory are valid grounding terms for semantic tool calls, semantic ingress targets, and freeform semantic requests.'
+			'Semantic panel inventory available for tool grounding: Body Shell [group-shell] {nodes 1, materials 1} -> Body Shell [part-shell]. Group and node labels from this inventory are valid grounding terms for semantic tool calls, semantic ingress targets, and freeform semantic requests.'
 		);
 		expect(developerPrompt).toContain(
 			'Semantic sidebar cadence: semantic grounding is central right now and a single concise Semantics summary card may help if it reduces ambiguity.'
@@ -707,8 +856,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-sidebar-1',
 									type: 'function',
 									function: {
-										name: 'set_intent_sidebar',
+										name: 'set_assistant_ui',
 										arguments: JSON.stringify({
+											action: 'sidebar',
 											active: true,
 											cards: [
 												{
@@ -750,7 +900,7 @@ describe('createFooterChatResponse', () => {
 		expect(response.trace).toEqual({
 			route: 'llm',
 			semanticOverlayStatus: 'fresh',
-			toolCalls: ['set_intent_sidebar'],
+			toolCalls: ['set_assistant_ui'],
 			sidebarAction: 'updated',
 			supplementaryListAction: 'unchanged'
 		});
@@ -789,10 +939,15 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-supplementary-1',
 									type: 'function',
 									function: {
-										name: 'set_supplementary_reference_list',
+										name: 'set_assistant_ui',
 										arguments: JSON.stringify({
+											action: 'supplementary_list',
 											active: true,
-											items: ['Wheels selected', 'Bronze paint applied', 'Front quarter focus']
+											entries: {
+												Selection: 'Wheels selected',
+												Finish: 'Bronze paint applied',
+												View: 'Front quarter focus'
+											}
 										})
 									}
 								}
@@ -817,20 +972,24 @@ describe('createFooterChatResponse', () => {
 			message: 'summarize the active targets quietly',
 			supplementaryList: {
 				active: false,
-				items: []
+				entries: {}
 			}
 		});
 
 		expect(response.trace).toEqual({
 			route: 'llm',
 			semanticOverlayStatus: 'fresh',
-			toolCalls: ['set_supplementary_reference_list'],
+			toolCalls: ['set_assistant_ui'],
 			sidebarAction: 'unchanged',
 			supplementaryListAction: 'updated'
 		});
 		expect(response.supplementaryList).toEqual({
 			active: true,
-			items: ['Wheels selected', 'Bronze paint applied', 'Front quarter focus']
+			entries: {
+				Selection: 'Wheels selected',
+				Finish: 'Bronze paint applied',
+				View: 'Front quarter focus'
+			}
 		});
 	});
 
@@ -879,8 +1038,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-ingress-1',
 									type: 'function',
 									function: {
-										name: 'assign_semantic_ingress',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
+											action: 'assign_ingress',
 											targetType: 'semantic_group',
 											targetId: 'body_shell',
 											targetLabel: 'Body Shell',
@@ -917,7 +1077,7 @@ describe('createFooterChatResponse', () => {
 			transport: 'rest_sse',
 			assignedBy: 'model'
 		});
-		expect(response.trace?.toolCalls).toEqual(['assign_semantic_ingress']);
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_semantics']);
 		expect(response.message.content).toBe('Ingress assigned for Body Shell.');
 	});
 
@@ -942,8 +1102,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-restore-hidden',
 									type: 'function',
 									function: {
-										name: 'restore_vehicle_presentation',
+										name: 'edit_vehicle_presentation',
 										arguments: JSON.stringify({
+											action: 'restore',
 											kind: 'hidden',
 											scope: 'matching',
 											query: 'wheel'
@@ -988,7 +1149,7 @@ describe('createFooterChatResponse', () => {
 			hiddenTargetIds: ['node-wheel-left'],
 			label: 'restore original view'
 		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_presentation']);
 	});
 
 	it('restores the full active presentation context for make it normal again through the presentation tool', async () => {
@@ -1012,8 +1173,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-restore-all',
 									type: 'function',
 									function: {
-										name: 'restore_vehicle_presentation',
+										name: 'edit_vehicle_presentation',
 										arguments: JSON.stringify({
+											action: 'restore',
 											kind: 'all',
 											scope: 'all'
 										})
@@ -1051,201 +1213,7 @@ describe('createFooterChatResponse', () => {
 			restoreAll: true,
 			label: 'restore original view'
 		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
-	});
-
-	it('restores semantic material drift like shell removals through the presentation restore tool', async () => {
-		const { createFooterChatResponse } = await import('./index');
-
-		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
-			assetId: 'audi_r8',
-			generatedAt: 'structural-restore-material'
-		});
-		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		readVehicleSemanticOverlayMock.mockResolvedValue(null);
-		createMock
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: null,
-							tool_calls: [
-								{
-									id: 'tool-restore-material',
-									type: 'function',
-									function: {
-										name: 'restore_vehicle_presentation',
-										arguments: JSON.stringify({
-											kind: 'materials',
-											scope: 'matching',
-											query: 'shell'
-										})
-									}
-								}
-							]
-						}
-					}
-				]
-			})
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: 'Shell material restored.'
-						}
-					}
-				]
-			});
-
-		const response = await createFooterChatResponse({
-			assetId: 'audi_r8',
-			message: 'bring back the shell',
-			presentation: {
-				activeIntentLabel: 'Removed body shell by reducing matched-part alpha.',
-				materialTargets: [
-					{
-						targetId: 'material-body-shell',
-						targetName: 'Paint_Body (body shell)',
-						operation: 'set_alpha'
-					}
-				]
-			}
-		});
-
-		expect(resolveVehicleIntentMock).not.toHaveBeenCalled();
-		expect(response.presentationRestore).toEqual({
-			materialTargetIds: ['material-body-shell'],
-			label: 'restore original view'
-		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
-	});
-
-	it('clears highlighted regions from active presentation context through the presentation restore tool', async () => {
-		const { createFooterChatResponse } = await import('./index');
-
-		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
-			assetId: 'audi_r8',
-			generatedAt: 'structural-restore-highlight'
-		});
-		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		readVehicleSemanticOverlayMock.mockResolvedValue(null);
-		createMock
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: null,
-							tool_calls: [
-								{
-									id: 'tool-restore-highlight',
-									type: 'function',
-									function: {
-										name: 'restore_vehicle_presentation',
-										arguments: JSON.stringify({
-											kind: 'highlights',
-											scope: 'all'
-										})
-									}
-								}
-							]
-						}
-					}
-				]
-			})
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: 'Highlights cleared.'
-						}
-					}
-				]
-			});
-
-		const response = await createFooterChatResponse({
-			assetId: 'audi_r8',
-			message: 'unhighlight the regions',
-			presentation: {
-				highlightedTargets: [
-					{ targetId: 'material-lamp-left', targetName: 'Lamp Left' },
-					{ targetId: 'material-lamp-right', targetName: 'Lamp Right' }
-				]
-			}
-		});
-
-		expect(resolveVehicleIntentMock).not.toHaveBeenCalled();
-		expect(response.presentationRestore).toEqual({
-			highlightedTargetIds: ['material-lamp-left', 'material-lamp-right'],
-			label: 'restore original view'
-		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
-	});
-
-	it('uses the presentation restore tool to clear all active highlights from inferred wording', async () => {
-		const { createFooterChatResponse } = await import('./index');
-
-		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
-			assetId: 'audi_r8',
-			generatedAt: 'structural-restore-1'
-		});
-		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		readVehicleSemanticOverlayMock.mockResolvedValue(null);
-		createMock
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: null,
-							tool_calls: [
-								{
-									id: 'tool-restore-1',
-									type: 'function',
-									function: {
-										name: 'restore_vehicle_presentation',
-										arguments: JSON.stringify({
-											kind: 'highlights',
-											scope: 'all'
-										})
-									}
-								}
-							]
-						}
-					}
-				]
-			})
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: 'Current highlight overlays cleared.'
-						}
-					}
-				]
-			});
-
-		const response = await createFooterChatResponse({
-			assetId: 'audi_r8',
-			message: 'drop all current highlight overlays',
-			presentation: {
-				highlightedTargets: [
-					{ targetId: 'material-wheel-left', targetName: 'Wheel Left' },
-					{ targetId: 'material-wheel-right', targetName: 'Wheel Right' }
-				]
-			}
-		});
-
-		expect(response.presentationRestore).toEqual({
-			highlightedTargetIds: ['material-wheel-left', 'material-wheel-right'],
-			label: 'restore original view'
-		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
-		expect(response.message.content).toBe('Current highlight overlays cleared.');
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_presentation']);
 	});
 
 	it('uses the presentation restore tool to clear only matching highlighted regions', async () => {
@@ -1269,8 +1237,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-restore-2',
 									type: 'function',
 									function: {
-										name: 'restore_vehicle_presentation',
+										name: 'edit_vehicle_presentation',
 										arguments: JSON.stringify({
+											action: 'restore',
 											kind: 'highlights',
 											scope: 'matching',
 											query: 'wheel'
@@ -1308,8 +1277,67 @@ describe('createFooterChatResponse', () => {
 			highlightedTargetIds: ['material-wheel-left'],
 			label: 'restore original view'
 		});
-		expect(response.trace?.toolCalls).toEqual(['restore_vehicle_presentation']);
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_presentation']);
 		expect(response.message.content).toBe('Wheel highlight removed.');
+	});
+
+	it('returns no presentation restore when the requested restore subset has no matching active targets', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-restore-miss'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue(null);
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-restore-miss',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_presentation',
+										arguments: JSON.stringify({
+											action: 'restore',
+											kind: 'highlights',
+											scope: 'matching',
+											query: 'wheel'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'No wheel highlight is active right now.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'restore only the wheel overlays',
+			presentation: {
+				highlightedTargets: [{ targetId: 'material-door-left', targetName: 'Door Left' }]
+			}
+		});
+
+		expect(response.presentationRestore).toBeUndefined();
+		expect(resolveVehicleIntentMock).not.toHaveBeenCalled();
+		expect(response.message.content).toBe('No wheel highlight is active right now.');
 	});
 
 	it('applies terse tint edits directly to the current selection without an LLM round trip', async () => {
@@ -1515,7 +1543,7 @@ describe('createFooterChatResponse', () => {
 		]);
 	});
 
-	it('annotates a selected node into a shared semantic group through the chat tool loop', async () => {
+	it('assigns a selected node into a shared semantic group through the chat tool loop', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
 		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
@@ -1523,7 +1551,7 @@ describe('createFooterChatResponse', () => {
 			generatedAt: 'structural-4'
 		});
 		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		annotateVehicleSemanticGroupMock.mockResolvedValue({
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
 			assetId: 'audi_r8',
 			acceptedGroups: [{ id: 'group_doors' }]
 		});
@@ -1539,9 +1567,10 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-4',
 									type: 'function',
 									function: {
-										name: 'annotate_vehicle_semantic_group',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
-											nodeId: 'node-12',
+											action: 'assign',
+											nodeIds: ['node-12'],
 											category: 'doors',
 											humanLabel: 'doors'
 										})
@@ -1579,8 +1608,10 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 
-		expect(annotateVehicleSemanticGroupMock).toHaveBeenCalledWith('audi_r8', {
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
 			nodeIds: ['node-12'],
+			materialIds: [],
 			semanticGroup: undefined,
 			category: 'doors',
 			humanLabel: 'doors',
@@ -1604,7 +1635,7 @@ describe('createFooterChatResponse', () => {
 			generatedAt: 'structural-5'
 		});
 		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		annotateVehicleSemanticGroupMock.mockResolvedValue({
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
 			assetId: 'audi_r8',
 			acceptedGroups: [{ id: 'group_front_lighting' }]
 		});
@@ -1620,8 +1651,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-5',
 									type: 'function',
 									function: {
-										name: 'annotate_vehicle_semantic_group',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
+											action: 'assign',
 											semanticGroup: 'headlights',
 											nodeIds: ['node-12', 'node-13']
 										})
@@ -1662,8 +1694,10 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 
-		expect(annotateVehicleSemanticGroupMock).toHaveBeenCalledWith('audi_r8', {
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
 			nodeIds: ['node-12', 'node-13'],
+			materialIds: [],
 			semanticGroup: 'headlights',
 			category: undefined,
 			humanLabel: undefined,
@@ -1708,7 +1742,7 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-5b',
 									type: 'function',
 									function: {
-										name: 'mutate_vehicle_semantic_assignment',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
 											action: 'reassign',
 											scope: 'selected',
@@ -1764,6 +1798,285 @@ describe('createFooterChatResponse', () => {
 		expect(response.message.content).toBe('Reassigned the selected nodes to doors.');
 	});
 
+	it('keeps explicit node-id semantic mutation scoped to node-backed membership', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-node'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'body_shell' }]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-typed-node',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'unassign',
+											scope: 'selected',
+											targetScope: 'node',
+											nodeIds: ['node-41'],
+											semanticGroup: 'body_shell'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed node-41 from body shell.'
+						}
+					}
+				]
+			});
+
+		await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove node-41 from body_shell',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-41',
+					nodeName: 'Body Shell',
+					nodePath: 'Scene/Body Shell'
+				}
+			]
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'unassign',
+			nodeIds: ['node-41'],
+			materialIds: [],
+			semanticGroup: 'body_shell',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-41',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+	});
+
+	it('keeps explicit material semantic mutation scoped to material-backed membership', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-material'
+		});
+		deriveStructuralAssetSnapshotMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-material',
+			nodes: [
+				{
+					id: 'node-41',
+					name: 'Body Shell',
+					path: 'Scene/Body Shell',
+					meshId: 'mesh-41'
+				}
+			],
+			meshes: [
+				{
+					id: 'mesh-41',
+					materialIds: ['material-shell'],
+					materialNames: ['Shell Paint']
+				}
+			],
+			materials: []
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'body_shell' }]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-typed-material',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'unassign',
+											scope: 'selected',
+											targetScope: 'material',
+											semanticGroup: 'body_shell'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed the selected shell material from body shell.'
+						}
+					}
+				]
+			});
+
+		await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove the material-backed body shell member',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-41',
+					nodeName: 'Body Shell',
+					nodePath: 'Scene/Body Shell',
+					materialName: 'Shell Paint',
+					materialIndex: 0
+				}
+			]
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'unassign',
+			nodeIds: [],
+			materialIds: ['material-shell'],
+			semanticGroup: 'body_shell',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: undefined
+		});
+	});
+
+	it('supports explicit mixed semantic mutation when the user asks for the whole mixed group membership', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-mixed'
+		});
+		deriveStructuralAssetSnapshotMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-mixed',
+			nodes: [
+				{
+					id: 'node-41',
+					name: 'Body Shell',
+					path: 'Scene/Body Shell',
+					meshId: 'mesh-41'
+				}
+			],
+			meshes: [
+				{
+					id: 'mesh-41',
+					materialIds: ['material-shell'],
+					materialNames: ['Shell Paint']
+				}
+			],
+			materials: []
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'body_shell' }]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-typed-mixed',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'unassign',
+											scope: 'selected',
+											targetScope: 'mixed',
+											semanticGroup: 'body_shell'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed the whole body shell group membership.'
+						}
+					}
+				]
+			});
+
+		await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove the whole body_shell group membership',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-41',
+					nodeName: 'Body Shell',
+					nodePath: 'Scene/Body Shell',
+					materialName: 'Shell Paint',
+					materialIndex: 0
+				}
+			]
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'unassign',
+			nodeIds: ['node-41'],
+			materialIds: ['material-shell'],
+			semanticGroup: 'body_shell',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-41',
+					materialIndex: 0,
+					materialName: 'Shell Paint'
+				}
+			]
+		});
+	});
+
 	it('unassigns highlighted targets through the semantic mutation tool', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
@@ -1788,7 +2101,7 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-5c',
 									type: 'function',
 									function: {
-										name: 'mutate_vehicle_semantic_assignment',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
 											action: 'unassign',
 											scope: 'highlighted',
@@ -1866,7 +2179,7 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-5d',
 									type: 'function',
 									function: {
-										name: 'mutate_vehicle_semantic_assignment',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
 											action: 'unassign',
 											scope: 'highlighted',
@@ -1927,6 +2240,159 @@ describe('createFooterChatResponse', () => {
 		);
 	});
 
+	it('asks for clarification when highlighted semantic mutation is ambiguous across node and material targets', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-ambiguous'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-typed-ambiguous',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'unassign',
+											scope: 'highlighted',
+											semanticGroup: 'body_shell'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content:
+								'Do you want me to remove the node-backed member, the material-backed member, or the whole mixed group?'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove that from the group',
+			presentation: {
+				highlightedTargets: [
+					{
+						targetId: 'node-41',
+						targetType: 'node',
+						targetName: 'Body Shell Node'
+					},
+					{
+						targetId: 'material-shell',
+						targetType: 'material',
+						targetName: 'Shell Paint'
+					}
+				]
+			}
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).not.toHaveBeenCalled();
+		expect(response.message.content).toBe(
+			'Do you want me to remove the node-backed member, the material-backed member, or the whole mixed group?'
+		);
+	});
+
+	it('uses explicit material target scope to avoid clarification on mixed highlighted semantic targets', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-typed-explicit-material'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-typed-explicit-material',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'unassign',
+											scope: 'highlighted',
+											targetScope: 'material',
+											semanticGroup: 'body_shell'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed the highlighted material-backed member from body shell.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove the highlighted material-backed member from body shell',
+			presentation: {
+				highlightedTargets: [
+					{
+						targetId: 'node-41',
+						targetType: 'node',
+						targetName: 'Body Shell Node'
+					},
+					{
+						targetId: 'material-shell',
+						targetType: 'material',
+						targetName: 'Shell Paint'
+					}
+				]
+			}
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'unassign',
+			nodeIds: [],
+			materialIds: ['material-shell'],
+			semanticGroup: 'body_shell',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: undefined
+		});
+		expect(response.message.content).toBe(
+			'Removed the highlighted material-backed member from body shell.'
+		);
+	});
+
 	it('gets a semantic group and highlights it through the semantic group management tool', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
@@ -1975,10 +2441,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-semantic-get',
 									type: 'function',
 									function: {
-										name: 'manage_vehicle_semantic_group',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
-											action: 'get',
-											targetType: 'semantic_group',
+											action: 'get_group',
 											query: 'wheels'
 										})
 									}
@@ -1993,7 +2458,7 @@ describe('createFooterChatResponse', () => {
 					{
 						message: {
 							role: 'assistant',
-							content: 'Highlighted the wheels semantic group.'
+							content: 'Resolved the wheels semantic group.'
 						}
 					}
 				]
@@ -2004,16 +2469,8 @@ describe('createFooterChatResponse', () => {
 			message: 'get the wheels semantic group'
 		});
 
-		expect(response.vehiclePatchOperations).toEqual([
-			{
-				targetType: 'material',
-				targetId: 'material-wheel',
-				targetName: 'Wheels: Wheel Alloy',
-				op: 'set_overlay_highlight',
-				value: [0.58, 0.54, 0.86, 1]
-			}
-		]);
-		expect(response.message.content).toBe('Highlighted the wheels semantic group.');
+		expect(response.vehiclePatchOperations).toBeUndefined();
+		expect(response.message.content).toBe('Resolved the wheels semantic group.');
 	});
 
 	it('patches a semantic group on the active asset and persists the materialized overlay', async () => {
@@ -2067,10 +2524,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-semantic-patch',
 									type: 'function',
 									function: {
-										name: 'manage_vehicle_semantic_group',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
-											action: 'patch',
-											targetType: 'semantic_group',
+											action: 'patch_group',
 											query: 'number plate',
 											humanLabel: 'Plate Assembly',
 											aliases: ['plate', 'plate assembly']
@@ -2173,10 +2629,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-semantic-delete',
 									type: 'function',
 									function: {
-										name: 'manage_vehicle_semantic_group',
+										name: 'edit_vehicle_semantics',
 										arguments: JSON.stringify({
-											action: 'delete',
-											targetType: 'semantic_group',
+											action: 'delete_group',
 											query: 'number plate'
 										})
 									}
@@ -2273,8 +2728,9 @@ describe('createFooterChatResponse', () => {
 									id: 'tool-expand-1',
 									type: 'function',
 									function: {
-										name: 'expand_vehicle_selection',
+										name: 'edit_vehicle_selection',
 										arguments: JSON.stringify({
+											action: 'expand',
 											target: 'semantic_group',
 											query: 'wheels'
 										})
@@ -2328,4 +2784,5 @@ describe('createFooterChatResponse', () => {
 			label: 'Expanded selection to semantic group wheels.'
 		});
 	});
+
 });

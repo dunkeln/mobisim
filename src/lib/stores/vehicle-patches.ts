@@ -36,6 +36,8 @@ type VehiclePresentationChangeEntry =
 			restore: FooterChatPresentationRestore;
 	  };
 
+export type VehiclePresentationMutation = VehiclePresentationChangeEntry;
+
 type VehiclePatchState = {
 	assetId: VehicleAssetId | null;
 	presentation: VehiclePresentationState;
@@ -431,77 +433,80 @@ function describeChange(change: VehiclePresentationChangeEntry | undefined): str
 function createVehiclePatchStore() {
 	const { subscribe, update } = writable<VehiclePatchState>(INITIAL_STATE);
 
-	return {
-		subscribe,
-		queue(
-			assetId: VehicleAssetId,
-			operations: VehicleInspectionPatchOperation[],
-			intentLabel?: string
-		): void {
-			if (operations.length === 0) {
-				return;
+	function applyMutation(
+		assetId: VehicleAssetId | undefined,
+		mutation: VehiclePresentationMutation
+	): boolean {
+		if (!assetId) {
+			return false;
+		}
+
+		let didApply = false;
+
+		update((state) => {
+			if (
+				(mutation.kind === 'clear_highlights' ||
+					mutation.kind === 'clear_highlight_targets' ||
+					mutation.kind === 'restore') &&
+				state.assetId !== assetId
+			) {
+				return state;
 			}
 
-			update((state) => {
-				const nextPast =
-					state.assetId === assetId
-						? [
-								...state.past,
-								{
-									kind: 'operations' as const,
-									intentLabel: intentLabel?.trim() || null,
-									operations
-								}
-							]
-						: [
-								{
-									kind: 'operations' as const,
-									intentLabel: intentLabel?.trim() || null,
-									operations
-								}
-							];
+			let normalizedMutation = mutation;
+			if (mutation.kind === 'operations' && mutation.operations.length === 0) {
+				return state;
+			}
 
-				const nextState = buildState(assetId, nextPast, [], state.revision + 1);
-				if (
-					state.assetId === assetId &&
-					JSON.stringify(nextState.operations) === JSON.stringify(state.operations)
-				) {
+			if (mutation.kind === 'set_highlights') {
+				const highlightOperations = mutation.operations.filter((operation) =>
+					isHighlightOperation(operation)
+				);
+				if (highlightOperations.length === 0) {
 					return state;
 				}
 
-				return nextState;
-			});
-		},
-		setHighlights(
-			assetId: VehicleAssetId,
-			operations: VehicleInspectionPatchOperation[],
-			intentLabel?: string
-		): void {
-			const highlightOperations = operations.filter((operation) => isHighlightOperation(operation));
-			if (highlightOperations.length === 0) {
-				return;
+				normalizedMutation = {
+					...mutation,
+					operations: highlightOperations
+				};
 			}
 
-			update((state) => {
-				const nextPast =
-					state.assetId === assetId
-						? [
-								...state.past,
-								{
-									kind: 'set_highlights' as const,
-									intentLabel: intentLabel?.trim() || null,
-									operations: highlightOperations
-								}
-							]
-						: [
-								{
-									kind: 'set_highlights' as const,
-									intentLabel: intentLabel?.trim() || null,
-									operations: highlightOperations
-								}
-							];
+			if (mutation.kind === 'clear_highlights' && state.presentation.highlightOperations.length === 0) {
+				return state;
+			}
 
-				const nextState = buildState(assetId, nextPast, [], state.revision + 1);
+			if (mutation.kind === 'clear_highlight_targets') {
+				if (mutation.targetIds.length === 0) {
+					return state;
+				}
+
+				const activeTargetIds = new Set(
+					state.presentation.highlightOperations.map((operation) => operation.targetId)
+				);
+				if (!mutation.targetIds.some((targetId) => activeTargetIds.has(targetId))) {
+					return state;
+				}
+
+				normalizedMutation = {
+					...mutation,
+					targetIds: Array.from(new Set(mutation.targetIds)).sort((left, right) =>
+						left.localeCompare(right)
+					)
+				};
+			}
+
+			const nextPast =
+				state.assetId === assetId &&
+				(normalizedMutation.kind === 'operations' || normalizedMutation.kind === 'set_highlights')
+					? [...state.past, normalizedMutation]
+					: normalizedMutation.kind === 'operations' || normalizedMutation.kind === 'set_highlights'
+						? [normalizedMutation]
+						: [...state.past, normalizedMutation];
+
+			const nextState = buildState(assetId, nextPast, [], state.revision + 1);
+
+			if (mutation.kind === 'set_highlights') {
 				if (
 					state.assetId === assetId &&
 					JSON.stringify(nextState.presentation.highlightOperations) ===
@@ -509,9 +514,23 @@ function createVehiclePatchStore() {
 				) {
 					return state;
 				}
+			} else if (
+				JSON.stringify(nextState.operations) === JSON.stringify(state.operations)
+			) {
+				return state;
+			}
 
-				return nextState;
-			});
+			didApply = true;
+			return nextState;
+		});
+
+		return didApply;
+	}
+
+	return {
+		subscribe,
+		apply(assetId: VehicleAssetId | undefined, mutation: VehiclePresentationMutation): boolean {
+			return applyMutation(assetId, mutation);
 		},
 		undo(assetId?: VehicleAssetId): boolean {
 			let didUndo = false;
@@ -646,123 +665,6 @@ function createVehiclePatchStore() {
 			});
 
 			return didReset;
-		},
-		clearHighlights(assetId?: VehicleAssetId): boolean {
-			let didClear = false;
-
-			update((state) => {
-				if (assetId && state.assetId !== assetId) {
-					return state;
-				}
-
-				if (state.presentation.highlightOperations.length === 0) {
-					return state;
-				}
-
-				didClear = true;
-				return buildState(
-					state.assetId,
-					[
-						...state.past,
-						{
-							kind: 'clear_highlights',
-							intentLabel: 'clear highlights'
-						}
-					],
-					[],
-					state.revision + 1
-				);
-			});
-
-			return didClear;
-		},
-		clearHighlightTargets(
-			assetId: VehicleAssetId | undefined,
-			targetIds: string[],
-			intentLabel?: string
-		): boolean {
-			if (!assetId || targetIds.length === 0) {
-				return false;
-			}
-
-			let didClear = false;
-
-			update((state) => {
-				if (state.assetId !== assetId) {
-					return state;
-				}
-
-				const activeTargetIds = new Set(
-					state.presentation.highlightOperations.map((operation) => operation.targetId)
-				);
-				if (!targetIds.some((targetId) => activeTargetIds.has(targetId))) {
-					return state;
-				}
-
-				const nextState = buildState(
-					state.assetId,
-					[
-						...state.past,
-						{
-							kind: 'clear_highlight_targets',
-							intentLabel: intentLabel?.trim() || 'clear highlight',
-							targetIds: Array.from(new Set(targetIds)).sort((left, right) =>
-								left.localeCompare(right)
-							)
-						}
-					],
-					[],
-					state.revision + 1
-				);
-
-				if (
-					JSON.stringify(nextState.presentation.highlightOperations) ===
-					JSON.stringify(state.presentation.highlightOperations)
-				) {
-					return state;
-				}
-
-				didClear = true;
-				return nextState;
-			});
-
-			return didClear;
-		},
-		restore(assetId: VehicleAssetId | undefined, restore: FooterChatPresentationRestore): boolean {
-			if (!assetId) {
-				return false;
-			}
-
-			let didRestore = false;
-
-			update((state) => {
-				if (state.assetId !== assetId) {
-					return state;
-				}
-
-				const nextState = buildState(
-					assetId,
-					[
-						...state.past,
-						{
-							kind: 'restore',
-							intentLabel: restore.label?.trim() || 'restore original view',
-							restore
-						}
-					],
-					[],
-					state.revision + 1
-				);
-
-				if (JSON.stringify(nextState.operations) === JSON.stringify(state.operations)) {
-					return state;
-				}
-
-				didRestore = true;
-				return nextState;
-			});
-
-			return didRestore;
 		},
 		extractSelectiveUndoQuery
 	};

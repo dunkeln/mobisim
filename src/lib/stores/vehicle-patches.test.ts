@@ -6,9 +6,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('composes highlight operations when queueing a new highlight batch', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight wheels',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-1',
@@ -16,12 +17,12 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'highlight wheels'
-		);
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight door',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-2',
@@ -29,9 +30,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'highlight door'
-		);
+			]
+		});
 
 		const state = get(vehiclePatchState);
 
@@ -47,7 +47,7 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('clears highlight operations without removing non-highlight patches', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue('audi_r8', [
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-1',
@@ -55,8 +55,8 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_overlay_highlight',
 				value: [0.5, 0.5, 0.8, 0.48]
 			}
-		]);
-		vehiclePatchState.queue('audi_r8', [
+		] });
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-9',
@@ -64,9 +64,12 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_base_color_factor',
 				value: [0.2, 0.1, 0.4, 1]
 			}
-		]);
+		] });
 
-		const didClear = vehiclePatchState.clearHighlights('audi_r8');
+		const didClear = vehiclePatchState.apply('audi_r8', {
+			kind: 'clear_highlights',
+			intentLabel: 'clear highlights'
+		});
 		const state = get(vehiclePatchState);
 
 		expect(didClear).toBe(true);
@@ -79,9 +82,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('treats highlight clearing as an undoable presentation-state change', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight wheels',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-1',
@@ -89,11 +93,13 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'highlight wheels'
-		);
+			]
+		});
 
-		vehiclePatchState.clearHighlights('audi_r8');
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'clear_highlights',
+			intentLabel: 'clear highlights'
+		});
 		expect(get(vehiclePatchState).presentation.highlightOperations).toHaveLength(0);
 		expect(get(vehiclePatchState).intentLabel).toBe('clear highlights');
 
@@ -109,7 +115,7 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('sets highlight batches without touching non-highlight presentation layers', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue('audi_r8', [
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-body',
@@ -117,11 +123,12 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_base_color_factor',
 				value: [0.2, 0.1, 0.4, 1]
 			}
-		]);
+		] });
 
-		vehiclePatchState.setHighlights(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'set_highlights',
+			intentLabel: 'highlight wheels',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-wheel',
@@ -129,9 +136,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.75, 0.34, 0.27, 1]
 				}
-			],
-			'highlight wheels'
-		);
+			]
+		});
 
 		const state = get(vehiclePatchState);
 		expect(state.presentation.materialOperations).toHaveLength(1);
@@ -142,7 +148,7 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('clears only matching highlight targets without affecting other highlight targets or material edits', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.setHighlights('audi_r8', [
+		vehiclePatchState.apply('audi_r8', { kind: 'set_highlights', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-wheel-left',
@@ -157,8 +163,8 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_overlay_highlight',
 				value: [0.75, 0.34, 0.27, 1]
 			}
-		]);
-		vehiclePatchState.queue('audi_r8', [
+		] });
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-body',
@@ -166,9 +172,13 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_base_color_factor',
 				value: [0.2, 0.1, 0.4, 1]
 			}
-		]);
+		] });
 
-		const didClear = vehiclePatchState.clearHighlightTargets('audi_r8', ['material-wheel-left']);
+		const didClear = vehiclePatchState.apply('audi_r8', {
+			kind: 'clear_highlight_targets',
+			intentLabel: 'clear highlight',
+			targetIds: ['material-wheel-left']
+		});
 		const state = get(vehiclePatchState);
 
 		expect(didClear).toBe(true);
@@ -181,9 +191,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('restores labeled intent history across undo and redo', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint body midnight purple',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-9',
@@ -191,12 +202,12 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_base_color_factor',
 					value: [0.2, 0.1, 0.4, 1]
 				}
-			],
-			'paint body midnight purple'
-		);
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'isolate wheels',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-1',
@@ -204,9 +215,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'isolate wheels'
-		);
+			]
+		});
 
 		expect(get(vehiclePatchState).intentLabel).toBe('isolate wheels');
 
@@ -220,9 +230,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('can selectively undo an earlier color change while keeping later drift', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint body midnight purple',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-body',
@@ -230,12 +241,12 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_base_color_factor',
 					value: [0.2, 0.1, 0.4, 1]
 				}
-			],
-			'paint body midnight purple'
-		);
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight wheels',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-wheel',
@@ -243,9 +254,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'highlight wheels'
-		);
+			]
+		});
 
 		const revertedLabel = vehiclePatchState.undoMatching('audi_r8', 'color');
 		const state = get(vehiclePatchState);
@@ -259,9 +269,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('can undo a specific history entry by index for scrubbable UI targets', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint body midnight purple',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-body',
@@ -269,12 +280,12 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_base_color_factor',
 					value: [0.2, 0.1, 0.4, 1]
 				}
-			],
-			'paint body midnight purple'
-		);
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'hide left wheel',
+			operations: [
 				{
 					targetType: 'node',
 					targetId: 'wheel-left',
@@ -282,9 +293,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_visibility',
 					value: false
 				}
-			],
-			'hide left wheel'
-		);
+			]
+		});
 
 		const revertedLabel = vehiclePatchState.undoEntry('audi_r8', 0);
 		const state = get(vehiclePatchState);
@@ -305,9 +315,10 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('refuses ambiguous selective undo queries that match multiple change classes', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint wheel accent',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-wheel',
@@ -315,12 +326,12 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_base_color_factor',
 					value: [0.2, 0.1, 0.4, 1]
 				}
-			],
-			'paint wheel accent'
-		);
-		vehiclePatchState.queue(
-			'audi_r8',
-			[
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight wheel',
+			operations: [
 				{
 					targetType: 'material',
 					targetId: 'material-wheel',
@@ -328,9 +339,8 @@ describe('vehiclePatchState highlight behavior', () => {
 					op: 'set_overlay_highlight',
 					value: [0.5, 0.5, 0.8, 0.48]
 				}
-			],
-			'highlight wheel'
-		);
+			]
+		});
 
 		const revertedLabel = vehiclePatchState.undoMatching('audi_r8', 'wheel');
 
@@ -342,7 +352,7 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('keeps node visibility, material, and viewer layers composable', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue('audi_r8', [
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'node',
 				targetId: 'node-1',
@@ -350,16 +360,16 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_visibility',
 				value: false
 			}
-		]);
-		vehiclePatchState.queue('audi_r8', [
+		] });
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'viewer',
 				targetId: 'xray',
 				op: 'set_enabled',
 				value: true
 			}
-		]);
-		vehiclePatchState.queue('audi_r8', [
+		] });
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'material',
 				targetId: 'material-9',
@@ -367,7 +377,7 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_base_color_factor',
 				value: [0.2, 0.1, 0.4, 1]
 			}
-		]);
+		] });
 
 		const state = get(vehiclePatchState);
 
@@ -383,7 +393,7 @@ describe('vehiclePatchState highlight behavior', () => {
 	it('restores targeted presentation layers back to the original rendered state', () => {
 		vehiclePatchState.reset();
 
-		vehiclePatchState.queue('audi_r8', [
+		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
 			{
 				targetType: 'node',
 				targetId: 'node-wheel-left',
@@ -411,12 +421,16 @@ describe('vehiclePatchState highlight behavior', () => {
 				op: 'set_overlay_highlight',
 				value: [0.5, 0.5, 0.8, 0.48]
 			}
-		]);
+		] });
 
-		const didRestore = vehiclePatchState.restore('audi_r8', {
-			hiddenTargetIds: ['node-wheel-left'],
-			viewerModes: ['uv_debug'],
-			label: 'restore original view'
+		const didRestore = vehiclePatchState.apply('audi_r8', {
+			kind: 'restore',
+			intentLabel: 'restore original view',
+			restore: {
+				hiddenTargetIds: ['node-wheel-left'],
+				viewerModes: ['uv_debug'],
+				label: 'restore original view'
+			}
 		});
 		const state = get(vehiclePatchState);
 

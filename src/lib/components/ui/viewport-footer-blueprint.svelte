@@ -4,7 +4,6 @@
 	import SemanticIngressPanel from '$lib/components/inspector/semantic-ingress-panel.svelte';
 	import FooterActiveTool from '$lib/components/ui/footer-active-tool.svelte';
 	import FooterOrb from '$lib/components/ui/footer-orb.svelte';
-	import { footerActiveTool } from '$lib/stores/footer-active-tool';
 	import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
@@ -14,10 +13,9 @@
 	};
 
 	let { assetId, class: className = '' }: Props = $props();
-	const activeTool = $derived($footerActiveTool);
 	const supplementaryList = $derived($footerSupplementaryList);
 	const hasSupplementaryList = $derived(
-		supplementaryList.active && supplementaryList.items.length > 0
+		supplementaryList.active && Object.keys(supplementaryList.entries).length > 0
 	);
 </script>
 
@@ -36,17 +34,9 @@
 	</div>
 	<div class="footer-blueprint__cluster footer-blueprint__cluster--center">
 		<div class="footer-blueprint__stack footer-blueprint__stack--left">
-			{#if activeTool.active && activeTool.label}
-				<div
-					class="footer-blueprint__tool-stack"
-					in:scale={{ duration: 180, start: 0.9 }}
-					out:scale={{ duration: 140, start: 1 }}
-				>
-					<div class="footer-blueprint__tool-layer footer-blueprint__tool-layer--back"></div>
-					<div class="footer-blueprint__tool-layer footer-blueprint__tool-layer--mid"></div>
-					<FooterActiveTool class="footer-blueprint__tool-chip" />
-				</div>
-			{/if}
+			<div in:scale={{ duration: 180, start: 0.9 }} out:scale={{ duration: 140, start: 1 }}>
+				<FooterActiveTool class="footer-blueprint__tool-chip" />
+			</div>
 		</div>
 		<div class="footer-blueprint__orb-slot">
 			<FooterOrb class="footer-blueprint__orb-live" />
@@ -60,12 +50,10 @@
 					out:scale={{ duration: 140, start: 1 }}
 				>
 					<div class="footer-blueprint__reference-panel">
-						{#each supplementaryList.items as item, index (`${index}-${item}`)}
-							<div
-								class="footer-blueprint__reference-item"
-								class:footer-blueprint__reference-item--primary={index === 0}
-							>
-								{item}
+						{#each Object.entries(supplementaryList.entries) as [key, value], index (`${index}-${key}`)}
+							<div class="footer-blueprint__reference-item">
+								<span class="footer-blueprint__reference-key">{key}</span>
+								<span class="footer-blueprint__reference-value">{value}</span>
 							</div>
 						{/each}
 					</div>
@@ -139,7 +127,7 @@
 		position: absolute;
 		right: calc(100% - 0.55rem);
 		top: 50%;
-		transform: translateY(-50%);
+		transform: translateY(-3rem);
 		z-index: 1;
 	}
 
@@ -147,7 +135,7 @@
 		position: absolute;
 		left: calc(100% + 0.4rem);
 		top: 50%;
-		transform: translateY(-58%);
+		transform: translateY(calc(-58% - 0.9rem));
 		z-index: 1;
 	}
 
@@ -173,87 +161,18 @@
 		transform: scale(0.82);
 	}
 
-	.footer-blueprint__tool-stack {
-		--footer-tool-stack-width: 8.9rem;
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		justify-content: flex-end;
-		width: 10.4rem;
-		height: 2.8rem;
-		padding-right: 0.72rem;
-		isolation: isolate;
-		transform-origin: right center;
-	}
-
-	.footer-blueprint__tool-layer,
-	:global(.footer-blueprint__tool-chip .tool-shell) {
-		position: absolute;
-		right: 0;
-		top: 50%;
-		transform: translateY(-50%);
-		border-radius: 999px;
-	}
-
-	.footer-blueprint__tool-layer {
-		width: var(--footer-tool-stack-width);
-		height: 2rem;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 10%, transparent);
-		background:
-			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 3%, transparent), transparent 28%),
-			linear-gradient(
-				180deg,
-				color-mix(in srgb, var(--color-boundary-text) 2%, transparent),
-				color-mix(in srgb, var(--color-boundary-text) 0.6%, transparent)
-			);
-		box-shadow:
-			inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
-			0 8px 20px color-mix(in srgb, var(--color-boundary-background) 10%, transparent);
-		backdrop-filter: blur(16px) saturate(106%);
-		-webkit-backdrop-filter: blur(16px) saturate(106%);
-	}
-
-	.footer-blueprint__tool-layer--mid {
-		right: 0.24rem;
-		top: calc(50% - 0.12rem);
-		opacity: 0.42;
-		z-index: 0;
-	}
-
-	.footer-blueprint__tool-layer--back {
-		right: 0.48rem;
-		top: calc(50% - 0.24rem);
-		opacity: 0.42;
-		z-index: -1;
-	}
-
 	:global(.footer-blueprint__tool-chip) {
-		position: absolute;
-		right: 0;
-		top: 50%;
-		transform: translateY(-50%);
+		position: relative;
 		z-index: 1;
-		width: var(--footer-tool-stack-width);
-		max-width: var(--footer-tool-stack-width);
-	}
-
-	:global(.footer-blueprint__tool-chip .tool-shell) {
-		right: 0;
-		width: var(--footer-tool-stack-width);
-		max-width: var(--footer-tool-stack-width);
 	}
 
 	.footer-blueprint__reference-list {
-		--footer-reference-width: 14.5rem;
+		--footer-reference-width: 17.5rem;
 		position: relative;
 		display: inline-flex;
 		min-width: var(--footer-reference-width);
 		isolation: isolate;
 		transform-origin: left center;
-	}
-
-	.footer-blueprint__reference-items {
-		display: none;
 	}
 
 	.footer-blueprint__reference-panel {
@@ -266,19 +185,20 @@
 		width: var(--footer-reference-width);
 		padding: 1rem 1rem 0.96rem;
 		border-radius: 1.1rem;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 15%, transparent);
 		background:
-			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			radial-gradient(circle at 22% 10%, color-mix(in srgb, white 6%, transparent), transparent 24%),
 			linear-gradient(
 				180deg,
-				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
+				color-mix(in srgb, white 4%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 1.9%, transparent) 38%,
 				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
 			);
 		box-shadow:
-			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
-		backdrop-filter: blur(16px) saturate(106%);
-		-webkit-backdrop-filter: blur(16px) saturate(106%);
+			inset 0 1px 0 color-mix(in srgb, white 15%, transparent),
+			0 12px 26px color-mix(in srgb, var(--color-boundary-background) 13%, transparent);
+		backdrop-filter: blur(18px) saturate(108%);
+		-webkit-backdrop-filter: blur(18px) saturate(108%);
 		isolation: isolate;
 	}
 
@@ -287,18 +207,18 @@
 		position: absolute;
 		inset: 1px;
 		border-radius: inherit;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 6%, transparent);
 		background:
 			linear-gradient(
 				180deg,
-				color-mix(in srgb, white 3%, transparent),
-				transparent 24%,
+				color-mix(in srgb, white 9%, transparent),
+				color-mix(in srgb, white 2%, transparent) 18%,
+				transparent 34%,
 				transparent 100%
 			),
 			radial-gradient(
-				110% 70% at 18% 0%,
-				color-mix(in srgb, white 3%, transparent),
-				transparent 26%
+				115% 76% at 16% 0%,
+				color-mix(in srgb, white 5%, transparent),
+				transparent 20%
 			);
 		pointer-events: none;
 	}
@@ -307,17 +227,22 @@
 		position: relative;
 		z-index: 1;
 		width: 100%;
-		font-family: var(--font-mono);
-		font-size: 0.64rem;
-		letter-spacing: 0.065em;
-		color: color-mix(in srgb, var(--color-boundary-text) 76%, transparent);
-		line-height: 1.5;
+		display: block;
+		font-size: 0.66rem;
+		line-height: 1.45;
 		white-space: normal;
-		overflow: visible;
 	}
 
-	.footer-blueprint__reference-item--primary {
-		color: color-mix(in srgb, var(--color-boundary-text) 90%, transparent);
+	.footer-blueprint__reference-key {
+		display: inline;
+		font-weight: 700;
+		color: var(--color-boundary-tertiary);
+	}
+
+	.footer-blueprint__reference-value {
+		display: inline;
+		margin-left: 0.8ch;
+		color: color-mix(in srgb, var(--color-boundary-text) 88%, transparent);
 	}
 
 	.footer-blueprint__label {

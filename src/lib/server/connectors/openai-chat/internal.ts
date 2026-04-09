@@ -15,12 +15,13 @@ import type {
 	VehicleSemanticOverlay,
 	VehicleSemanticActionSupport
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export const DEFAULT_MODEL = 'gpt-5.2';
-export const MAX_TOOL_ROUNDS = 2;
+export const MAX_TOOL_ROUNDS = 3;
 
 export const APPLY_VEHICLE_APPEARANCE_INTENT_TOOL_NAME = 'apply_vehicle_appearance_intent';
 export const APPLY_VEHICLE_FOCUS_INTENT_TOOL_NAME = 'apply_vehicle_focus_intent';
@@ -28,13 +29,16 @@ export const SET_VEHICLE_VIEW_MODE_TOOL_NAME = 'set_vehicle_view_mode';
 export const GET_VEHICLE_TOOL_CATALOG_TOOL_NAME = 'get_vehicle_tool_catalog';
 export const RESTORE_VEHICLE_PRESENTATION_TOOL_NAME = 'restore_vehicle_presentation';
 export const EXPAND_VEHICLE_SELECTION_TOOL_NAME = 'expand_vehicle_selection';
-export const ANNOTATE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME = 'annotate_vehicle_semantic_group';
 export const MUTATE_VEHICLE_SEMANTIC_ASSIGNMENT_TOOL_NAME = 'mutate_vehicle_semantic_assignment';
 export const MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME = 'manage_vehicle_semantic_group';
 export const REFRESH_VEHICLE_SEMANTICS_TOOL_NAME = 'refresh_vehicle_semantics';
 export const SET_INTENT_SIDEBAR_TOOL_NAME = 'set_intent_sidebar';
 export const SET_SUPPLEMENTARY_REFERENCE_LIST_TOOL_NAME = 'set_supplementary_reference_list';
 export const ASSIGN_SEMANTIC_INGRESS_TOOL_NAME = 'assign_semantic_ingress';
+export const EDIT_VEHICLE_PRESENTATION_TOOL_NAME = 'edit_vehicle_presentation';
+export const EDIT_VEHICLE_SELECTION_TOOL_NAME = 'edit_vehicle_selection';
+export const EDIT_VEHICLE_SEMANTICS_TOOL_NAME = 'edit_vehicle_semantics';
+export const SET_ASSISTANT_UI_TOOL_NAME = 'set_assistant_ui';
 
 export type NormalizedFooterChatRequest = {
 	message: string;
@@ -89,12 +93,12 @@ export type ExpandVehicleSelectionToolArgs = {
 	query?: string;
 };
 
-export type AnnotateVehicleSemanticGroupToolArgs = VehicleSemanticGroupAnnotation;
-
 export type MutateVehicleSemanticAssignmentToolArgs = {
 	action: 'assign' | 'reassign' | 'unassign';
 	scope?: 'selected' | 'highlighted' | 'material_targets' | 'hidden';
+	targetScope?: 'node' | 'material' | 'mixed';
 	nodeIds?: string[];
+	materialIds?: string[];
 	query?: string;
 	semanticGroup?: string;
 	category?: VehicleSemanticGroupAnnotation['category'];
@@ -129,7 +133,7 @@ export type SetIntentSidebarToolArgs = {
 
 export type SetSupplementaryReferenceListToolArgs = {
 	active: boolean;
-	items: string[];
+	entries: Record<string, string>;
 };
 
 export type AssignSemanticIngressToolArgs = {
@@ -138,6 +142,48 @@ export type AssignSemanticIngressToolArgs = {
 	targetLabel?: string;
 	transport: 'rest_sse' | 'stream';
 };
+
+export type EditVehiclePresentationToolArgs =
+	| ({
+			action: 'appearance';
+	  } & ApplyVehicleAppearanceIntentToolArgs)
+	| ({
+			action: 'focus';
+	  } & ApplyVehicleFocusIntentToolArgs)
+	| ({
+			action: 'restore';
+	  } & RestoreVehiclePresentationToolArgs)
+	| ({
+			action: 'view_mode';
+	  } & SetVehicleViewModeToolArgs);
+
+export type EditVehicleSelectionToolArgs = {
+	action: 'expand';
+	target: ExpandVehicleSelectionToolArgs['target'];
+	query?: string;
+};
+
+export type EditVehicleSemanticsToolArgs =
+	| ({
+			action: 'assign' | 'reassign' | 'unassign';
+	  } & Omit<MutateVehicleSemanticAssignmentToolArgs, 'action'>)
+	| ({
+			action: 'create_group' | 'patch_group' | 'delete_group' | 'get_group' | 'get_node';
+	  } & Omit<ManageVehicleSemanticGroupToolArgs, 'action' | 'targetType'>)
+	| ({
+			action: 'refresh';
+	  } & RefreshVehicleSemanticsToolArgs)
+	| ({
+			action: 'assign_ingress';
+	  } & AssignSemanticIngressToolArgs);
+
+export type SetAssistantUiToolArgs =
+	| ({
+			action: 'sidebar';
+	  } & SetIntentSidebarToolArgs)
+	| ({
+			action: 'supplementary_list';
+	  } & SetSupplementaryReferenceListToolArgs);
 
 export type ExecutedToolResult = {
 	message: ChatCompletionMessageParam;
@@ -148,6 +194,8 @@ export type ExecutedToolResult = {
 	selectionUpdateLabel?: string;
 	sidebar?: FooterChatSidebarState;
 	supplementaryList?: FooterChatSupplementaryListState;
+	semanticOverlay?: VehicleSemanticOverlay | null;
+	semanticIngressBindings?: SemanticIngressBinding[];
 };
 
 export type PromptBuilderInput = {

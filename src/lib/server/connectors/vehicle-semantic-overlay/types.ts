@@ -90,6 +90,7 @@ export type VehicleSemanticOverlayStatus = 'missing' | 'stale' | 'fresh' | 'unkn
 
 export type VehicleSemanticOverlay = {
 	assetId: VehicleAssetId;
+	revision: number;
 	structuralGeneratedAt: string;
 	generatedAt: string;
 	model: string;
@@ -98,6 +99,32 @@ export type VehicleSemanticOverlay = {
 	acceptedParts: VehicleSemanticPartUnit[];
 	acceptedGroups: VehicleSemanticGroup[];
 	discardedSuggestions: VehicleSemanticOverlayDiscard[];
+};
+
+export type SemanticCommand =
+	| { type: 'assign'; assetId: VehicleAssetId }
+	| { type: 'reassign'; assetId: VehicleAssetId }
+	| { type: 'unassign'; assetId: VehicleAssetId }
+	| { type: 'create_group'; assetId: VehicleAssetId }
+	| { type: 'patch_group'; assetId: VehicleAssetId }
+	| { type: 'delete_group'; assetId: VehicleAssetId }
+	| { type: 'refresh_overlay'; assetId: VehicleAssetId }
+	| { type: 'assign_ingress'; assetId: VehicleAssetId };
+
+export type SemanticCommandResult = {
+	commandStatus: 'succeeded' | 'failed';
+	appliedCommand?: SemanticCommand['type'];
+	overlay: VehicleSemanticOverlay | null;
+	overlayRevision: number | null;
+	overlayStatus: VehicleSemanticOverlayStatus;
+};
+
+export type VehicleSemanticOverlaySnapshot = {
+	overlay: VehicleSemanticOverlay | null;
+	overlayRevision: number | null;
+	overlayStatus: VehicleSemanticOverlayStatus;
+	commandStatus?: SemanticCommandResult['commandStatus'];
+	appliedCommand?: SemanticCommandResult['appliedCommand'];
 };
 
 export type GenerateVehicleSemanticOverlayOptions = {

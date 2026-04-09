@@ -12,25 +12,44 @@ describe('footerActiveTool', () => {
 		vi.useRealTimers();
 	});
 
-	it('prefers the user-facing vehicle tool over the catalog helper', () => {
+	it('uses the latest completed tool as the base pill and preserves only the last six entries', () => {
 		footerActiveTool.setFromToolCalls([
+			'tool_1',
+			'tool_2',
 			'get_vehicle_tool_catalog',
-			'apply_vehicle_appearance_intent'
+			'apply_vehicle_appearance_intent',
+			'set_vehicle_view_mode',
+			'expand_vehicle_selection',
+			'mutate_vehicle_semantic_assignment'
 		]);
 
 		expect(footerActiveTool.getSnapshot()).toEqual({
 			active: true,
-			label: 'Appearance',
-			toolName: 'apply_vehicle_appearance_intent',
-			toolLabels: ['Tool Catalog', 'Appearance'],
-			toolNames: ['get_vehicle_tool_catalog', 'apply_vehicle_appearance_intent']
+			label: 'mutate_vehicle_semantic_assignment(...)',
+			toolName: 'mutate_vehicle_semantic_assignment',
+			toolLabels: [
+				'tool_2(...)',
+				'get_vehicle_tool_catalog(...)',
+				'apply_vehicle_appearance_intent(...)',
+				'set_vehicle_view_mode(...)',
+				'expand_vehicle_selection(...)',
+				'mutate_vehicle_semantic_assignment(...)'
+			],
+			toolNames: [
+				'tool_2',
+				'get_vehicle_tool_catalog',
+				'apply_vehicle_appearance_intent',
+				'set_vehicle_view_mode',
+				'expand_vehicle_selection',
+				'mutate_vehicle_semantic_assignment'
+			]
 		});
 	});
 
 	it('expires the active tool chip after the ttl', () => {
 		footerActiveTool.setFromToolCalls(['set_vehicle_view_mode']);
 
-		vi.advanceTimersByTime(20 * 1000);
+		vi.advanceTimersByTime(4 * 1000);
 
 		expect(footerActiveTool.getSnapshot()).toEqual({
 			active: false,

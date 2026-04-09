@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { Highlighter } from 'lucide-svelte';
 	import { toast } from '$lib/components/ui/sonner';
+	import { chatRequestState } from '$lib/stores/chat-request-state';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
+	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 	import type {
 		VehicleSemanticGroup,
 		VehicleSemanticOverlay,
+		VehicleSemanticOverlaySnapshot,
 		VehicleSemanticPartUnit
 	} from '$lib/server/connectors/vehicle-semantic-overlay/types';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -22,27 +25,39 @@
 		nodes: Array<{
 			id: string;
 			label: string;
-			highlightTargetIds: string[];
-			highlightTargetType: 'node' | 'material';
+			targetType: 'node' | 'material';
+			highlightTargets: HighlightTargetRef[];
 		}>;
-		highlightTargetIds: string[];
-		highlightTargetType: 'node' | 'material';
+		highlightTargets: HighlightTargetRef[];
+	};
+
+	type HighlightTargetRef = {
+		targetId: string;
+		targetType: 'node' | 'material';
 	};
 
 	type HighlightScopeDescriptor = {
-		targetIds: string[];
-		targetType: 'node' | 'material';
+		targets: HighlightTargetRef[];
 		scope: 'group' | 'node';
 		groupId: string;
 	};
 
 	let { assetId, class: className = '' }: Props = $props();
 
-	const SEMANTIC_PANEL_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.751, 0.341, 0.269, 1];
+	const NODE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.502, 0.808, 0.843, 1];
+	const MATERIAL_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.751, 0.341, 0.269, 1];
 
-	let overlay = $state<VehicleSemanticOverlay | null>(null);
 	let expandedGroupIds = $state<string[]>([]);
 	let activeHighlightKey = $state<string | null>(null);
+	const runtimeAsset = $derived.by(
+		() =>
+			$semanticRuntimeState.byAsset[assetId] ?? {
+				overlay: null,
+				overlayStatus: 'unknown',
+				ingressBindings: []
+			}
+	);
+	const overlay = $derived(runtimeAsset.overlay);
 
 	function partMatchesGroup(part: VehicleSemanticPartUnit, group: VehicleSemanticGroup): boolean {
 		if (group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId))) {
@@ -61,35 +76,67 @@
 			return [];
 		}
 
+		const materialById = new Map(
+			currentOverlay.acceptedMaterials.map((material) => [material.targetId, material])
+		);
+
 		return currentOverlay.acceptedGroups
 			.map((group) => {
 				const matchedParts = currentOverlay.acceptedParts.filter((part) => partMatchesGroup(part, group));
-				const semanticNodes = group.nodeIds.map((nodeId) => ({
-					id: nodeId,
-					label: matchedParts.find((part) => part.nodeIds.includes(nodeId))?.humanLabel ?? nodeId,
-					highlightTargetIds: [nodeId],
-					highlightTargetType: 'node' as const
-				}));
+				const semanticNodes = [
+					...group.nodeIds.map((nodeId) => ({
+						id: nodeId,
+						label: matchedParts.find((part) => part.nodeIds.includes(nodeId))?.humanLabel ?? nodeId,
+						targetType: 'node' as const,
+						highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
+					})),
+					...group.materialIds.map((materialId) => {
+						const matchedPart = matchedParts.find((part) => part.materialIds.includes(materialId));
+						const matchedMaterial = materialById.get(materialId);
+						return {
+							id: materialId,
+							label:
+								matchedPart?.humanLabel ??
+								matchedMaterial?.humanLabel ??
+								matchedMaterial?.targetName ??
+								materialId,
+							targetType: 'material' as const,
+							highlightTargets: [{ targetId: materialId, targetType: 'material' as const }]
+						};
+					})
+				];
+				const groupHighlightTargets = [
+					...group.nodeIds.map((targetId) => ({ targetId, targetType: 'node' as const })),
+					...group.materialIds.map((targetId) => ({ targetId, targetType: 'material' as const }))
+				];
 
 				return {
 					id: group.id,
 					label: group.humanLabel,
 					category: group.category,
-					nodes: semanticNodes,
-					highlightTargetIds: [...group.nodeIds],
-					highlightTargetType: 'node' as const
+					nodes: Array.from(new Map(semanticNodes.map((node) => [node.id, node])).values()),
+					highlightTargets: Array.from(
+						new Map(
+							groupHighlightTargets.map((target) => [
+								`${target.targetType}:${target.targetId}`,
+								target
+							])
+						).values()
+					)
 				};
 			})
-			.filter((group) => group.nodes.length > 0)
+			.filter((group) => group.highlightTargets.length > 0)
 			.sort((left, right) => left.label.localeCompare(right.label));
 	}
 
 	const semanticGroups = $derived(buildGroupViews(overlay));
 	const visible = $derived(semanticGroups.length > 0);
-	const activeHighlightTargetIds = $derived(
+	const activeHighlightTargetKeys = $derived(
 		$vehiclePatchState.assetId === assetId
 			? new Set(
-					$vehiclePatchState.presentation.highlightOperations.map((operation) => operation.targetId)
+					$vehiclePatchState.presentation.highlightOperations.map(
+						(operation) => `${operation.targetType}:${operation.targetId}`
+					)
 			  )
 			: new Set<string>()
 	);
@@ -98,16 +145,14 @@
 
 		for (const group of semanticGroups) {
 			descriptors.set(getGroupHighlightKey(group.id), {
-				targetIds: Array.from(new Set(group.highlightTargetIds)),
-				targetType: group.highlightTargetType,
+				targets: group.highlightTargets,
 				scope: 'group',
 				groupId: group.id
 			});
 
 			for (const node of group.nodes) {
 				descriptors.set(getNodeHighlightKey(group.id, node.id), {
-					targetIds: Array.from(new Set(node.highlightTargetIds)),
-					targetType: node.highlightTargetType,
+					targets: node.highlightTargets,
 					scope: 'node',
 					groupId: group.id
 				});
@@ -135,25 +180,29 @@
 		return expandedGroupIds.includes(groupId);
 	}
 
-	function isHighlighted(targetIds: string[]): boolean {
-		if (targetIds.length === 0) {
-			return false;
-		}
-
-		return targetIds.every((targetId) => activeHighlightTargetIds.has(targetId));
+	function getTargetKey(target: HighlightTargetRef): string {
+		return `${target.targetType}:${target.targetId}`;
 	}
 
-	function matchesExactActiveHighlight(targetIds: string[]): boolean {
-		if (targetIds.length === 0 || activeHighlightTargetIds.size === 0) {
+	function isHighlighted(targets: HighlightTargetRef[]): boolean {
+		if (targets.length === 0) {
 			return false;
 		}
 
-		const uniqueTargetIds = Array.from(new Set(targetIds));
-		if (uniqueTargetIds.length !== activeHighlightTargetIds.size) {
+		return targets.every((target) => activeHighlightTargetKeys.has(getTargetKey(target)));
+	}
+
+	function matchesExactActiveHighlight(targets: HighlightTargetRef[]): boolean {
+		if (targets.length === 0 || activeHighlightTargetKeys.size === 0) {
 			return false;
 		}
 
-		return uniqueTargetIds.every((targetId) => activeHighlightTargetIds.has(targetId));
+		const uniqueTargetKeys = Array.from(new Set(targets.map((target) => getTargetKey(target))));
+		if (uniqueTargetKeys.length !== activeHighlightTargetKeys.size) {
+			return false;
+		}
+
+		return uniqueTargetKeys.every((targetKey) => activeHighlightTargetKeys.has(targetKey));
 	}
 
 	function isDirectlyHighlighted(highlightKey: string): boolean {
@@ -162,7 +211,7 @@
 			return false;
 		}
 
-		return matchesExactActiveHighlight(descriptor.targetIds);
+		return matchesExactActiveHighlight(descriptor.targets);
 	}
 
 	function isGroupDirectlyHighlighted(groupId: string): boolean {
@@ -180,27 +229,49 @@
 	function getHighlightLabel(
 		label: string,
 		highlightKey: string,
-		targetIds: string[],
+		targets: HighlightTargetRef[],
 		downstream = false
 	): string {
 		if (isDirectlyHighlighted(highlightKey)) {
 			return `Clear highlight for ${label}`;
 		}
 
-		if (downstream && isHighlighted(targetIds)) {
+		if (downstream && isHighlighted(targets)) {
 			return `Focus highlight on ${label}`;
 		}
 
 		return `Highlight ${label}`;
 	}
 
+	function getHighlightTone(targets: HighlightTargetRef[]): 'node' | 'material' | 'mixed' {
+		const targetTypes = new Set(targets.map((target) => target.targetType));
+		if (targetTypes.size === 1) {
+			return targetTypes.has('material') ? 'material' : 'node';
+		}
+
+		return 'mixed';
+	}
+
+	function hasHighlightTargetType(
+		targets: HighlightTargetRef[],
+		targetType: HighlightTargetRef['targetType']
+	): boolean {
+		return targets.some((target) => target.targetType === targetType);
+	}
+
 	function toggleHighlight(
 		highlightKey: string,
-		targetIds: string[],
-		targetType: 'node' | 'material',
+		targets: HighlightTargetRef[],
 		label: string
 	): void {
-		if (targetIds.length === 0) {
+		if ($chatRequestState.pending) {
+			toast.error('Highlight paused', {
+				description: 'Wait for the active chat mutation to finish before changing semantic highlights.'
+			});
+			return;
+		}
+
+		if (targets.length === 0) {
 			toast.error('Highlight failed', {
 				description: 'No semantic targets were available for that item.'
 			});
@@ -208,11 +279,11 @@
 		}
 
 		if (isDirectlyHighlighted(highlightKey)) {
-			const didRestore = vehiclePatchState.clearHighlightTargets(
-				assetId,
-				targetIds,
-				`clear ${label} highlight`
-			);
+			const didRestore = vehiclePatchState.apply(assetId, {
+				kind: 'clear_highlight_targets',
+				intentLabel: `clear ${label} highlight`,
+				targetIds: targets.map((target) => target.targetId)
+			});
 
 			if (!didRestore) {
 				toast.error('Highlight failed', {
@@ -224,11 +295,11 @@
 		}
 
 		activeHighlightKey = highlightKey;
-		vehiclePatchState.setHighlights(
-			assetId,
-			buildSemanticPanelHighlightOperations(targetIds, targetType, label),
-			`highlight ${label}`
-		);
+		vehiclePatchState.apply(assetId, {
+			kind: 'set_highlights',
+			intentLabel: `highlight ${label}`,
+			operations: buildSemanticPanelHighlightOperations(targets, label)
+		});
 	}
 
 	$effect(() => {
@@ -238,7 +309,7 @@
 
 	$effect(() => {
 		const descriptors = highlightDescriptorsByKey;
-		const activeTargetCount = activeHighlightTargetIds.size;
+		const activeTargetCount = activeHighlightTargetKeys.size;
 		const currentHighlightKey = activeHighlightKey;
 
 		if (activeTargetCount === 0) {
@@ -254,7 +325,7 @@
 
 		const inferredHighlightKey =
 			Array.from(descriptors.entries()).find(([, descriptor]) =>
-				matchesExactActiveHighlight(descriptor.targetIds)
+				matchesExactActiveHighlight(descriptor.targets)
 			)?.[0] ?? null;
 
 		if (inferredHighlightKey !== currentHighlightKey) {
@@ -263,21 +334,35 @@
 	});
 
 	function buildSemanticPanelHighlightOperations(
-		targetIds: string[],
-		targetType: 'node' | 'material',
+		targets: HighlightTargetRef[],
 		label: string
 	): VehicleInspectionPatchOperation[] {
 		const materialNameById = new Map(
-			(overlay?.acceptedMaterials ?? []).map((material) => [material.targetId, material.targetName])
+			(overlay?.acceptedMaterials ?? []).map((material: VehicleSemanticOverlay['acceptedMaterials'][number]) => [
+				material.targetId,
+				material.targetName
+			])
 		);
 
-		return Array.from(new Set(targetIds)).map((targetId) => ({
-			targetType,
-			targetId,
-			targetName: targetType === 'material' ? (materialNameById.get(targetId) ?? label) : label,
-			op: 'set_overlay_highlight' as const,
-			value: [...SEMANTIC_PANEL_HIGHLIGHT_FACTOR]
-		}));
+		return Array.from(
+			new Map(targets.map((target) => [getTargetKey(target), target])).values()
+		).map((target): VehicleInspectionPatchOperation =>
+			target.targetType === 'material'
+				? {
+						targetType: 'material',
+						targetId: target.targetId,
+						targetName: materialNameById.get(target.targetId) ?? label,
+						op: 'set_overlay_highlight',
+						value: [...MATERIAL_HIGHLIGHT_FACTOR]
+					}
+				: {
+						targetType: 'node',
+						targetId: target.targetId,
+						targetName: label,
+						op: 'set_overlay_highlight',
+						value: [...NODE_HIGHLIGHT_FACTOR]
+					}
+		);
 	}
 
 	$effect(() => {
@@ -288,30 +373,26 @@
 		const loadOverlay = async (): Promise<void> => {
 			try {
 				const response = await fetch(`/api/vehicle-assets/${assetId}/semantic-overlay`);
-				if (!response.ok) {
-					if (response.status === 404) {
-						overlay = null;
-						return;
-					}
-
+				if (!response.ok && response.status !== 404) {
 					throw new Error(`Semantic overlay request failed: ${response.status}`);
 				}
 
-				const payload = (await response.json()) as VehicleSemanticOverlay;
+				const payload = (await response.json()) as VehicleSemanticOverlaySnapshot;
 				if (cancelled) {
 					return;
 				}
 
-				overlay = payload;
+				semanticRuntimeState.applyAssetState(assetId, {
+					overlaySnapshot: payload
+				});
 				expandedGroupIds = expandedGroupIds.filter((groupId) =>
-					payload.acceptedGroups.some((group) => group.id === groupId)
+					(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === groupId)
 				);
 			} catch {
 				if (cancelled) {
 					return;
 				}
 
-				overlay = null;
 				expandedGroupIds = [];
 			} finally {
 				if (cancelled) {
@@ -320,11 +401,10 @@
 
 				nextPoll = setTimeout(() => {
 					void loadOverlay();
-				}, 5000);
+				}, 3000);
 			}
 		};
 
-		overlay = null;
 		expandedGroupIds = [];
 		void loadOverlay();
 
@@ -353,26 +433,28 @@
 						</button>
 						<div class="group-actions">
 							<span class="group-meta">{group.nodes.length}</span>
-							{#if !isExpanded(group.id)}
-								{@const groupHighlightKey = getGroupHighlightKey(group.id)}
-								{@const groupIsHighlighted = isGroupDirectlyHighlighted(group.id)}
-								<button
-									type="button"
-									class="highlight-button"
-									class:is-active={groupIsHighlighted}
-									aria-label={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargetIds)}
-									aria-pressed={groupIsHighlighted}
-									title={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargetIds)}
-									onclick={(event) => {
-										event.stopPropagation();
-										toggleHighlight(
-											groupHighlightKey,
-											group.highlightTargetIds,
-											group.highlightTargetType,
-											group.label
-										);
-									}}
-								>
+								{#if !isExpanded(group.id)}
+									{@const groupHighlightKey = getGroupHighlightKey(group.id)}
+									{@const groupIsHighlighted = isGroupDirectlyHighlighted(group.id)}
+									<button
+										type="button"
+										class="highlight-button"
+										class:is-active={groupIsHighlighted}
+										class:highlight-node={hasHighlightTargetType(group.highlightTargets, 'node')}
+										class:highlight-material={hasHighlightTargetType(group.highlightTargets, 'material')}
+										aria-label={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
+										aria-pressed={groupIsHighlighted}
+										title={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
+										disabled={$chatRequestState.pending}
+										onclick={(event) => {
+											event.stopPropagation();
+											toggleHighlight(
+												groupHighlightKey,
+												group.highlightTargets,
+												group.label
+											);
+										}}
+									>
 									<Highlighter class="h-3.5 w-3.5" />
 								</button>
 							{/if}
@@ -380,31 +462,44 @@
 					</div>
 					{#if isExpanded(group.id)}
 						<div class="node-stack">
-							{#each group.nodes as node, nodeIndex (`${group.id}-${node.id}`)}
-								{@const nodeHighlightKey = getNodeHighlightKey(group.id, node.id)}
-								{@const nodeIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, node.id)}
-								{@const nodeIsDownstreamHighlighted = !nodeIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(node.highlightTargetIds)}
-								<div
-									class="node-line node-row"
-									style={`--waterfall-delay:${groupIndex * 50 + nodeIndex * 36}ms`}
-								>
-									<span class="node-label">{node.label}</span>
+								{#each group.nodes as node, nodeIndex (`${group.id}-${node.id}`)}
+									{@const nodeHighlightKey = getNodeHighlightKey(group.id, node.id)}
+									{@const nodeIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, node.id)}
+									{@const nodeIsDownstreamHighlighted = !nodeIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(node.highlightTargets)}
+									<div
+										class="node-line node-row"
+										style={`--waterfall-delay:${groupIndex * 50 + nodeIndex * 36}ms`}
+									>
+										<div class="node-copy">
+											<span
+												class={[
+													'target-kind-indicator',
+													node.targetType === 'material'
+														? 'target-kind-material'
+														: 'target-kind-node'
+												]}
+												aria-hidden="true"
+											></span>
+											<span class="node-label">{node.label}</span>
+										</div>
 									<button
 										type="button"
-										class="highlight-button"
-										class:is-active={nodeIsDirectlyHighlighted}
-										class:is-downstream={nodeIsDownstreamHighlighted}
-										aria-label={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargetIds, nodeIsDownstreamHighlighted)}
-										aria-pressed={nodeIsDirectlyHighlighted}
-										title={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargetIds, nodeIsDownstreamHighlighted)}
-										onclick={() =>
-											toggleHighlight(
-												nodeHighlightKey,
-												node.highlightTargetIds,
-												node.highlightTargetType,
-												node.label
-											)}
-									>
+											class="highlight-button"
+											class:is-active={nodeIsDirectlyHighlighted}
+											class:is-downstream={nodeIsDownstreamHighlighted}
+											class:highlight-node={getHighlightTone(node.highlightTargets) === 'node'}
+											class:highlight-material={getHighlightTone(node.highlightTargets) === 'material'}
+											aria-label={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}
+											aria-pressed={nodeIsDirectlyHighlighted}
+											title={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}
+											disabled={$chatRequestState.pending}
+											onclick={() =>
+												toggleHighlight(
+													nodeHighlightKey,
+													node.highlightTargets,
+													node.label
+												)}
+										>
 										<Highlighter class="h-3.5 w-3.5" />
 									</button>
 								</div>
@@ -510,10 +605,34 @@
 		gap: 0.75rem;
 	}
 
+	.node-copy {
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		flex: 1 1 auto;
+	}
+
 	.node-label {
 		font-size: 0.72rem;
 		line-height: 1.4;
 		color: color-mix(in oklab, var(--boundary-text) 72%, transparent);
+	}
+
+	.target-kind-indicator {
+		display: inline-flex;
+		width: 1rem;
+		height: 1rem;
+		border-radius: 0.375rem;
+		flex-shrink: 0;
+	}
+
+	.target-kind-node {
+		background: var(--boundary-tertiary);
+	}
+
+	.target-kind-material {
+		background: var(--boundary-warning);
 	}
 
 	.highlight-button {
@@ -532,12 +651,49 @@
 		color: var(--boundary-text);
 	}
 
+	.highlight-button.highlight-node {
+		color: color-mix(in oklab, var(--boundary-tertiary) 70%, var(--boundary-text));
+	}
+
+	.highlight-button.highlight-material {
+		color: color-mix(in oklab, var(--boundary-warning) 70%, var(--boundary-text));
+	}
+
+	.highlight-button.highlight-node.highlight-material {
+		color: color-mix(in oklab, var(--boundary-text) 82%, transparent);
+	}
+
 	.highlight-button.is-active {
 		color: var(--boundary-warning);
 	}
 
 	.highlight-button.is-downstream {
 		color: color-mix(in oklab, var(--boundary-warning) 62%, var(--boundary-text));
+	}
+
+	.highlight-button.highlight-node.is-active {
+		color: var(--boundary-tertiary);
+	}
+
+	.highlight-button.highlight-node.is-downstream {
+		color: color-mix(in oklab, var(--boundary-tertiary) 62%, var(--boundary-text));
+	}
+
+	.highlight-button.highlight-material.is-active {
+		color: var(--boundary-warning);
+	}
+
+	.highlight-button.highlight-material.is-downstream {
+		color: color-mix(in oklab, var(--boundary-warning) 62%, var(--boundary-text));
+	}
+
+	.highlight-button.highlight-node.highlight-material.is-active {
+		color: var(--boundary-text);
+	}
+
+	.highlight-button.highlight-node.highlight-material.is-downstream {
+		color: color-mix(in oklab, var(--boundary-text) 82%, transparent);
+		opacity: 0.82;
 	}
 
 	.highlight-button:disabled {

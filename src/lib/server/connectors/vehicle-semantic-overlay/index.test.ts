@@ -8,8 +8,8 @@ import {
 	planVehicleWindowTint
 } from '$lib/server/connectors/gltf-preprocess';
 import {
-	annotateVehicleSemanticGroup,
 	listSemanticGroupsByQuery,
+	mutateVehicleSemanticAssignment,
 	readVehicleSemanticOverlay,
 	writeVehicleSemanticOverlay
 } from './index';
@@ -319,7 +319,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		await annotateVehicleSemanticGroup('audi_r8', {
+		await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [wheelNode!.id],
 			category: 'wheels',
 			humanLabel: 'wheels',
@@ -359,7 +360,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		const overlay = await annotateVehicleSemanticGroup('audi_r8', {
+		const overlay = await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			category: 'doors',
 			humanLabel: 'doors',
@@ -416,7 +418,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		await annotateVehicleSemanticGroup('audi_r8', {
+		await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			category: 'body_shell',
 			humanLabel: 'body shell',
@@ -524,7 +527,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		const overlay = await annotateVehicleSemanticGroup('audi_r8', {
+		const overlay = await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			category: 'doors',
 			humanLabel: 'doors',
@@ -558,7 +562,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		await annotateVehicleSemanticGroup('audi_r8', {
+		await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			semanticGroup: 'headlights'
 		});
@@ -595,7 +600,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		await annotateVehicleSemanticGroup('audi_r8', {
+		await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			semanticGroup: 'number plate'
 		});
@@ -646,7 +652,8 @@ describe('vehicle semantic overlays', () => {
 			discardedSuggestions: []
 		});
 
-		const overlay = await annotateVehicleSemanticGroup('audi_r8', {
+		const overlay = await mutateVehicleSemanticAssignment('audi_r8', {
+			action: 'assign',
 			nodeIds: [targetNode!.id],
 			semanticGroup: 'glasshouse',
 			materialSelections: [

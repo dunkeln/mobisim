@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { fade, fly } from 'svelte/transition';
 	import { footerActiveTool } from '$lib/stores/footer-active-tool';
 
 	type Props = {
@@ -7,83 +6,31 @@
 	};
 
 	let { class: className = '' }: Props = $props();
-	let root: HTMLDivElement | null = $state(null);
-	let expanded = $state(false);
 	const activeTool = $derived($footerActiveTool);
-	const canExpand = $derived(activeTool.toolLabels.length > 1);
-
-	$effect(() => {
-		if (!activeTool.active || activeTool.toolLabels.length === 0) {
-			expanded = false;
-		}
-	});
-
-	function toggleExpanded(): void {
-		if (!canExpand) {
-			return;
-		}
-
-		expanded = !expanded;
-	}
-
-	function collapse(): void {
-		expanded = false;
-	}
-
-	function handleDocumentPointerDown(event: PointerEvent): void {
-		if (!expanded || !root) {
-			return;
-		}
-
-		const target = event.target;
-		if (target instanceof Node && root.contains(target)) {
-			return;
-		}
-
-		collapse();
-	}
-
-	const visibleHistory = $derived(
-		expanded ? activeTool.toolLabels : activeTool.toolLabels.slice(-1)
+	const resolvedToolLabels = $derived(activeTool.toolLabels);
+	const resolvedLabel = $derived(activeTool.label);
+	const isActive = $derived(activeTool.active && activeTool.label.length > 0);
+	const historyLimit = 5;
+	const historyLabels = $derived.by(() =>
+		resolvedToolLabels.slice(Math.max(0, resolvedToolLabels.length - 1 - historyLimit), -1)
 	);
 </script>
 
-<svelte:document onpointerdown={handleDocumentPointerDown} />
-
-{#if activeTool.active && activeTool.label}
-	<div bind:this={root} class="tool-root {className}" aria-live="polite">
-		<div class="tool-history" class:tool-history--expanded={expanded}>
-			<div
-				class="tool-history__scroll"
-				in:fade={{ duration: 120 }}
-				out:fade={{ duration: 100 }}
-			>
-				{#each visibleHistory as toolLabel, index (`${toolLabel}-${index}-${expanded ? 'expanded' : 'collapsed'}`)}
-					<button
-						type="button"
-						class="tool-pill"
-						class:tool-pill--history={expanded}
-						class:tool-pill--ghost={!expanded && index === 0}
-						in:fly={{ y: 12, duration: 180 }}
-						out:fly={{ y: 10, duration: 140 }}
-						onclick={collapse}
-					>
+{#if isActive && resolvedLabel}
+	<div class="tool-root {className}" aria-live="polite">
+		<div class="tool-history">
+			<div class="tool-history__scroll">
+				{#each historyLabels as toolLabel, index (`${toolLabel}-${index}`)}
+					<div class="tool-pill tool-pill--history">
 						{toolLabel}
-					</button>
+					</div>
 				{/each}
 			</div>
 		</div>
 
-		<button
-			type="button"
-			class="tool-shell"
-			class:tool-shell--expandable={canExpand}
-			aria-expanded={canExpand ? expanded : undefined}
-			aria-label={canExpand ? `Show tool stack for ${activeTool.label}` : activeTool.label}
-			onclick={toggleExpanded}
-		>
-			<div class="tool-label">{activeTool.label}</div>
-		</button>
+		<div class="tool-shell" aria-label={resolvedLabel}>
+			<div class="tool-label">{resolvedLabel}</div>
+		</div>
 	</div>
 {/if}
 
@@ -94,23 +41,19 @@
 		display: inline-flex;
 		flex-direction: column;
 		align-items: flex-end;
-		width: 8.9rem;
-		pointer-events: auto;
+		width: auto;
+		max-width: min(26rem, calc(100vw - 8rem));
+		pointer-events: none;
 	}
 
 	.tool-history {
 		position: absolute;
 		right: 0;
-		bottom: 0.9rem;
-		width: 8.9rem;
-		max-height: 2.2rem;
-		pointer-events: auto;
-		overflow: visible;
-	}
-
-	.tool-history--expanded {
-		bottom: calc(100% - 0.55rem);
-		max-height: min(10rem, 34vh);
+		bottom: calc(100% + 0.28rem);
+		width: max-content;
+		max-width: inherit;
+		max-height: calc((1.86rem * 5) + (0.28rem * 4));
+		overflow: hidden;
 	}
 
 	.tool-history__scroll {
@@ -119,46 +62,37 @@
 		align-items: flex-end;
 		gap: 0.28rem;
 		max-height: inherit;
-		overflow-y: hidden;
-		padding: 0 0 0.2rem;
-		scrollbar-width: thin;
-		scrollbar-color: color-mix(in srgb, var(--color-boundary-text) 20%, transparent) transparent;
-	}
-
-	.tool-history--expanded .tool-history__scroll {
-		overflow-y: auto;
-		padding: 0.2rem 0 0.8rem;
+		max-width: inherit;
+		overflow: hidden;
+		padding: 0;
 	}
 
 	.tool-shell {
 		position: relative;
 		z-index: 1;
 		display: inline-flex;
-		width: 8.9rem;
-		max-width: 8.9rem;
+		width: max-content;
+		max-width: inherit;
 		align-items: center;
-		justify-content: center;
-		padding: 0.58rem 0.92rem 0.54rem;
+		justify-content: flex-end;
+		min-height: 1.86rem;
+		padding: 0.46rem 0.86rem 0.44rem;
 		border-radius: 999px;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 13%, transparent);
 		background:
-			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			radial-gradient(circle at 22% 10%, color-mix(in srgb, white 5%, transparent), transparent 24%),
 			linear-gradient(
 				180deg,
-				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
-				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
+				color-mix(in srgb, white 4%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 1.8%, transparent) 38%,
+				color-mix(in srgb, var(--color-boundary-text) 0.55%, transparent)
 			);
 		box-shadow:
-			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
-		backdrop-filter: blur(16px) saturate(106%);
-		-webkit-backdrop-filter: blur(16px) saturate(106%);
+			inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+			0 10px 22px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		backdrop-filter: blur(16px) saturate(108%);
+		-webkit-backdrop-filter: blur(16px) saturate(108%);
 		isolation: isolate;
-		cursor: default;
-	}
-
-	.tool-shell--expandable {
-		cursor: pointer;
 	}
 
 	.tool-shell::before,
@@ -167,18 +101,18 @@
 		position: absolute;
 		inset: 1px;
 		border-radius: inherit;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 6%, transparent);
 		background:
 			linear-gradient(
 				180deg,
-				color-mix(in srgb, white 3%, transparent),
-				transparent 24%,
+				color-mix(in srgb, white 8%, transparent),
+				color-mix(in srgb, white 2%, transparent) 18%,
+				transparent 34%,
 				transparent 100%
 			),
 			radial-gradient(
-				110% 70% at 18% 0%,
-				color-mix(in srgb, white 3%, transparent),
-				transparent 26%
+				115% 76% at 16% 0%,
+				color-mix(in srgb, white 5%, transparent),
+				transparent 20%
 			);
 		pointer-events: none;
 	}
@@ -188,49 +122,61 @@
 		position: relative;
 		z-index: 1;
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
-		letter-spacing: 0.12em;
+		font-size: 0.64rem;
+		letter-spacing: 0.02em;
 		line-height: 1;
+		-webkit-font-smoothing: antialiased;
+		text-rendering: geometricPrecision;
 	}
 
 	.tool-label {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: color-mix(in srgb, var(--color-boundary-text) 88%, transparent);
+		max-width: min(24rem, calc(100vw - 10rem));
+		color: color-mix(in srgb, var(--color-boundary-text) 94%, transparent);
+		text-shadow: 0 0.5px 0 color-mix(in srgb, var(--color-boundary-background) 72%, transparent);
 	}
 
 	.tool-pill {
 		position: relative;
 		display: inline-flex;
 		align-items: center;
-		justify-content: center;
-		width: 8.9rem;
-		min-height: 2rem;
-		padding: 0.54rem 0.88rem 0.5rem;
+		justify-content: flex-end;
+		width: max-content;
+		max-width: inherit;
+		min-height: 1.86rem;
+		padding: 0.46rem 0.84rem 0.44rem;
 		border-radius: 999px;
-		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 11%, transparent);
 		background:
-			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			radial-gradient(circle at 22% 10%, color-mix(in srgb, white 4%, transparent), transparent 24%),
 			linear-gradient(
 				180deg,
-				color-mix(in srgb, var(--color-boundary-text) 2.2%, transparent),
-				color-mix(in srgb, var(--color-boundary-text) 0.7%, transparent)
+				color-mix(in srgb, white 3%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 1.35%, transparent) 40%,
+				color-mix(in srgb, var(--color-boundary-text) 0.35%, transparent)
 			);
 		box-shadow:
-			inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
-			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
-		color: color-mix(in srgb, var(--color-boundary-text) 76%, transparent);
+			inset 0 1px 0 color-mix(in srgb, white 11%, transparent),
+			0 10px 22px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		color: color-mix(in srgb, var(--color-boundary-text) 86%, transparent);
 		white-space: nowrap;
-		cursor: pointer;
-	}
-
-	.tool-pill--ghost {
-		opacity: 0.38;
-		transform: translate(-0.35rem, -0.15rem);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-shadow: 0 0.5px 0 color-mix(in srgb, var(--color-boundary-background) 72%, transparent);
 	}
 
 	.tool-pill--history {
-		opacity: 0.92;
+		border-color: color-mix(in srgb, var(--color-boundary-text) 9%, transparent);
+		color: color-mix(in srgb, var(--color-boundary-text) 78%, transparent);
+		background:
+			radial-gradient(circle at 22% 10%, color-mix(in srgb, white 3%, transparent), transparent 24%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, white 2.25%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 1.05%, transparent) 40%,
+				color-mix(in srgb, var(--color-boundary-text) 0.25%, transparent)
+			);
 	}
 </style>

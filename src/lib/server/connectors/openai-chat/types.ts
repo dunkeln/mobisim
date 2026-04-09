@@ -1,6 +1,11 @@
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
+import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
+import type {
+	VehicleSemanticOverlay,
+	VehicleSemanticOverlayStatus
+} from '$lib/server/connectors/vehicle-semantic-overlay/types';
 
 export type FooterChatRole = 'user' | 'assistant';
 
@@ -11,6 +16,7 @@ export type FooterChatMessage = {
 
 export type FooterChatPresentationTarget = {
 	targetId: string;
+	targetType?: 'node' | 'material';
 	targetName?: string;
 	operation?: VehicleInspectionPatchOperation['op'];
 };
@@ -46,7 +52,7 @@ export type FooterChatSidebarState = {
 
 export type FooterChatSupplementaryListState = {
 	active: boolean;
-	items: string[];
+	entries: Record<string, string>;
 };
 
 export type FooterChatTrace = {
@@ -90,6 +96,9 @@ export type FooterChatResponse = {
 	selectionUpdate?: FooterChatSelectionUpdate;
 	sidebar?: FooterChatSidebarState;
 	supplementaryList?: FooterChatSupplementaryListState;
+	semanticOverlayStatus?: VehicleSemanticOverlayStatus;
+	semanticOverlay?: VehicleSemanticOverlay | null;
+	semanticIngressBindings?: SemanticIngressBinding[];
 	trace?: FooterChatTrace;
 };
 

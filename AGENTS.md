@@ -26,13 +26,14 @@ Use this palette as the project color boundary for layout/debug surfaces and any
 - background: `rgba(20, 20, 20, 1)`
 - error/warning: `hsl(8 49% 51%)`
 - secondary: `hsl(34 75% 73%)`
+- tertiary: `hsl(186 52% 67%)` (`#80CED7`)
 - primary: `hsl(246 38% 66%)`
 - text: `hsl(220 39% 92%)`
 
 Apply these rules:
 
 - Do not introduce new ad hoc colors for layout/debug work when one of the boundary colors can express the intent.
-- Prefer background, text, primary, secondary, and error/warning roles over one-off hex values.
+- Prefer background, text, primary, secondary, tertiary, and error/warning roles over one-off hex values.
 - For temporary debug styling, stay inside this palette using opacity changes rather than new hues.
 - If a feature needs colors outside this boundary, call that out explicitly before using them.
 

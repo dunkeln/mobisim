@@ -10,7 +10,7 @@ const baseSelection: VehicleNodeSelection = {
 };
 
 describe('vehicleNodeSelection', () => {
-	it('toggles exact material-slot selections independently on the same node', () => {
+	it('accumulates additive selections while collapsing to one selection per node', () => {
 		vehicleNodeSelection.clear();
 
 		vehicleNodeSelection.select({
@@ -23,28 +23,6 @@ describe('vehicleNodeSelection', () => {
 				...baseSelection,
 				materialIndex: 1,
 				materialName: 'Trim'
-			},
-			true
-		);
-
-		expect(get(vehicleNodeSelection)).toEqual([
-			{
-				...baseSelection,
-				materialIndex: 0,
-				materialName: 'Glass'
-			},
-			{
-				...baseSelection,
-				materialIndex: 1,
-				materialName: 'Trim'
-			}
-		]);
-
-		vehicleNodeSelection.select(
-			{
-				...baseSelection,
-				materialIndex: 0,
-				materialName: 'Glass'
 			},
 			true
 		);
@@ -89,6 +67,35 @@ describe('vehicleNodeSelection', () => {
 				nodeId: 'node-3',
 				nodeName: 'Door',
 				nodePath: 'Scene/Door'
+			}
+		]);
+	});
+
+	it('keeps additive reselection of the same node idempotent', () => {
+		vehicleNodeSelection.clear();
+
+		vehicleNodeSelection.select(
+			{
+				...baseSelection,
+				materialIndex: 0,
+				materialName: 'Glass'
+			},
+			true
+		);
+		vehicleNodeSelection.select(
+			{
+				...baseSelection,
+				materialIndex: 0,
+				materialName: 'Glass'
+			},
+			true
+		);
+
+		expect(get(vehicleNodeSelection)).toEqual([
+			{
+				...baseSelection,
+				materialIndex: 0,
+				materialName: 'Glass'
 			}
 		]);
 	});

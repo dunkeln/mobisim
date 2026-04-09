@@ -9,6 +9,7 @@ import { footerActiveTool } from '$lib/stores/footer-active-tool';
 import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { vehiclePatchState } from '$lib/stores/vehicle-patches';
+import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 import type {
 	FooterChatMessage as ChatMessage,
 	FooterChatPresentationContext,
@@ -18,6 +19,7 @@ import type {
 	FooterChatResponse as ChatResponse,
 	FooterChatViewerMode
 } from '$lib/server/connectors/openai-chat/types';
+import type { VehicleSemanticOverlaySnapshot } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
@@ -62,7 +64,7 @@ function summarizeTargets(
 	const targets: FooterChatPresentationTarget[] = [];
 
 	for (const operation of operations) {
-		const key = `${operation.targetId}:${operation.op}`;
+		const key = `${operation.targetType}:${operation.targetId}:${operation.op}`;
 		if (seenKeys.includes(key)) {
 			continue;
 		}
@@ -70,6 +72,10 @@ function summarizeTargets(
 		seenKeys.push(key);
 		targets.push({
 			targetId: operation.targetId,
+			targetType:
+				operation.targetType === 'node' || operation.targetType === 'material'
+					? operation.targetType
+					: undefined,
 			targetName: operation.targetName,
 			operation: includeOperation ? operation.op : undefined
 		});
@@ -215,7 +221,10 @@ export function handleLocalChatCommand(content: string, assetId?: VehicleAssetId
 	}
 
 	if (isClearHighlightRequest(content)) {
-		const didClear = vehiclePatchState.clearHighlights(assetId);
+		const didClear = vehiclePatchState.apply(assetId, {
+			kind: 'clear_highlights',
+			intentLabel: 'clear highlights'
+		});
 		const assistantMessage: ChatMessage = {
 			role: 'assistant',
 			content: didClear
@@ -233,7 +242,11 @@ export function handleLocalChatCommand(content: string, assetId?: VehicleAssetId
 		getPresentationContext(assetId)
 	);
 	if (presentationRestore) {
-		const didRestore = vehiclePatchState.restore(assetId, presentationRestore);
+		const didRestore = vehiclePatchState.apply(assetId, {
+			kind: 'restore',
+			intentLabel: presentationRestore.label?.trim() || 'restore original view',
+			restore: presentationRestore
+		});
 		toast.success(didRestore ? 'Restore applied' : 'Nothing to restore', {
 			description: didRestore
 				? summarizeRestoreInstruction(presentationRestore)
@@ -247,6 +260,27 @@ export function handleLocalChatCommand(content: string, assetId?: VehicleAssetId
 
 export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {
 	footerActiveTool.setFromToolCalls(payload.trace?.toolCalls ?? []);
+
+	const semanticTargetAssetId = payload.semanticOverlay?.assetId ?? assetId;
+	if (
+		semanticTargetAssetId &&
+		(payload.semanticOverlay !== undefined || payload.semanticOverlayStatus !== undefined)
+	) {
+		const snapshot: VehicleSemanticOverlaySnapshot = {
+			overlay: payload.semanticOverlay ?? null,
+			overlayRevision: payload.semanticOverlay?.revision ?? null,
+			overlayStatus: payload.semanticOverlayStatus ?? (payload.semanticOverlay ? 'fresh' : 'unknown')
+		};
+		semanticRuntimeState.applyAssetState(semanticTargetAssetId, {
+			overlaySnapshot: snapshot,
+			ingressBindings:
+				assetId && semanticTargetAssetId === assetId ? payload.semanticIngressBindings : undefined
+		});
+	} else if (assetId && payload.semanticIngressBindings) {
+		semanticRuntimeState.applyAssetState(assetId, {
+			ingressBindings: payload.semanticIngressBindings
+		});
+	}
 
 	if (payload.historyAction === 'undo') {
 		if (!vehiclePatchState.undo(assetId)) {
@@ -267,7 +301,12 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 	}
 
 	if (payload.historyAction === 'clear_highlights') {
-		if (!vehiclePatchState.clearHighlights(assetId)) {
+		if (
+			!vehiclePatchState.apply(assetId, {
+				kind: 'clear_highlights',
+				intentLabel: 'clear highlights'
+			})
+		) {
 			throw new Error('There are no highlight overlays to clear.');
 		}
 	}
@@ -276,18 +315,22 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 		const targetAssetId = payload.vehiclePatchAssetId;
 
 		if (targetAssetId && targetAssetId === assetId) {
-			vehiclePatchState.queue(
-				targetAssetId,
-				payload.vehiclePatchOperations,
-				payload.vehiclePatchLabel ?? payload.message.content
-			);
+			vehiclePatchState.apply(targetAssetId, {
+				kind: 'operations',
+				intentLabel: payload.vehiclePatchLabel ?? payload.message.content,
+				operations: payload.vehiclePatchOperations
+			});
 		} else {
 			throw new Error('Chat returned patch operations for a different vehicle asset.');
 		}
 	}
 
 	if (payload.presentationRestore) {
-		const didRestore = vehiclePatchState.restore(assetId, payload.presentationRestore);
+		const didRestore = vehiclePatchState.apply(assetId, {
+			kind: 'restore',
+			intentLabel: payload.presentationRestore.label?.trim() || 'restore original view',
+			restore: payload.presentationRestore
+		});
 		if (!didRestore && !payload.vehiclePatchOperations?.length) {
 			throw new Error('No active vehicle presentation matched the restore request.');
 		}

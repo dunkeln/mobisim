@@ -48,6 +48,10 @@ In `Done`:
 - [ ] T-020 | Add freeform-to-deterministic tool instruction layer | next: document the minimal prompt and executor contract for expressive tool use
 - [ ] T-021 | Add voice agent slice | next: define one end-to-end voice command path that maps to the existing deterministic vehicle intent executor
 - [ ] T-022 | Isolate JARVIS-style components | next: separate the shell, chat, inspector, and viewport chrome into modular component boundaries
+- [ ] T-037 | Remove overlapping semantic write tools | next: collapse `annotate_vehicle_semantic_group` into the canonical semantic assignment path or delete it
+- [ ] T-038 | Remove client semantic fixup mutators | next: delete legacy semantic runtime `setOverlay` and `setOverlayStatus` write paths after snapshot-only callers are confirmed
+- [ ] T-039 | Split semantic lookup from presentation side effects | next: remove highlight-producing behavior from semantic group management and keep it as semantic lookup only
+- [ ] T-040 | Delete dead orchestration contracts | next: remove unused orchestration types and planner scaffolding left after disabling multi-step orchestration
 
 ## In Progress
 
@@ -90,6 +94,10 @@ In `Done`:
 - [x] T-034 | Rebuild semantic overlay groups from reviewed assignments | completed: 2026-04-07
 - [x] T-035 | Split LLM semantic proposals from reviewed assignments | completed: 2026-04-07
 - [x] T-036 | Derive reusable semantic examples from reviewed assignments | completed: 2026-04-07
+- [x] T-037 | Remove overlapping semantic write tools | completed: 2026-04-08
+- [x] T-038 | Remove client semantic fixup mutators | completed: 2026-04-08
+- [x] T-039 | Split semantic lookup from presentation side effects | completed: 2026-04-08
+- [x] T-040 | Delete dead orchestration contracts | completed: 2026-04-08
 
 ## Updates
 
@@ -132,3 +140,12 @@ In `Done`:
 - 2026-04-07 14:12 PT | Added `T-035` and `T-036` to `Backlog` to separate pending LLM semantic proposals from reviewed assignments and feed reviewed examples back into proposal generation
 - 2026-04-07 14:18 PT | Marked `T-035` done after adding a file-backed pending semantic proposal store and persisting LLM node-to-group proposals without exposing them to planners
 - 2026-04-07 14:20 PT | Marked `T-036` done after deriving compact reviewed semantic examples from assignment files and feeding them into semantic proposal prompt input without adding a new persisted example store
+- 2026-04-08 18:12 PT | Added cleanup tasks `T-037` through `T-040` to track overlapping semantic write tools, hidden client semantic repair logic, semantic lookup side effects, and dead orchestration scaffolding after the deterministic snapshot rewrite
+- 2026-04-08 18:29 PT | Marked `T-037` done after deleting the overlapping `annotate_vehicle_semantic_group` chat tool, removing its footer/tool-catalog surface, and converting semantic assignment tests to the canonical mutation path
+- 2026-04-08 18:18 PT | Marked `T-038` done after removing client-side semantic runtime `setOverlay` and `setOverlayStatus` mutators and routing viewport semantic status polling through revision-safe snapshot application
+- 2026-04-08 18:23 PT | Marked `T-039` done after making semantic group `get` a pure lookup, removing highlight side effects from semantic lookup execution, and updating tests to stop expecting presentation patch ops from semantic reads
+- 2026-04-08 18:30 PT | Marked `T-040` done after deleting the dead orchestration module, inlining the remaining tool-catalog helper into routing, and removing unused orchestration contract types from the chat internal surface
+- 2026-04-08 18:44 PT | Compressed `openai-chat/execution.ts` by moving tool schemas into `tool-definitions.ts` and tool argument parsing into `tool-args.ts`, then removed stale imports after the extraction
+- 2026-04-08 18:49 PT | Compressed `openai-chat/execution.ts` again by moving semantic target resolution and semantic tool execution into `semantic-execution.ts`, leaving the top-level dispatcher and non-semantic tool flow in place
+- 2026-04-08 19:02 PT | Collapsed the model-facing chat tool surface into domain tools for presentation, selection, semantics, and assistant UI, while translating those broader actions onto the existing deterministic executors underneath
+- 2026-04-08 19:17 PT | Collapsed presentation-state synchronization onto `vehiclePatchState.apply(...)`, migrated production callers and tests off `queue`/`setHighlights`/`clearHighlights`/`clearHighlightTargets`/`restore`, and deleted the dead wrapper methods

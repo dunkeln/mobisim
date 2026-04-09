@@ -15,13 +15,21 @@
 	import {
 		buildRuntimeNodeLookup,
 		buildRuntimeNodePath,
-		resolveRuntimeSelection
+		resolveRuntimeSelection,
+		resolveRuntimeSelectionDebug,
+		type RuntimeSelectionDebugSnapshot
 	} from '$lib/components/threlte/runtime-selection';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
+	import type {
+		VehicleInspectionCapabilities,
+		VehicleInspectionMaterialSummary
+	} from '$lib/server/connectors/gltf-preprocess/types';
 	import type { VehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+	import { chatRequestState } from '$lib/stores/chat-request-state';
 	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
+	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 	type Props = {
@@ -40,6 +48,7 @@
 	const XRAY_OPACITY = 0.18;
 	const SELECTION_CLICK_DRAG_THRESHOLD = 8;
 	const SELECTION_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.95, 0.79, 0.42, 0.94];
+	const SELECTION_DEBUG_GROUP_NAME = '__mobisim-selection-debug__';
 
 	let camera = $state<THREE.PerspectiveCamera | undefined>();
 	let controls = $state<ThreeOrbitControls | undefined>();
@@ -55,8 +64,10 @@
 	let floorSize = $state(18);
 	let viewportLightIntensity = $state(1);
 	let cameraConfig = $state<CameraConfig | null>(null);
-	let semanticOverlayStatus = $state<VehicleSemanticOverlayStatus>('unknown');
 	let loadedScene = $state<THREE.Object3D | undefined>();
+	let materialSummaryById = $state<Map<string, VehicleInspectionMaterialSummary>>(new Map());
+	let selectionDebugEnabled = $state(false);
+	let selectionDebugSnapshot = $state<RuntimeSelectionDebugSnapshot | null>(null);
 	const originalNodeState = new WeakMap<
 		THREE.Object3D,
 		{
@@ -168,6 +179,15 @@
 	let cameraPosition = $state<Vec3Tuple>(getCameraPresetPosition());
 	const HIGHLIGHT_OVERLAY_NAME = '__mobisim-highlight-overlay__';
 	const SELECTION_OVERLAY_NAME = '__mobisim-selection-overlay__';
+	const semanticRuntimeAsset = $derived.by(
+		() =>
+			$semanticRuntimeState.byAsset[assetId] ?? {
+				overlay: null,
+				overlayStatus: 'unknown' as VehicleSemanticOverlayStatus,
+				ingressBindings: []
+			}
+	);
+	const semanticOverlayStatus = $derived(semanticRuntimeAsset.overlayStatus);
 	const semanticOverlayLabel = $derived.by(() => {
 		switch (semanticOverlayStatus) {
 			case 'fresh':
@@ -221,6 +241,80 @@
 			: node.material
 				? [node.material]
 				: [];
+	}
+
+	type RuntimeMaterialTarget = {
+		node: THREE.Object3D;
+		material: THREE.Material;
+		materialIndex?: number;
+	};
+
+	function buildRuntimeNodePathLookup(scene: THREE.Object3D): Map<string, THREE.Object3D[]> {
+		const nodesByPath = new Map<string, THREE.Object3D[]>();
+
+		scene.traverse((node) => {
+			if (node === scene) {
+				return;
+			}
+
+			const path = buildRuntimeNodePath(node, scene);
+			nodesByPath.set(path, [...(nodesByPath.get(path) ?? []), node]);
+		});
+
+		return nodesByPath;
+	}
+
+	function resolveRuntimeMaterialTargets(
+		scene: THREE.Object3D,
+		operation: VehicleInspectionPatchOperation
+	): RuntimeMaterialTarget[] {
+		if (operation.targetType !== 'material') {
+			return [];
+		}
+
+		const summary = materialSummaryById.get(operation.targetId);
+		const targetName = summary?.name ?? operation.targetName;
+		if (!targetName) {
+			return [];
+		}
+
+		const results = new Map<string, RuntimeMaterialTarget>();
+
+		const appendNodeTargets = (node: THREE.Object3D): void => {
+			if (!(node instanceof THREE.Mesh)) {
+				return;
+			}
+
+			listNodeMaterials(node).forEach((material, index) => {
+				if (material.name !== targetName) {
+					return;
+				}
+
+				results.set(`${node.uuid}:${index}:${material.uuid}`, {
+					node,
+					material,
+					materialIndex: Array.isArray(node.material) ? index : undefined
+				});
+			});
+		};
+
+		if (summary) {
+			const nodesByPath = buildRuntimeNodePathLookup(scene);
+			for (const nodePath of summary.nodePaths) {
+				const nodes = nodesByPath.get(nodePath) ?? [];
+				nodes.forEach(appendNodeTargets);
+			}
+		}
+
+		if (results.size > 0) {
+			return Array.from(results.values());
+		}
+
+		scene.traverse((node) => {
+			appendNodeTargets(node);
+		});
+
+		return Array.from(results.values());
 	}
 
 	function hasWireframeProperty(
@@ -621,7 +715,107 @@
 		});
 	}
 
+	function disposeSelectionDebugObject(node: THREE.Object3D): void {
+		if ('geometry' in node) {
+			const geometry = node.geometry;
+			if (geometry instanceof THREE.BufferGeometry) {
+				geometry.dispose();
+			}
+		}
+
+		if ('material' in node) {
+			const material = node.material;
+			if (material instanceof THREE.Material) {
+				material.dispose();
+			} else if (Array.isArray(material)) {
+				for (const item of material) {
+					item.dispose();
+				}
+			}
+		}
+
+		for (const child of node.children) {
+			disposeSelectionDebugObject(child);
+		}
+	}
+
+	function clearSelectionDebug(scene: THREE.Object3D): void {
+		const debugGroup = scene.getObjectByName(SELECTION_DEBUG_GROUP_NAME);
+		if (!debugGroup) {
+			return;
+		}
+
+		scene.remove(debugGroup);
+		disposeSelectionDebugObject(debugGroup);
+	}
+
+	function addSelectionDebug(scene: THREE.Object3D, snapshot: RuntimeSelectionDebugSnapshot): void {
+		clearSelectionDebug(scene);
+
+		const debugGroup = new THREE.Group();
+		debugGroup.name = SELECTION_DEBUG_GROUP_NAME;
+
+		for (const sample of snapshot.samples) {
+			const points = [
+				new THREE.Vector3(...sample.origin),
+				new THREE.Vector3(...sample.rayEnd)
+			];
+			const geometry = new THREE.BufferGeometry().setFromPoints(points);
+			const material = new THREE.LineBasicMaterial({
+				color: new THREE.Color(
+					...(sample.isWinningSample ? ([0.96, 0.78, 0.42] as const) : ([0.5, 0.81, 0.84] as const))
+				),
+				transparent: true,
+				opacity: sample.isWinningSample ? 0.94 : 0.52,
+				depthTest: false
+			});
+			const line = new THREE.Line(geometry, material);
+			line.name = '__mobisim-selection-debug-ray__';
+			line.renderOrder = 30;
+			debugGroup.add(line);
+
+			if (sample.rejectedHitPoint) {
+				const rejectedMarker = new THREE.Mesh(
+					new THREE.SphereGeometry(0.038, 12, 12),
+					new THREE.MeshBasicMaterial({
+						color: new THREE.Color(0.72, 0.31, 0.24),
+						transparent: true,
+						opacity: 0.92,
+						depthTest: false
+					})
+				);
+				rejectedMarker.name = '__mobisim-selection-debug-rejected-hit__';
+				rejectedMarker.position.set(...sample.rejectedHitPoint);
+				rejectedMarker.renderOrder = 31;
+				debugGroup.add(rejectedMarker);
+			}
+		}
+
+		if (snapshot.winningPoint) {
+			const winningMarker = new THREE.Mesh(
+				new THREE.SphereGeometry(0.065, 16, 16),
+				new THREE.MeshBasicMaterial({
+					color: new THREE.Color(0.96, 0.78, 0.42),
+					transparent: true,
+					opacity: 0.96,
+					depthTest: false
+				})
+			);
+			winningMarker.name = '__mobisim-selection-debug-hit__';
+			winningMarker.position.set(...snapshot.winningPoint);
+			winningMarker.renderOrder = 32;
+			debugGroup.add(winningMarker);
+		}
+
+		scene.add(debugGroup);
+	}
+
 	function handleViewportPointerDown(event: PointerEvent): void {
+		if ($chatRequestState.pending) {
+			selectionPointerDown = null;
+			return;
+		}
+
 		selectionPointerDown = {
 			x: event.clientX,
 			y: event.clientY,
@@ -635,6 +829,11 @@
 	}
 
 	function handleViewportPointerUp(event: PointerEvent): void {
+		if ($chatRequestState.pending) {
+			selectionPointerDown = null;
+			return;
+		}
+
 		if (!loadedScene || !camera || !canvasHost) {
 			selectionPointerDown = null;
 			return;
@@ -667,13 +866,28 @@
 			return;
 		}
 
-		const resolvedHit = resolveRuntimeSelection({
-			scene: loadedScene,
-			camera,
-			canvasRect: rect,
-			clientX: event.clientX,
-			clientY: event.clientY
-		});
+		const selectionResult = selectionDebugEnabled
+			? resolveRuntimeSelectionDebug({
+					scene: loadedScene,
+					camera,
+					canvasRect: rect,
+					clientX: event.clientX,
+					clientY: event.clientY,
+					anchorToCenterSample: additiveSelection
+				})
+			: {
+					selection: resolveRuntimeSelection({
+						scene: loadedScene,
+						camera,
+						canvasRect: rect,
+						clientX: event.clientX,
+						clientY: event.clientY,
+						anchorToCenterSample: additiveSelection
+					}),
+					debugSnapshot: null
+				};
+		const resolvedHit = selectionResult.selection;
+		selectionDebugSnapshot = selectionResult.debugSnapshot;
 
 		if (!resolvedHit) {
 			if (!additiveSelection) {
@@ -696,6 +910,10 @@
 	}
 
 	function handleViewportKeyDown(event: KeyboardEvent): void {
+		if ($chatRequestState.pending) {
+			return;
+		}
+
 		if (event.key !== 'Enter' && event.key !== ' ') {
 			return;
 		}
@@ -719,142 +937,139 @@
 		scene: THREE.Object3D,
 		operation: VehicleInspectionPatchOperation
 	): void {
-		if (operation.targetType !== 'material' || !operation.targetName) {
+		if (operation.targetType !== 'material') {
 			return;
 		}
 
-		const targetName = operation.targetName;
+		for (const target of resolveRuntimeMaterialTargets(scene, operation)) {
+			const { node, material, materialIndex } = target;
 
-		scene.traverse((node) => {
-			for (const material of listNodeMaterials(node)) {
-				if (material.name !== targetName && !targetName.startsWith(`${material.name} (`)) {
-					continue;
-				}
-
-				switch (operation.op) {
-					case 'set_base_color_factor':
-						if (Array.isArray(operation.value) && operation.value.length === 4) {
-							if (hasColorProperty(material)) {
-								material.color.setRGB(
-									operation.value[0] ?? 1,
-									operation.value[1] ?? 1,
-									operation.value[2] ?? 1
-								);
-							}
+			switch (operation.op) {
+				case 'set_base_color_factor':
+					if (Array.isArray(operation.value) && operation.value.length === 4) {
+						if (hasColorProperty(material)) {
+							material.color.setRGB(
+								operation.value[0] ?? 1,
+								operation.value[1] ?? 1,
+								operation.value[2] ?? 1
+							);
 						}
-						break;
-					case 'set_metalness_factor':
-						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
-							material.metalness = THREE.MathUtils.clamp(operation.value, 0, 1);
-						}
-						break;
-					case 'set_roughness_factor':
-						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
-							material.roughness = THREE.MathUtils.clamp(operation.value, 0, 1);
-						}
-						break;
-					case 'set_env_map_intensity':
-						if (typeof operation.value === 'number' && hasFinishProperty(material)) {
-							material.envMapIntensity = THREE.MathUtils.clamp(operation.value, 0, 3);
-						}
-						break;
-					case 'set_overlay_highlight':
-						if (Array.isArray(operation.value) && operation.value.length === 4) {
-							addHighlightOverlay(node, [
+					}
+					break;
+				case 'set_metalness_factor':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.metalness = THREE.MathUtils.clamp(operation.value, 0, 1);
+					}
+					break;
+				case 'set_roughness_factor':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.roughness = THREE.MathUtils.clamp(operation.value, 0, 1);
+					}
+					break;
+				case 'set_env_map_intensity':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.envMapIntensity = THREE.MathUtils.clamp(operation.value, 0, 3);
+					}
+					break;
+				case 'set_overlay_highlight':
+					if (Array.isArray(operation.value) && operation.value.length === 4) {
+						addHighlightOverlay(
+							node,
+							[
 								operation.value[0] ?? 1,
 								operation.value[1] ?? 1,
 								operation.value[2] ?? 1,
 								operation.value[3] ?? 0.48
-							]);
+							],
+							HIGHLIGHT_OVERLAY_NAME,
+							materialIndex
+						);
+					}
+					break;
+				case 'set_emissive_factor':
+					if (
+						Array.isArray(operation.value) &&
+						operation.value.length === 3 &&
+						hasEmissiveProperty(material)
+					) {
+						const requestedEmissiveColor = new THREE.Color(
+							operation.value[0] ?? 0,
+							operation.value[1] ?? 0,
+							operation.value[2] ?? 0
+						);
+						const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
+						const requestedStrength = THREE.MathUtils.clamp(
+							Math.max(...operation.value.map((channel) => Math.abs(channel ?? 0))),
+							0,
+							1
+						);
+						const resolvedLuminance =
+							emissiveColor.r * 0.2126 + emissiveColor.g * 0.7152 + emissiveColor.b * 0.0722;
+						const emissiveStrength =
+							requestedStrength > 0
+								? Math.max(
+										requestedStrength,
+										THREE.MathUtils.clamp(resolvedLuminance * 0.85, 0.24, 0.9)
+									)
+								: 0;
+
+						material.emissive.setRGB(emissiveColor.r, emissiveColor.g, emissiveColor.b);
+
+						if (hasEmissiveIntensityProperty(material)) {
+							const baseEmissiveIntensity =
+								originalMaterialState.get(material)?.emissiveIntensity ??
+								material.emissiveIntensity;
+							material.emissiveIntensity = baseEmissiveIntensity + emissiveStrength * 1.35;
 						}
-						break;
-					case 'set_emissive_factor':
-						if (
-							Array.isArray(operation.value) &&
-							operation.value.length === 3 &&
-							hasEmissiveProperty(material)
-						) {
-							const requestedEmissiveColor = new THREE.Color(
-								operation.value[0] ?? 0,
-								operation.value[1] ?? 0,
-								operation.value[2] ?? 0
-							);
-							const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
-							const requestedStrength = THREE.MathUtils.clamp(
-								Math.max(...operation.value.map((channel) => Math.abs(channel ?? 0))),
-								0,
-								1
-							);
-							const resolvedLuminance =
-								emissiveColor.r * 0.2126 + emissiveColor.g * 0.7152 + emissiveColor.b * 0.0722;
-							const emissiveStrength =
-								requestedStrength > 0
-									? Math.max(
-											requestedStrength,
-											THREE.MathUtils.clamp(resolvedLuminance * 0.85, 0.24, 0.9)
-										)
-									: 0;
 
-							material.emissive.setRGB(emissiveColor.r, emissiveColor.g, emissiveColor.b);
+						if (hasColorProperty(material)) {
+							const baseColor = originalMaterialState.get(material)?.color ?? material.color.clone();
+							material.color.copy(baseColor).lerp(emissiveColor, emissiveStrength * 0.18);
+						}
 
-							if (hasEmissiveIntensityProperty(material)) {
-								const baseEmissiveIntensity =
-									originalMaterialState.get(material)?.emissiveIntensity ??
-									material.emissiveIntensity;
-								material.emissiveIntensity = baseEmissiveIntensity + emissiveStrength * 1.35;
-							}
+						if (hasOpacityProperty(material) && emissiveStrength > 0) {
+							const originalMaterial = originalMaterialState.get(material);
+							const baseOpacity = originalMaterial?.opacity ?? material.opacity;
+							const baseTransparent = originalMaterial?.transparent ?? material.transparent;
 
-							if (hasColorProperty(material)) {
-								const baseColor =
-									originalMaterialState.get(material)?.color ?? material.color.clone();
-								material.color.copy(baseColor).lerp(emissiveColor, emissiveStrength * 0.18);
-							}
-
-							if (hasOpacityProperty(material) && emissiveStrength > 0) {
-								const originalMaterial = originalMaterialState.get(material);
-								const baseOpacity = originalMaterial?.opacity ?? material.opacity;
-								const baseTransparent = originalMaterial?.transparent ?? material.transparent;
-
-								// Only lift translucency for lens covers that were already authored as translucent.
-								if (baseTransparent || baseOpacity < 0.985) {
-									material.opacity = Math.min(baseOpacity + emissiveStrength * 0.04, 0.985);
-									material.transparent = true;
-								}
-							}
-
-							if (hasTransmissionProperty(material) && emissiveStrength > 0) {
-								const originalMaterial = originalMaterialState.get(material);
-								const baseTransmission = originalMaterial?.transmission ?? 0;
-
-								if (baseTransmission > 0.01) {
-									material.transmission = Math.max(baseTransmission, 0.08 * emissiveStrength);
-									material.thickness = Math.max(originalMaterial?.thickness ?? 0, 0.08);
-									material.roughness = Math.min(
-										originalMaterial?.roughness ?? material.roughness,
-										0.22
-									);
-								}
+							if (baseTransparent || baseOpacity < 0.985) {
+								material.opacity = Math.min(baseOpacity + emissiveStrength * 0.04, 0.985);
+								material.transparent = true;
 							}
 						}
-						break;
-					case 'set_alpha':
-						if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
-							material.opacity = operation.value;
-							material.transparent = operation.value < 1;
-						}
-						break;
-					case 'set_double_sided':
-						if (typeof operation.value === 'boolean' && hasOpacityProperty(material)) {
-							material.side = operation.value
-								? THREE.DoubleSide
-								: (originalMaterialState.get(material)?.side ?? THREE.FrontSide);
-						}
-						break;
-				}
 
-				material.needsUpdate = true;
+						if (hasTransmissionProperty(material) && emissiveStrength > 0) {
+							const originalMaterial = originalMaterialState.get(material);
+							const baseTransmission = originalMaterial?.transmission ?? 0;
+
+							if (baseTransmission > 0.01) {
+								material.transmission = Math.max(baseTransmission, 0.08 * emissiveStrength);
+								material.thickness = Math.max(originalMaterial?.thickness ?? 0, 0.08);
+								material.roughness = Math.min(
+									originalMaterial?.roughness ?? material.roughness,
+									0.22
+								);
+							}
+						}
+					}
+					break;
+				case 'set_alpha':
+					if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
+						material.opacity = operation.value;
+						material.transparent = operation.value < 1;
+					}
+					break;
+				case 'set_double_sided':
+					if (typeof operation.value === 'boolean' && hasOpacityProperty(material)) {
+						material.side = operation.value
+							? THREE.DoubleSide
+							: (originalMaterialState.get(material)?.side ?? THREE.FrontSide);
+					}
+					break;
 			}
-		});
+
+			material.needsUpdate = true;
+		}
 	}
 
 	function applyViewerPatch(
@@ -983,6 +1198,24 @@
 	});
 
 	$effect(() => {
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		const syncSelectionDebugEnabled = (): void => {
+			const raw = new URLSearchParams(window.location.search).get('selectionDebug')?.toLowerCase();
+			selectionDebugEnabled = raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+		};
+
+		syncSelectionDebugEnabled();
+		window.addEventListener('popstate', syncSelectionDebugEnabled);
+
+		return () => {
+			window.removeEventListener('popstate', syncSelectionDebugEnabled);
+		};
+	});
+
+	$effect(() => {
 		const patchState = $vehiclePatchState;
 
 		if (!loadedScene || patchState.assetId !== assetId) {
@@ -1020,6 +1253,19 @@
 	});
 
 	$effect(() => {
+		if (!loadedScene) {
+			return;
+		}
+
+		if (!selectionDebugEnabled || !selectionDebugSnapshot) {
+			clearSelectionDebug(loadedScene);
+			return;
+		}
+
+		addSelectionDebug(loadedScene, selectionDebugSnapshot);
+	});
+
+	$effect(() => {
 		assetId;
 		let cancelled = false;
 		let nextPoll: ReturnType<typeof setTimeout> | undefined;
@@ -1033,32 +1279,40 @@
 
 				const payload = (await response.json()) as {
 					semanticOverlayStatus?: VehicleSemanticOverlayStatus;
+					item?: VehicleInspectionCapabilities;
 				};
 
 				if (cancelled) {
 					return;
 				}
 
-				semanticOverlayStatus = payload.semanticOverlayStatus ?? 'unknown';
-				if (semanticOverlayStatus !== 'fresh') {
-					nextPoll = setTimeout(() => {
-						void loadSemanticOverlayStatus();
-					}, 5000);
-				}
+				semanticRuntimeState.applyAssetState(assetId, {
+					overlayStatus: payload.semanticOverlayStatus ?? 'unknown'
+				});
+				materialSummaryById = new Map(
+					(payload.item?.materials ?? []).map((material) => [material.id, material])
+				);
+				nextPoll = setTimeout(() => {
+					void loadSemanticOverlayStatus();
+				}, 3000);
 			} catch {
 				if (cancelled) {
 					return;
 				}
 
-				semanticOverlayStatus = 'unknown';
+				semanticRuntimeState.applyAssetState(assetId, {
+					overlayStatus: 'unknown'
+				});
+				materialSummaryById = new Map();
 				nextPoll = setTimeout(() => {
 					void loadSemanticOverlayStatus();
-				}, 5000);
+				}, 3000);
 			}
 		};
 
 		loadedScene = undefined;
-		semanticOverlayStatus = 'unknown';
+		materialSummaryById = new Map();
+		selectionDebugSnapshot = null;
 		vehicleNodeSelection.clear(assetId);
 		void loadSemanticOverlayStatus();
 
@@ -1096,6 +1350,11 @@
 				class="pointer-events-auto absolute top-4 left-4 flex flex-col items-start gap-2 sm:top-5 sm:left-6"
 			>
 				<AssetSelectionDropdown class="origin-top-left scale-[0.8] xl:scale-100" />
+				{#if selectionDebugEnabled}
+					<div class="rounded-full border border-[color:color-mix(in_oklab,var(--color-boundary-tertiary)_28%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_78%,black)] px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-boundary-tertiary shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-tertiary)_12%,transparent)]">
+						Selection Debug
+					</div>
+				{/if}
 			</div>
 			<div
 				class="pointer-events-auto absolute top-4 right-4 flex flex-col items-end gap-4 sm:top-5 sm:right-6"

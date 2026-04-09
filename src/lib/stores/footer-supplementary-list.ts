@@ -3,7 +3,7 @@ import type { FooterChatSupplementaryListState } from '$lib/server/connectors/op
 
 const INITIAL_STATE: FooterChatSupplementaryListState = {
 	active: false,
-	items: []
+	entries: {}
 };
 
 const SUPPLEMENTARY_LIST_TTL_MS = 10 * 60 * 1000;
@@ -11,12 +11,15 @@ const SUPPLEMENTARY_LIST_TTL_MS = 10 * 60 * 1000;
 function sanitizeState(input: FooterChatSupplementaryListState): FooterChatSupplementaryListState {
 	return {
 		active: input.active === true,
-		items: Array.isArray(input.items)
-			? input.items
-					.map((item) => (typeof item === 'string' ? item.trim() : ''))
-					.filter((item) => item.length > 0)
-					.slice(0, 6)
-			: []
+		entries: Object.fromEntries(
+			Object.entries(input.entries ?? {})
+				.map(([key, value]) => [
+					typeof key === 'string' ? key.trim() : '',
+					typeof value === 'string' ? value.trim() : ''
+				])
+				.filter(([key, value]) => key.length > 0 && value.length > 0)
+				.slice(0, 6)
+		)
 	};
 }
 
@@ -42,7 +45,7 @@ function createFooterSupplementaryListStore() {
 
 	function scheduleExpiry(): void {
 		clearExpiryTimer();
-		if (!currentState.active || currentState.items.length === 0) {
+		if (!currentState.active || Object.keys(currentState.entries).length === 0) {
 			return;
 		}
 
@@ -53,7 +56,7 @@ function createFooterSupplementaryListStore() {
 	}
 
 	function isExpired(): boolean {
-		if (updatedAt === 0 || !currentState.active || currentState.items.length === 0) {
+		if (updatedAt === 0 || !currentState.active || Object.keys(currentState.entries).length === 0) {
 			return false;
 		}
 

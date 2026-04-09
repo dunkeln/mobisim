@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
@@ -23,15 +24,16 @@
 	--color-shell-subtle: var(--surface-subtle);
 	--color-shell-primary: var(--surface-primary);
 	--color-shell-secondary: var(--surface-secondary);
+	--color-shell-tertiary: var(--surface-tertiary);
 	--color-shell-warning: var(--surface-warning);
 	--color-boundary-background: var(--boundary-background);
 	--color-boundary-warning: var(--boundary-warning);
 	--color-boundary-secondary: var(--boundary-secondary);
+	--color-boundary-tertiary: var(--boundary-tertiary);
 	--color-boundary-primary: var(--boundary-primary);
 	--color-boundary-text: var(--boundary-text);
 	--font-sans:
-		'Anthropic Sans', 'Styrene A Web', 'Styrene A', 'SF Pro Display', 'Segoe UI', 'Helvetica Neue',
-		Arial, sans-serif;
+		'Open Sans', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 	--font-serif: 'Anthropic Serif', 'Ivar Text', 'Source Serif 4', 'Times New Roman', serif;
 	--font-mono: 'JetBrains Mono', 'SFMono-Regular', 'SF Mono', 'Roboto Mono', monospace;
 }
@@ -114,6 +116,7 @@
 		--boundary-background: rgba(20, 20, 20, 1);
 		--boundary-warning: hsl(8 49% 51%);
 		--boundary-secondary: hsl(34 75% 73%);
+		--boundary-tertiary: hsl(186 52% 67%);
 		--boundary-primary: hsl(246 38% 66%);
 		--boundary-text: hsl(220 39% 92%);
 		--surface-background: var(--boundary-background);
@@ -124,6 +127,7 @@
 		--surface-subtle: color-mix(in oklab, var(--boundary-text) 56%, transparent);
 		--surface-primary: color-mix(in oklab, var(--boundary-primary) 88%, white);
 		--surface-secondary: color-mix(in oklab, var(--boundary-secondary) 84%, white);
+		--surface-tertiary: color-mix(in oklab, var(--boundary-tertiary) 84%, white);
 		--surface-warning: color-mix(in oklab, var(--boundary-warning) 92%, white);
 		--color-shell: var(--surface-background);
 		--color-shell-elevated: var(--surface-elevated);
@@ -133,10 +137,12 @@
 		--color-shell-subtle: var(--surface-subtle);
 		--color-shell-primary: var(--surface-primary);
 		--color-shell-secondary: var(--surface-secondary);
+		--color-shell-tertiary: var(--surface-tertiary);
 		--color-shell-warning: var(--surface-warning);
 		--color-boundary-background: var(--boundary-background);
 		--color-boundary-warning: var(--boundary-warning);
 		--color-boundary-secondary: var(--boundary-secondary);
+		--color-boundary-tertiary: var(--boundary-tertiary);
 		--color-boundary-primary: var(--boundary-primary);
 		--color-boundary-text: var(--boundary-text);
 	}

@@ -19,6 +19,10 @@ function getSelectionKey(selection: VehicleNodeSelection): string {
 	].join('|');
 }
 
+function getNodeSelectionKey(selection: VehicleNodeSelection): string {
+	return [selection.assetId, selection.nodeId].join('|');
+}
+
 function createVehicleNodeSelectionStore() {
 	const { subscribe, set, update } = writable<VehicleNodeSelection[]>([]);
 
@@ -32,10 +36,11 @@ function createVehicleNodeSelectionStore() {
 				const existing = scoped.find((entry) => getSelectionKey(entry) === selectionKey);
 
 				if (additive) {
-					const nextScoped = existing
-						? scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)
-						: [...scoped, selection];
-					return [...otherAssets, ...nextScoped];
+					const nodeSelectionKey = getNodeSelectionKey(selection);
+					const scopedWithoutNode = scoped.filter(
+						(entry) => getNodeSelectionKey(entry) !== nodeSelectionKey
+					);
+					return [...otherAssets, ...scopedWithoutNode, selection];
 				}
 
 				if (existing) {

@@ -1,9 +1,27 @@
 import type { ChatCompletionToolChoiceOption } from 'openai/resources/chat/completions';
 import { isVehicleEditRequest } from '$lib/server/connectors/vehicle-intents';
+import {
+	EDIT_VEHICLE_SEMANTICS_TOOL_NAME,
+	GET_VEHICLE_TOOL_CATALOG_TOOL_NAME,
+} from './internal';
 import type {
 	FooterChatExecutionRoute,
 	NormalizedFooterChatRequest
 } from './internal';
+
+function isToolCatalogRequest(message: string): boolean {
+	return /\b(what tools are available|available tools|show (?:me )?(?:the )?tools|what can you do here|what can i do here|capabilities)\b/i.test(
+		message
+	);
+}
+
+function needsToolPlanningFirst(message: string): boolean {
+	return (
+		/\b(and then|then|also|while|at the same time|along with|plus)\b/i.test(message) ||
+		/\b(walk me through|talk me through|figure out|decide|choose|plan|best way)\b/i.test(message) ||
+		/\b(summary|summarize|sidebar|footer|list)\b/i.test(message)
+	);
+}
 
 export function isSemanticRefreshRequest(message: string): boolean {
 	return /\b(refresh|rebuild|regenerate|reanaly[sz]e|enrich)\b.*\b(semantic|semantics|overlay|manifest|labels?)\b/i.test(
@@ -104,7 +122,34 @@ export function classifyExecutionRoute(
 }
 
 export function getToolChoiceForRequest(
-	_input: NormalizedFooterChatRequest
+	input: NormalizedFooterChatRequest
 ): ChatCompletionToolChoiceOption | undefined {
+	if (isToolCatalogRequest(input.message)) {
+		return {
+			type: 'function',
+			function: {
+				name: GET_VEHICLE_TOOL_CATALOG_TOOL_NAME
+			}
+		};
+	}
+
+	if (isSemanticRefreshRequest(input.message)) {
+		return {
+			type: 'function',
+			function: {
+				name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME
+			}
+		};
+	}
+
+	if (needsToolPlanningFirst(input.message)) {
+		return {
+			type: 'function',
+			function: {
+				name: GET_VEHICLE_TOOL_CATALOG_TOOL_NAME
+			}
+		};
+	}
+
 	return undefined;
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Copy, Plug } from 'lucide-svelte';
+	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 	import { toast } from '$lib/components/ui/sonner';
@@ -10,8 +11,9 @@
 	};
 
 	let { assetId, class: className = '' }: Props = $props();
-
-	let bindings = $state<SemanticIngressBinding[]>([]);
+	const bindings = $derived.by(
+		() => $semanticRuntimeState.byAsset[assetId]?.ingressBindings ?? ([] as SemanticIngressBinding[])
+	);
 
 	function displayTargetLabel(binding: SemanticIngressBinding): string {
 		return binding.targetLabel?.trim() || binding.targetId;
@@ -64,13 +66,17 @@
 					return;
 				}
 
-				bindings = Array.isArray(payload.bindings) ? payload.bindings : [];
+				semanticRuntimeState.applyAssetState(assetId, {
+					ingressBindings: Array.isArray(payload.bindings) ? payload.bindings : []
+				});
 			} catch {
 				if (cancelled) {
 					return;
 				}
 
-				bindings = [];
+				semanticRuntimeState.applyAssetState(assetId, {
+					ingressBindings: []
+				});
 			} finally {
 				if (cancelled) {
 					return;
@@ -78,11 +84,10 @@
 
 				nextPoll = setTimeout(() => {
 					void loadBindings();
-				}, 5000);
+				}, 3000);
 			}
 		};
 
-		bindings = [];
 		void loadBindings();
 
 		return () => {

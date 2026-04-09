@@ -24,10 +24,11 @@ import type { VehicleInspectionCapabilities } from '$lib/server/connectors/gltf-
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type {
 	GenerateVehicleSemanticOverlayOptions,
+	SemanticCommandResult,
 	VehicleSemanticActionSupport,
 	VehicleSemanticAssignmentMutation,
-	VehicleSemanticGroupAnnotation,
 	VehicleSemanticGroup,
+	VehicleSemanticOverlaySnapshot,
 	VehicleSemanticPartCategory,
 	VehicleSemanticPartRegion,
 	VehicleSemanticPartSide,
@@ -1252,6 +1253,10 @@ function normalizeOverlay(value: unknown): VehicleSemanticOverlay | null {
 
 	return {
 		assetId: candidate.assetId as VehicleAssetId,
+		revision:
+			typeof candidate.revision === 'number' && Number.isFinite(candidate.revision)
+				? Math.max(0, Math.trunc(candidate.revision))
+				: 0,
 		structuralGeneratedAt: candidate.structuralGeneratedAt,
 		generatedAt: candidate.generatedAt,
 		model: candidate.model,
@@ -1497,15 +1502,35 @@ export async function readVehicleSemanticOverlay(
 }
 
 export async function writeVehicleSemanticOverlay(
-	overlay: VehicleSemanticOverlay
+	overlay: Omit<VehicleSemanticOverlay, 'revision'> & { revision?: number }
 ): Promise<VehicleSemanticOverlay> {
+	const current = await readStoredVehicleSemanticOverlay(overlay.assetId);
+	const nextOverlay: VehicleSemanticOverlay = {
+		...overlay,
+		revision: (current?.revision ?? 0) + 1
+	};
 	await mkdir(resolveSemanticOverlayDirectory(), { recursive: true });
 	await writeFile(
 		resolveSemanticOverlayPath(overlay.assetId),
-		JSON.stringify(overlay, null, 2),
+		JSON.stringify(nextOverlay, null, 2),
 		'utf8'
 	);
-	return overlay;
+	return nextOverlay;
+}
+
+export function buildVehicleSemanticOverlaySnapshot(input: {
+	overlay: VehicleSemanticOverlay | null;
+	overlayStatus: VehicleSemanticOverlayStatus;
+	commandStatus?: SemanticCommandResult['commandStatus'];
+	appliedCommand?: SemanticCommandResult['appliedCommand'];
+}): VehicleSemanticOverlaySnapshot {
+	return {
+		overlay: input.overlay,
+		overlayRevision: input.overlay?.revision ?? null,
+		overlayStatus: input.overlayStatus,
+		commandStatus: input.commandStatus,
+		appliedCommand: input.appliedCommand
+	};
 }
 
 export async function generateVehicleSemanticOverlay(
@@ -1583,21 +1608,6 @@ export async function generateVehicleSemanticOverlay(
 	});
 }
 
-export async function annotateVehicleSemanticGroup(
-	assetId: VehicleAssetId,
-	annotation: VehicleSemanticGroupAnnotation
-): Promise<VehicleSemanticOverlay> {
-	return mutateVehicleSemanticAssignment(assetId, {
-		action: 'assign',
-		nodeIds: annotation.nodeIds,
-		semanticGroup: annotation.semanticGroup,
-		category: annotation.category,
-		humanLabel: annotation.humanLabel,
-		aliases: annotation.aliases,
-		materialSelections: annotation.materialSelections
-	});
-}
-
 function buildMutationMaterialIds(input: {
 	nodes: Array<{ id: string; meshId?: string | null }>;
 	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>;
@@ -1665,6 +1675,7 @@ export async function mutateVehicleSemanticAssignment(
 			? existing
 			: {
 					assetId,
+					revision: existing?.revision ?? 0,
 					structuralGeneratedAt: capabilities.generatedAt,
 					generatedAt: new Date().toISOString(),
 					model: getSemanticModel(),

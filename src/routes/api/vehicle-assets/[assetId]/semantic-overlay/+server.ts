@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
+	buildVehicleSemanticOverlaySnapshot,
 	generateVehicleSemanticOverlay,
 	readVehicleSemanticOverlay,
 	VehicleSemanticOverlayConfigError,
@@ -20,10 +21,21 @@ export const GET: RequestHandler = async ({ params }) => {
 
 	const overlay = await readVehicleSemanticOverlay(params.assetId);
 	if (!overlay) {
-		throw error(404, 'Semantic overlay not found');
+		return json(
+			buildVehicleSemanticOverlaySnapshot({
+				overlay: null,
+				overlayStatus: 'missing'
+			}),
+			{ status: 404 }
+		);
 	}
 
-	return json(overlay);
+	return json(
+		buildVehicleSemanticOverlaySnapshot({
+			overlay,
+			overlayStatus: 'fresh'
+		})
+	);
 };
 
 export const POST: RequestHandler = async ({ params, request }) => {
@@ -34,13 +46,20 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const payload = (await request.json().catch(() => ({}))) as SemanticOverlayRequest;
 
 	try {
+		const overlay = await generateVehicleSemanticOverlay(params.assetId, {
+			force: payload.force === true,
+			minAcceptedConfidence:
+				typeof payload.minAcceptedConfidence === 'number'
+					? payload.minAcceptedConfidence
+					: undefined
+		});
+
 		return json(
-			await generateVehicleSemanticOverlay(params.assetId, {
-				force: payload.force === true,
-				minAcceptedConfidence:
-					typeof payload.minAcceptedConfidence === 'number'
-						? payload.minAcceptedConfidence
-						: undefined
+			buildVehicleSemanticOverlaySnapshot({
+				overlay,
+				overlayStatus: 'fresh',
+				commandStatus: 'succeeded',
+				appliedCommand: 'refresh_overlay'
 			})
 		);
 	} catch (caughtError) {

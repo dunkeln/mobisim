@@ -65,16 +65,19 @@ export const normalizeSupplementaryListState: NormalizeSupplementaryListStateFn 
 		return undefined;
 	}
 
-	const items = Array.isArray(input.items)
-		? input.items
-				.map((item) => (typeof item === 'string' ? item.trim() : ''))
-				.filter((item) => item.length > 0)
-				.slice(0, 6)
-		: [];
+	const entries = Object.fromEntries(
+		Object.entries(input.entries ?? {})
+			.map(([key, value]) => [
+				typeof key === 'string' ? key.trim() : '',
+				typeof value === 'string' ? value.trim() : ''
+			])
+			.filter(([key, value]) => key.length > 0 && value.length > 0)
+			.slice(0, 6)
+	);
 
 	return {
 		active: input.active === true,
-		items
+		entries
 	};
 };
 
@@ -92,6 +95,10 @@ function normalizePresentationTarget(
 
 	return {
 		targetId,
+		targetType:
+			input.targetType === 'node' || input.targetType === 'material'
+				? input.targetType
+				: undefined,
 		targetName:
 			typeof input.targetName === 'string' ? input.targetName.trim() || undefined : undefined,
 		operation:
@@ -205,7 +212,7 @@ export function describePresentationTargets(
 	return `${label}: ${targets
 		.map(
 			(target) =>
-				`${target.targetId}${target.targetName ? ` (${target.targetName})` : ''}${target.operation ? ` via ${target.operation}` : ''}`
+				`${target.targetType ? `${target.targetType} ` : ''}${target.targetId}${target.targetName ? ` (${target.targetName})` : ''}${target.operation ? ` via ${target.operation}` : ''}`
 		)
 		.join('; ')}.`;
 }

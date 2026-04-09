@@ -6,6 +6,7 @@
 	import type {
 		FooterChatResponse as ChatResponse
 	} from '$lib/server/connectors/openai-chat/types';
+	import { chatRequestState } from '$lib/stores/chat-request-state';
 	import {
 		applyChatResponse,
 		beginFooterResponseCycle,
@@ -52,6 +53,7 @@
 
 		draft = '';
 		pending = true;
+		chatRequestState.setPending(true);
 
 		try {
 			const selectedNodeContext = getSelectedNodeContext(assetId);
@@ -94,6 +96,7 @@
 			});
 		} finally {
 			pending = false;
+			chatRequestState.setPending(false);
 		}
 	}
 </script>
