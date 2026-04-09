@@ -11,7 +11,7 @@
 
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { resolveVehicleAssetId } from '$lib/vehicles/catalog';
+	import { resolveInspectionAssetId } from '$lib/routes/inspection';
 	import { toast } from '$lib/components/ui/sonner';
 	import {
 		applyChatResponse,
@@ -21,7 +21,10 @@
 		getSupplementaryListContext,
 		getSelectedNodeContext
 	} from '$lib/components/chat/footer-chat-client';
-	import type { FooterChatAudioResponse } from '$lib/server/connectors/openai-chat/types';
+	import type {
+		FooterChatAudioResponse,
+		FooterChatAudioStreamEvent
+	} from '$lib/server/connectors/openai-chat/types';
 	import * as THREE from 'three';
 
 	type OrbMode = 'idle' | 'listening' | 'processing' | 'responding';
@@ -30,9 +33,17 @@
 		mode?: OrbMode;
 		amplitude?: number;
 		class?: string;
+		size?: number;
+		interactive?: boolean;
 	};
 
-	let { mode = 'idle', amplitude = 0, class: className = '' }: Props = $props();
+	let {
+		mode = 'idle',
+		amplitude = 0,
+		class: className = '',
+		size = 96,
+		interactive = true
+	}: Props = $props();
 
 	let canvas: HTMLCanvasElement | undefined = $state();
 	let audioElement: HTMLAudioElement | null = null;
@@ -42,7 +53,7 @@
 	let activeMode = $state<OrbMode>('idle');
 	let activeAmplitude = $state(0);
 	let busy = $state(false);
-	const assetId = $derived.by(() => resolveVehicleAssetId(page.url.searchParams.get('asset')));
+	const assetId = $derived(resolveInspectionAssetId(page.url));
 
 	const RECORDER_MIME_CANDIDATES = [
 		'audio/webm;codecs=opus',
@@ -142,6 +153,26 @@
 			Math.min(hedgeWordCount, 3) * 0.08;
 
 		return THREE.MathUtils.clamp(intensity, 0.42, 0.96);
+	}
+
+	function summarizeHttpFailure(status: number, body: string): string {
+		const trimmed = body.trim();
+		if (!trimmed) {
+			return `Request failed with HTTP ${status}.`;
+		}
+
+		const stripped = trimmed
+			.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+			.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim();
+
+		if (!stripped) {
+			return `Request failed with HTTP ${status}.`;
+		}
+
+		return `HTTP ${status}: ${stripped.slice(0, 240)}`;
 	}
 
 	async function blobToFile(blob: Blob): Promise<File> {
@@ -244,17 +275,33 @@
 
 		syncVisuals('processing', 0.35);
 
+		try {
+			await sendLiveAudioMessage(formData);
+			return;
+		} catch {}
+
+		await sendBufferedAudioMessage(formData);
+	}
+
+	async function sendBufferedAudioMessage(formData: FormData): Promise<void> {
 		const response = await fetch('/api/chat/audio', {
 			method: 'POST',
 			body: formData
 		});
-		const payload = (await response.json()) as FooterChatAudioResponse | { error?: string };
+		const rawBody = await response.text();
+		let payload: FooterChatAudioResponse | { error?: string } | null = null;
 
-		if (!response.ok || !('chat' in payload)) {
+		try {
+			payload = JSON.parse(rawBody) as FooterChatAudioResponse | { error?: string };
+		} catch {
+			payload = null;
+		}
+
+		if (!response.ok || !payload || !('chat' in payload)) {
 			throw new Error(
-				'error' in payload
-					? payload.error || 'Audio chat request failed.'
-					: 'Audio chat request failed.'
+				payload && 'error' in payload && typeof payload.error === 'string'
+					? payload.error || summarizeHttpFailure(response.status, rawBody)
+					: summarizeHttpFailure(response.status, rawBody)
 			);
 		}
 
@@ -263,6 +310,86 @@
 			description: `${payload.transcript} -> ${payload.chat.message.content}`
 		});
 		await playReplyAudio(payload);
+	}
+
+	async function sendLiveAudioMessage(formData: FormData): Promise<void> {
+		const response = await fetch('/api/chat/audio/live', {
+			method: 'POST',
+			body: formData,
+			headers: {
+				accept: 'application/x-ndjson'
+			}
+		});
+
+		if (!response.ok) {
+			throw new Error(await response.text());
+		}
+
+		if (!response.body) {
+			throw new Error('Live audio response did not include a readable stream.');
+		}
+
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+		let transcript = '';
+		let chatPayload: FooterChatAudioResponse['chat'] | null = null;
+
+		while (true) {
+			const { done, value } = await reader.read();
+			buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+
+			let newlineIndex = buffer.indexOf('\n');
+			while (newlineIndex !== -1) {
+				const line = buffer.slice(0, newlineIndex).trim();
+				buffer = buffer.slice(newlineIndex + 1);
+				if (line.length > 0) {
+					const event = JSON.parse(line) as FooterChatAudioStreamEvent;
+
+					if (event.type === 'transcribed') {
+						transcript = event.transcript;
+					}
+
+					if (event.type === 'chat') {
+						chatPayload = event.chat;
+						applyChatResponse(event.chat, assetId);
+						toast.success('Voice request sent', {
+							description: transcript
+								? `${transcript} -> ${event.chat.message.content}`
+								: event.chat.message.content
+						});
+					}
+
+					if (event.type === 'audio') {
+						if (!chatPayload) {
+							throw new Error('Live audio reply arrived before the assistant response.');
+						}
+
+						await playReplyAudio({
+							transcript,
+							audioBase64: event.audioBase64,
+							audioMimeType: event.audioMimeType,
+							audioVoice: event.audioVoice,
+							chat: chatPayload
+						});
+					}
+
+					if (event.type === 'error') {
+						throw new Error(event.message);
+					}
+				}
+
+				newlineIndex = buffer.indexOf('\n');
+			}
+
+			if (done) {
+				break;
+			}
+		}
+
+		if (!chatPayload) {
+			throw new Error('Live audio stream ended before the assistant replied.');
+		}
 	}
 
 	async function stopListening(): Promise<void> {
@@ -482,7 +609,7 @@
 	onMount(() => {
 		if (!canvas) return;
 
-		const SIZE = 100;
+		const renderSize = Math.max(96, Math.round(size));
 
 		// ── Scene ───────────────────────────────────────────────
 		const scene = new THREE.Scene();
@@ -490,8 +617,8 @@
 		camera.position.z = 3.6;
 
 		const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-		renderer.setSize(SIZE, SIZE, false);
-		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+		renderer.setSize(renderSize, renderSize, false);
+		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.5));
 		renderer.setClearColor(0x000000, 0);
 
 		// ── Lighting ────────────────────────────────────────────
@@ -751,19 +878,34 @@
 	});
 </script>
 
-<button
-	type="button"
-	class="glass-motion-color glass-motion-transform orb-shell {className}"
-	class:is-active={activeMode !== 'idle'}
-	class:is-busy={busy}
-	onclick={toggleListening}
-	aria-label={mediaRecorder?.state === 'recording' ? 'Stop orb recording' : 'Start orb recording'}
-	aria-pressed={mediaRecorder?.state === 'recording'}
->
-	<div class="orb">
-		<canvas bind:this={canvas} class="orb-canvas"></canvas>
+{#if interactive}
+	<button
+		type="button"
+		class="glass-motion-color glass-motion-transform orb-shell {className}"
+		class:is-active={activeMode !== 'idle'}
+		class:is-busy={busy}
+		style={`--orb-size: ${size};`}
+		onclick={toggleListening}
+		aria-label={mediaRecorder?.state === 'recording' ? 'Stop orb recording' : 'Start orb recording'}
+		aria-pressed={mediaRecorder?.state === 'recording'}
+	>
+		<div class="orb">
+			<canvas bind:this={canvas} class="orb-canvas"></canvas>
+		</div>
+	</button>
+{:else}
+	<div
+		class="glass-motion-color glass-motion-transform orb-shell {className}"
+		class:is-active={activeMode !== 'idle'}
+		class:is-busy={busy}
+		style={`--orb-size: ${size};`}
+		aria-hidden="true"
+	>
+		<div class="orb">
+			<canvas bind:this={canvas} class="orb-canvas"></canvas>
+		</div>
 	</div>
-</button>
+{/if}
 
 <style>
 	.orb-shell {
@@ -848,8 +990,8 @@
 	.orb {
 		position: relative;
 		z-index: 1;
-		width: 96px;
-		height: 96px;
+		width: calc(var(--orb-size, 96) * 1px);
+		height: calc(var(--orb-size, 96) * 1px);
 		flex-shrink: 0;
 		border-radius: 999px;
 		background:

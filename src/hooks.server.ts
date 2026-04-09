@@ -1,4 +1,6 @@
+import { sequence } from '@sveltejs/kit/hooks';
 import type { Handle } from '@sveltejs/kit';
+import { handle as authHandle } from './auth';
 import {
 	buildRequestSpanAttributes,
 	buildRequestSpanOptions,
@@ -11,7 +13,25 @@ function shouldTraceRequest(pathname: string): boolean {
 	return pathname.startsWith('/api/');
 }
 
-export const handle: Handle = async ({ event, resolve }) => {
+const authorizationHandle: Handle = async ({ event, resolve }) => {
+	if (!event.url.pathname.startsWith('/api/')) {
+		return resolve(event);
+	}
+
+	const session = await event.locals.auth();
+	if (!session?.user) {
+		return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+			status: 401,
+			headers: {
+				'content-type': 'application/json'
+			}
+		});
+	}
+
+	return resolve(event);
+};
+
+const telemetryHandle: Handle = async ({ event, resolve }) => {
 	const telemetry = await startServerTelemetry();
 	if (!telemetry.enabled || !shouldTraceRequest(event.url.pathname)) {
 		return resolve(event);
@@ -63,3 +83,5 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	);
 };
+
+export const handle: Handle = sequence(authHandle, authorizationHandle, telemetryHandle);

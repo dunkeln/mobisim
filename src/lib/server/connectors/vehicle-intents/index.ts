@@ -112,6 +112,83 @@ export type PlannedVehiclePartIntentResult = {
 	summary: string;
 };
 
+export type VehiclePlannerTargetExpression =
+	| {
+			kind: 'semantic_query';
+			query: string;
+	  }
+	| {
+			kind: 'highlighted_materials';
+	  }
+	| {
+			kind: 'union';
+			items: VehiclePlannerTargetExpression[];
+	  }
+	| {
+			kind: 'intersect';
+			left: VehiclePlannerTargetExpression;
+			right: VehiclePlannerTargetExpression;
+	  }
+	| {
+			kind: 'subtract';
+			left: VehiclePlannerTargetExpression;
+			right: VehiclePlannerTargetExpression;
+	  };
+
+export type VehiclePlannerStep =
+	| {
+			kind: 'resolve_keep_targets';
+			query: string;
+	  }
+	| {
+			kind: 'read_highlighted_materials';
+	  }
+	| {
+			kind: 'enumerate_all_materials';
+	  }
+	| {
+			kind: 'subtract_keep_targets';
+	  }
+	| {
+			kind: 'apply_remove_material_alpha';
+			alpha: number;
+	  };
+
+export type VehiclePlannerConstraint =
+	| {
+			kind: 'preserve_current_paint';
+	  };
+
+export type VehiclePlannerJob = {
+	intent: 'remove_all_except';
+	assetId: VehicleAssetId;
+	keep: VehiclePlannerTargetExpression[];
+	steps: VehiclePlannerStep[];
+	constraints?: VehiclePlannerConstraint[];
+};
+
+export type VehiclePlannerVerification = {
+	preservedMaterialIds: string[];
+	mutatedMaterialIds: string[];
+	verificationPassed: boolean;
+};
+
+export type PlannedVehicleSetLogicIntentResult = PlannedVehicleIntentResult & {
+	plannerJob: VehiclePlannerJob;
+	verification: VehiclePlannerVerification;
+};
+
+export type VehicleIntentPresentationContext = {
+	highlightedTargets?: Array<{
+		targetId: string;
+		targetType?: 'node' | 'material';
+	}>;
+	materialTargets?: Array<{
+		targetId: string;
+		targetType?: 'node' | 'material';
+	}>;
+};
+
 type VehiclePaintFinish = {
 	metalness?: number;
 	roughness?: number;
@@ -499,6 +576,113 @@ function extractHighlightQuery(request: string): string {
 function normalizePartQuery(request: string): string {
 	const normalized = extractHighlightQuery(request);
 	return normalized || request.trim();
+}
+
+function sanitizePlannerKeepQuery(query: string): string {
+	return query
+		.replace(/[,.;:]+/g, ' ')
+		.replace(/\b(the|a|an|please|just)\b/gi, ' ')
+		.replace(/\b(visible|left|remaining|remain|stays?|stay|kept|keep|too|highlighted)\b/gi, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function splitPlannerKeepQueries(raw: string): string[] {
+	return Array.from(
+		new Set(
+			raw
+				.split(/\b(?:and|plus|along with|,)\b/gi)
+				.map((value) => sanitizePlannerKeepQuery(value))
+				.filter(Boolean)
+		)
+	);
+}
+
+function buildPlannerUnionExpression(queries: string[]): VehiclePlannerTargetExpression {
+	if (queries.length === 1) {
+		return {
+			kind: 'semantic_query',
+			query: queries[0]!
+		};
+	}
+
+	return {
+		kind: 'union',
+		items: queries.map((query) => ({
+			kind: 'semantic_query' as const,
+			query
+		}))
+	};
+}
+
+function extractRemoveOverrideQueries(request: string): string[] {
+	const match =
+		request.match(/\bbut\s+remove\s+(.+)$/i) ??
+		request.match(/\bexcept\s+keep\s+.+\bbut\s+strip out\s+(.+)$/i);
+
+	return match ? splitPlannerKeepQueries(match[1] ?? '') : [];
+}
+
+function requestNeedsHighlightedIntersection(request: string): boolean {
+	return /\bhighlighted\b/i.test(request);
+}
+
+function requestPreservesCurrentPaint(request: string): boolean {
+	return /\bpreserve current paint|keep current paint|do not change (?:the )?paint\b/i.test(request);
+}
+
+function extractRemoveAllExceptExpression(request: string): VehiclePlannerTargetExpression | null {
+	const trimmed = request.trim();
+	const baseRequest = trimmed.replace(/\bbut\s+remove\s+.+$/i, '').trim();
+	const matches = [
+		baseRequest.match(
+			/\b(?:remove|strip out|take out|pull out)\b.*\b(?:everything|everything else|all|the rest)\b.*\b(?:except|but|besides)\b\s+(.+)$/i
+		),
+		baseRequest.match(
+			/\b(?:remove|strip out|take out|pull out)\b.*\b(?:everything|everything else|all|the rest)\b.*\bkeep\b\s+(.+)$/i
+		),
+		baseRequest.match(/\b(?:keep only|only keep|show only|only show)\b\s+(.+)$/i)
+	];
+
+	for (const match of matches) {
+		const candidates = splitPlannerKeepQueries(match?.[1] ?? '');
+		if (candidates.length > 0) {
+			const baseExpression = buildPlannerUnionExpression(candidates);
+			const overrideQueries = extractRemoveOverrideQueries(trimmed);
+			if (overrideQueries.length === 0) {
+				return baseExpression;
+			}
+
+			return {
+				kind: 'subtract',
+				left: baseExpression,
+				right: buildPlannerUnionExpression(overrideQueries)
+			};
+		}
+	}
+
+	return null;
+}
+
+function flattenSemanticQueries(expression: VehiclePlannerTargetExpression): string[] {
+	if (expression.kind === 'semantic_query') {
+		return [expression.query];
+	}
+
+	if (expression.kind === 'highlighted_materials') {
+		return [];
+	}
+
+	if (expression.kind === 'union') {
+		return Array.from(new Set(expression.items.flatMap((item) => flattenSemanticQueries(item))));
+	}
+
+	return Array.from(
+		new Set([
+			...flattenSemanticQueries(expression.left),
+			...flattenSemanticQueries(expression.right)
+		])
+	);
 }
 
 function tokenizeSemanticQuery(value: string): string[] {
@@ -1011,6 +1195,268 @@ export async function planVehiclePartIntent(
 	};
 }
 
+export async function planVehicleSetLogicIntent(
+	assetId: VehicleAssetId,
+	request: string,
+	options?: {
+		presentation?: VehicleIntentPresentationContext;
+	}
+): Promise<PlannedVehicleSetLogicIntentResult | null> {
+	const keepExpression = extractRemoveAllExceptExpression(request);
+	if (!keepExpression) {
+		return null;
+	}
+	const keepExpressionWithContext = requestNeedsHighlightedIntersection(request)
+		? ({
+				kind: 'intersect',
+				left: keepExpression,
+				right: { kind: 'highlighted_materials' }
+			} as VehiclePlannerTargetExpression)
+		: keepExpression;
+	const plannerQueries = flattenSemanticQueries(keepExpressionWithContext);
+
+	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
+	const structure = await deriveStructuralAssetSnapshot(assetId);
+	const materialIdsByMeshId = new Map<string, string[]>();
+	for (const material of capabilities.materials) {
+		for (const meshId of material.meshIds) {
+			const existing = materialIdsByMeshId.get(meshId) ?? [];
+			existing.push(material.id);
+			materialIdsByMeshId.set(meshId, existing);
+		}
+	}
+	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
+	async function resolveExpression(
+		expression: VehiclePlannerTargetExpression
+	): Promise<{ materialIds: Set<string>; labels: Set<string> }> {
+		if (expression.kind === 'semantic_query') {
+			const matchedGroups = await listSemanticGroupsByQuery(
+				assetId,
+				capabilities.generatedAt,
+				expression.query,
+				'isolate'
+			);
+			const matchedParts = await listSemanticPartsByQuery(
+				assetId,
+				capabilities.generatedAt,
+				expression.query
+			);
+			const bestGroupScore = matchedGroups.length
+				? Math.max(...matchedGroups.map((group) => scoreSemanticEntityMatch(group, expression.query)))
+				: Number.NEGATIVE_INFINITY;
+			const bestPartScore = matchedParts.length
+				? Math.max(...matchedParts.map((part) => scoreSemanticEntityMatch(part, expression.query)))
+				: Number.NEGATIVE_INFINITY;
+			const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
+				matchedParts.length > 0 && bestPartScore >= bestGroupScore
+					? matchedParts
+					: matchedGroups.length > 0
+						? matchedGroups
+						: matchedParts;
+			const materialIds = new Set<string>();
+			const labels = new Set<string>();
+			for (const entity of matchedEntities) {
+				labels.add(entity.humanLabel);
+				for (const materialId of entity.materialIds) {
+					materialIds.add(materialId);
+				}
+				for (const meshId of entity.meshIds) {
+					for (const materialId of materialIdsByMeshId.get(meshId) ?? []) {
+						materialIds.add(materialId);
+					}
+				}
+				for (const nodeId of entity.nodeIds) {
+					const meshId = nodeById.get(nodeId)?.meshId;
+					if (!meshId) {
+						continue;
+					}
+					for (const materialId of materialIdsByMeshId.get(meshId) ?? []) {
+						materialIds.add(materialId);
+					}
+				}
+			}
+			return { materialIds, labels };
+		}
+
+		if (expression.kind === 'highlighted_materials') {
+			const materialIds = new Set(
+				(options?.presentation?.highlightedTargets ?? [])
+					.filter((target) => target.targetType === 'material')
+					.map((target) => target.targetId)
+			);
+			return {
+				materialIds,
+				labels: new Set<string>(materialIds.size > 0 ? ['highlighted materials'] : [])
+			};
+		}
+
+		if (expression.kind === 'union') {
+			const materialIds = new Set<string>();
+			const labels = new Set<string>();
+			for (const item of expression.items) {
+				const resolved = await resolveExpression(item);
+				for (const materialId of resolved.materialIds) {
+					materialIds.add(materialId);
+				}
+				for (const label of resolved.labels) {
+					labels.add(label);
+				}
+			}
+			return { materialIds, labels };
+		}
+
+		const left = await resolveExpression(expression.left);
+		const right = await resolveExpression(expression.right);
+
+		if (expression.kind === 'subtract') {
+			const materialIds = new Set<string>(left.materialIds);
+			for (const materialId of right.materialIds) {
+				materialIds.delete(materialId);
+			}
+			return {
+				materialIds,
+				labels: left.labels
+			};
+		}
+
+		const materialIds = new Set<string>();
+		for (const materialId of left.materialIds) {
+			if (right.materialIds.has(materialId)) {
+				materialIds.add(materialId);
+			}
+		}
+		return {
+			materialIds,
+			labels: left.labels
+		};
+	}
+
+	const resolvedKeepExpression = await resolveExpression(keepExpressionWithContext);
+	const keepMaterialIdsSet = resolvedKeepExpression.materialIds;
+	const keepLabelsSet = resolvedKeepExpression.labels;
+
+	for (const keepQuery of plannerQueries) {
+		const matchedGroups = await listSemanticGroupsByQuery(
+			assetId,
+			capabilities.generatedAt,
+			keepQuery,
+			'isolate'
+		);
+		const matchedParts = await listSemanticPartsByQuery(assetId, capabilities.generatedAt, keepQuery);
+		const bestGroupScore = matchedGroups.length
+			? Math.max(...matchedGroups.map((group) => scoreSemanticEntityMatch(group, keepQuery)))
+			: Number.NEGATIVE_INFINITY;
+		const bestPartScore = matchedParts.length
+			? Math.max(...matchedParts.map((part) => scoreSemanticEntityMatch(part, keepQuery)))
+			: Number.NEGATIVE_INFINITY;
+		const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
+			matchedParts.length > 0 && bestPartScore >= bestGroupScore
+				? matchedParts
+				: matchedGroups.length > 0
+					? matchedGroups
+					: matchedParts;
+
+		for (const entity of matchedEntities) {
+			keepLabelsSet.add(entity.humanLabel);
+		}
+	}
+
+	const keepMaterialIds = Array.from(keepMaterialIdsSet).sort((left, right) => left.localeCompare(right));
+	const keepLabels = Array.from(keepLabelsSet).sort((left, right) => left.localeCompare(right));
+
+	if (keepMaterialIds.length === 0) {
+		return {
+			assetId,
+			operations: [],
+			rejected: [],
+			summary: `I could not resolve which materials should be kept for "${plannerQueries.join(', ')}".`,
+			plannerJob: {
+				intent: 'remove_all_except',
+				assetId,
+				keep: [keepExpressionWithContext],
+				steps: [
+					...plannerQueries.map((query) => ({ kind: 'resolve_keep_targets' as const, query })),
+					...(requestNeedsHighlightedIntersection(request)
+						? ([{ kind: 'read_highlighted_materials' as const }] as const)
+						: []),
+					{ kind: 'enumerate_all_materials' },
+					{ kind: 'subtract_keep_targets' },
+					{ kind: 'apply_remove_material_alpha', alpha: REMOVE_PART_ALPHA }
+				],
+				constraints: requestPreservesCurrentPaint(request)
+					? [{ kind: 'preserve_current_paint' }]
+					: undefined
+			},
+			verification: {
+				preservedMaterialIds: [],
+				mutatedMaterialIds: [],
+				verificationPassed: false
+			}
+		};
+	}
+
+	const mutatedMaterialIds = capabilities.materials
+		.map((material) => material.id)
+		.filter((materialId) => !keepMaterialIds.includes(materialId))
+		.sort((left, right) => left.localeCompare(right));
+
+	const operations: SharedVehicleInspectionPatchOperation[] = capabilities.materials
+		.filter((material) => mutatedMaterialIds.includes(material.id))
+		.map((material) => ({
+			targetType: 'material' as const,
+			targetId: material.id,
+			targetName: material.name,
+			op: 'set_alpha' as const,
+			value: REMOVE_PART_ALPHA
+		}));
+
+	const validation = await validatePlannedOperations(
+		assetId,
+		'vehicle-intent-remove-all-except',
+		operations,
+		capabilities.generatedAt
+	);
+	const acceptedMutatedMaterialIds = validation.operations
+		.filter(
+			(operation): operation is Extract<SharedVehicleInspectionPatchOperation, { targetType: 'material' }> =>
+				operation.targetType === 'material'
+		)
+		.map((operation) => operation.targetId)
+		.sort((left, right) => left.localeCompare(right));
+
+	return {
+		assetId,
+		operations: validation.operations,
+		rejected: validation.rejected,
+		summary:
+			validation.operations.length > 0
+				? `Removed everything except ${keepLabels.join(', ')} by reducing non-target material alpha.`
+				: `Nothing outside ${keepLabels.join(', ')} could be removed.`,
+		plannerJob: {
+			intent: 'remove_all_except',
+			assetId,
+			keep: [keepExpressionWithContext],
+			steps: [
+				...plannerQueries.map((query) => ({ kind: 'resolve_keep_targets' as const, query })),
+				...(requestNeedsHighlightedIntersection(request)
+					? ([{ kind: 'read_highlighted_materials' as const }] as const)
+					: []),
+				{ kind: 'enumerate_all_materials' },
+				{ kind: 'subtract_keep_targets' },
+				{ kind: 'apply_remove_material_alpha', alpha: REMOVE_PART_ALPHA }
+			],
+			constraints: requestPreservesCurrentPaint(request)
+				? [{ kind: 'preserve_current_paint' }]
+				: undefined
+		},
+		verification: {
+			preservedMaterialIds: keepMaterialIds,
+			mutatedMaterialIds: acceptedMutatedMaterialIds,
+			verificationPassed: acceptedMutatedMaterialIds.every((materialId) => !keepMaterialIds.includes(materialId))
+		}
+	};
+}
+
 export async function planVehicleEditOperations(
 	assetId: VehicleAssetId,
 	request: string
@@ -1262,7 +1708,10 @@ export async function planVehicleWindowTintIntent(
 
 export async function resolveVehicleIntent(
 	assetId: VehicleAssetId,
-	request: string
+	request: string,
+	options?: {
+		presentation?: VehicleIntentPresentationContext;
+	}
 ): Promise<PlannedVehicleIntentResult> {
 	const trimmedRequest = request.trim();
 
@@ -1273,6 +1722,11 @@ export async function resolveVehicleIntent(
 			rejected: [],
 			summary: 'No request was provided.'
 		};
+	}
+
+	const setLogicPlan = await planVehicleSetLogicIntent(assetId, trimmedRequest, options);
+	if (setLogicPlan) {
+		return setLogicPlan;
 	}
 
 	let plannedOperations: SharedVehicleInspectionPatchOperation[] = [];

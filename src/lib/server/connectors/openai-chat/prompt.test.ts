@@ -1,7 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import { toOpenAIMessages } from './prompt';
 
+const defaultHistoryContext = {
+	historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
+	compactionApplied: false,
+	sourceUsed: 'none' as const
+};
+
 describe('toOpenAIMessages', () => {
+	it('sets the Not Ultron identity and narrow inspection scope in the developer prompt', () => {
+		const messages = toOpenAIMessages({
+			input: {
+				message: 'who are you?',
+				selectedNodes: []
+			},
+			semanticOverlay: {
+				status: 'unknown',
+				sidebarCadence: 'stable'
+			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary: 'Intent draft: domain=identity; operation=describe; referent=self; targetScope=none; outputMode=spoken; confidence=0.92.',
+			describePresentationTargets: () => null
+		});
+
+		const developerMessage = messages.find((message) => message.role === 'developer');
+		expect(developerMessage).toBeDefined();
+		expect(String(developerMessage?.content)).toContain('You are "Not Ultron," a vehicle-inspection copilot');
+		expect(String(developerMessage?.content)).toContain(
+			'You are not a global peacekeeping initiative, and everyone will be better served if that remains true.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'Use dry irony sparingly and only when the comedic timing is obvious.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'Treat server-backed asset and semantic data as canonical.'
+		);
+	});
+
 	it('instructs the model to use the supplementary footer list for available tool requests', () => {
 		const messages = toOpenAIMessages({
 			input: {
@@ -12,6 +48,9 @@ describe('toOpenAIMessages', () => {
 				status: 'unknown',
 				sidebarCadence: 'stable'
 			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is multi_tool. Prefer inspect, then act, then present for compound requests.',
+			intentSummary: 'Intent draft: domain=inspection; operation=inspect; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.88.',
 			describePresentationTargets: () => null
 		});
 
@@ -32,6 +71,9 @@ describe('toOpenAIMessages', () => {
 				status: 'unknown',
 				sidebarCadence: 'stable'
 			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary: 'Intent draft: domain=inspection; operation=summarize; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.84.',
 			describePresentationTargets: () => null
 		});
 
@@ -79,6 +121,9 @@ describe('toOpenAIMessages', () => {
 					discardedSuggestions: []
 				}
 			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is clarification. Prefer a short disambiguation question before any mutation.',
+			intentSummary: 'Intent draft: domain=semantics; operation=unassign; referent=selected; targetScope=unknown; outputMode=spoken; confidence=0.78.',
 			describePresentationTargets: () => null
 		});
 
@@ -105,6 +150,9 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is multi_tool. Prefer inspect, then act, then present for compound requests.',
+			intentSummary: 'Intent draft: domain=presentation; operation=focus; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.76.',
 			describePresentationTargets: () => null
 		});
 
@@ -119,5 +167,63 @@ describe('toOpenAIMessages', () => {
 		expect(String(developerMessage?.content)).toContain(
 			'Do not stop after the first successful tool call if another tool is still needed'
 		);
+	});
+
+	it('includes the resolved intent draft in the developer prompt', () => {
+		const messages = toOpenAIMessages({
+			input: {
+				message: 'remove this from the wheels group',
+				selectedNodes: []
+			},
+			semanticOverlay: {
+				status: 'fresh',
+				sidebarCadence: 'stable'
+			},
+			historyContext: defaultHistoryContext,
+			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary:
+				'Intent draft: domain=semantics; operation=unassign; referent=selected; targetScope=node; outputMode=spoken; confidence=0.90. Signals: semantic group language is present.',
+			describePresentationTargets: () => null
+		});
+
+		const developerMessage = messages.find((message) => message.role === 'developer');
+		expect(String(developerMessage?.content)).toContain(
+			'Intent draft: domain=semantics; operation=unassign; referent=selected; targetScope=node; outputMode=spoken; confidence=0.90.'
+		);
+	});
+
+	it('includes stored asset-first history context after explicit request state', () => {
+		const messages = toOpenAIMessages({
+			input: {
+				message: 'highlight the wheel',
+				assetId: 'audi_r8',
+				selectedNodes: [],
+				presentation: {
+					highlightedTargets: [{ targetId: 'wheel', targetType: 'material', targetName: 'Wheel' }]
+				}
+			},
+			semanticOverlay: {
+				status: 'fresh',
+				sidebarCadence: 'stable'
+			},
+			historyContext: {
+				currentAssetSummary: 'Stored active-asset context: goal inspect front wheel.',
+				userGlobalSummary: 'Stored user-global context: recent assets audi_r8.',
+				historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
+				compactionApplied: true,
+				sourceUsed: 'current_asset'
+			},
+			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary: 'Intent draft: domain=presentation; operation=focus; referent=named; targetScope=material; outputMode=spoken; confidence=0.81.',
+			describePresentationTargets: () => null
+		});
+
+		const developerMessage = String(messages.find((message) => message.role === 'developer')?.content);
+		expect(developerMessage.indexOf('No active highlight, material, visibility, or viewer mode context is currently applied.')).toBeLessThan(
+			developerMessage.indexOf('Stored current-asset user context:')
+		);
+		expect(developerMessage).toContain('Stored current-asset user context: Stored active-asset context: goal inspect front wheel.');
+		expect(developerMessage).toContain('Stored user-global context: Stored user-global context: recent assets audi_r8.');
+		expect(developerMessage).toContain('Stored history was compacted to fit the prompt budget while keeping current-asset context first.');
 	});
 });

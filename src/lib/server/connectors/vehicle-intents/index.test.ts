@@ -8,6 +8,7 @@ import {
 	resolveNormalizedVehiclePaintIntent,
 	planVehicleHighlightIntent,
 	planVehiclePartIntent,
+	planVehicleSetLogicIntent,
 	resolveVehicleIntent
 } from '$lib/server/connectors/vehicle-intents';
 import {
@@ -271,6 +272,377 @@ describe('vehicle part intent planner', () => {
 			)
 		).toBe(true);
 		expect(plan.operations.every((operation) => operation.op === 'set_alpha')).toBe(true);
+	});
+
+	it('plans remove-everything-except requests through a typed set-logic job', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const wheelMaterials = capabilities.materials.slice(0, 2);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel', 'rims'],
+					confidence: 0.96,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
+					materialIds: wheelMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleSetLogicIntent(
+			'audi_r8',
+			'remove everything and keep the wheels'
+		);
+
+		expect(plan).not.toBeNull();
+		expect(plan?.plannerJob.intent).toBe('remove_all_except');
+		expect(plan?.plannerJob.keep).toEqual([{ kind: 'semantic_query', query: 'wheels' }]);
+		expect(plan?.plannerJob.steps.map((step) => step.kind)).toEqual([
+			'resolve_keep_targets',
+			'enumerate_all_materials',
+			'subtract_keep_targets',
+			'apply_remove_material_alpha'
+		]);
+		expect(plan?.verification.preservedMaterialIds).toEqual(
+			wheelMaterials.map((material) => material.id).sort((left, right) => left.localeCompare(right))
+		);
+		expect(plan?.verification.verificationPassed).toBe(true);
+		expect(
+			plan?.operations.every(
+				(operation) =>
+					operation.targetType === 'material' &&
+					operation.op === 'set_alpha' &&
+					!wheelMaterials.some((material) => material.id === operation.targetId)
+			)
+		).toBe(true);
+		expect(plan?.summary.toLowerCase()).toContain('except wheels');
+	});
+
+	it('routes remove-everything-except requests through the main intent resolver', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const wheelMaterials = capabilities.materials.slice(0, 2);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel', 'rims'],
+					confidence: 0.96,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
+					materialIds: wheelMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'keep only the wheels');
+
+		expect(plan.operations.length).toBeGreaterThan(0);
+		expect(
+			plan.operations.every(
+				(operation) =>
+					operation.targetType === 'material' &&
+					operation.op === 'set_alpha' &&
+					!wheelMaterials.some((material) => material.id === operation.targetId)
+			)
+		).toBe(true);
+		expect(plan.summary.toLowerCase()).toContain('except wheels');
+	});
+
+	it('unions multiple keep-targets before subtracting the removal set', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const wheelMaterials = capabilities.materials.slice(0, 2);
+		const glassMaterials = capabilities.materials.slice(2, 4);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel', 'rims'],
+					confidence: 0.96,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
+					materialIds: wheelMaterials.map((material) => material.id)
+				},
+				{
+					id: 'glasshouse',
+					humanLabel: 'glasshouse',
+					aliases: ['glass', 'windows'],
+					confidence: 0.94,
+					category: 'glasshouse',
+					supports: ['highlight', 'focus', 'isolate', 'tint'],
+					nodeIds: [],
+					meshIds: glassMaterials.flatMap((material) => material.meshIds),
+					materialIds: glassMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleSetLogicIntent(
+			'audi_r8',
+			'remove everything except wheels and glass'
+		);
+
+		expect(plan).not.toBeNull();
+		expect(plan?.plannerJob.keep).toEqual([
+			{
+				kind: 'union',
+				items: [
+					{ kind: 'semantic_query', query: 'wheels' },
+					{ kind: 'semantic_query', query: 'glass' }
+				]
+			}
+		]);
+		expect(plan?.verification.preservedMaterialIds).toEqual(
+			[...wheelMaterials, ...glassMaterials]
+				.map((material) => material.id)
+				.sort((left, right) => left.localeCompare(right))
+		);
+		expect(
+			plan?.operations.every(
+				(operation) =>
+					operation.targetType === 'material' &&
+					operation.op === 'set_alpha' &&
+					![...wheelMaterials, ...glassMaterials].some((material) => material.id === operation.targetId)
+			)
+		).toBe(true);
+	});
+
+	it('supports subtract expressions for keep-set overrides', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const wheelMaterials = capabilities.materials.slice(0, 2);
+		const glassMaterials = capabilities.materials.slice(2, 4);
+		const grilleMaterials = capabilities.materials.slice(4, 5);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel', 'rims'],
+					confidence: 0.96,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
+					materialIds: wheelMaterials.map((material) => material.id)
+				},
+				{
+					id: 'glasshouse',
+					humanLabel: 'glasshouse',
+					aliases: ['glass', 'windows'],
+					confidence: 0.94,
+					category: 'glasshouse',
+					supports: ['highlight', 'focus', 'isolate', 'tint'],
+					nodeIds: [],
+					meshIds: glassMaterials.flatMap((material) => material.meshIds),
+					materialIds: glassMaterials.map((material) => material.id)
+				},
+				{
+					id: 'front_face',
+					humanLabel: 'grille',
+					aliases: ['front grille', 'grille'],
+					confidence: 0.92,
+					category: 'front_face',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: grilleMaterials.flatMap((material) => material.meshIds),
+					materialIds: grilleMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleSetLogicIntent(
+			'audi_r8',
+			'remove everything except wheels and glass, but remove grille too'
+		);
+
+		expect(plan).not.toBeNull();
+		expect(plan?.plannerJob.keep).toEqual([
+			{
+				kind: 'subtract',
+				left: {
+					kind: 'union',
+					items: [
+						{ kind: 'semantic_query', query: 'wheels' },
+						{ kind: 'semantic_query', query: 'glass' }
+					]
+				},
+				right: {
+					kind: 'semantic_query',
+					query: 'grille'
+				}
+			}
+		]);
+		expect(plan?.verification.preservedMaterialIds).toEqual(
+			[...wheelMaterials, ...glassMaterials]
+				.map((material) => material.id)
+				.filter((materialId) => !grilleMaterials.some((material) => material.id === materialId))
+				.sort((left, right) => left.localeCompare(right))
+		);
+		expect(plan?.verification.mutatedMaterialIds).toContain(grilleMaterials[0]!.id);
+	});
+
+	it('intersects semantic targets with highlighted materials when the request says highlighted', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const headlightMaterials = capabilities.materials.slice(0, 2);
+		const highlightedMaterialId = headlightMaterials[0]!.id;
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'headlights',
+					aliases: ['headlight', 'front lights'],
+					confidence: 0.95,
+					category: 'front_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: headlightMaterials.flatMap((material) => material.meshIds),
+					materialIds: headlightMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleSetLogicIntent('audi_r8', 'show only highlighted headlights', {
+			presentation: {
+				highlightedTargets: [
+					{
+						targetId: highlightedMaterialId,
+						targetType: 'material'
+					}
+				]
+			}
+		});
+
+		expect(plan).not.toBeNull();
+		expect(plan?.plannerJob.keep).toEqual([
+			{
+				kind: 'intersect',
+				left: {
+					kind: 'semantic_query',
+					query: 'headlights'
+				},
+				right: {
+					kind: 'highlighted_materials'
+				}
+			}
+		]);
+		expect(plan?.plannerJob.steps.map((step) => step.kind)).toContain('read_highlighted_materials');
+		expect(plan?.verification.preservedMaterialIds).toEqual([highlightedMaterialId]);
+	});
+
+	it('records preserve-current-paint as an explicit planner constraint', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const wheelMaterials = capabilities.materials.slice(0, 2);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'wheels',
+					humanLabel: 'wheels',
+					aliases: ['wheel', 'rims'],
+					confidence: 0.96,
+					category: 'wheels',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
+					materialIds: wheelMaterials.map((material) => material.id)
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleSetLogicIntent(
+			'audi_r8',
+			'remove everything except wheels and preserve current paint'
+		);
+
+		expect(plan).not.toBeNull();
+		expect(plan?.plannerJob.constraints).toEqual([{ kind: 'preserve_current_paint' }]);
+		expect(plan?.operations.every((operation) => operation.op === 'set_alpha')).toBe(true);
 	});
 
 	it('routes remove requests to reduced-alpha material edits only', async () => {

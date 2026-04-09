@@ -24,13 +24,6 @@ export type SemanticRuntimeAssetPatch = {
 	ingressBindings?: SemanticIngressBinding[];
 };
 
-const DEFAULT_ASSET_STATE: SemanticRuntimeAssetState = {
-	overlay: null,
-	overlayRevision: null,
-	overlayStatus: 'unknown',
-	ingressBindings: []
-};
-
 const INITIAL_STATE: SemanticRuntimeState = {
 	byAsset: {}
 };
@@ -118,7 +111,7 @@ function createSemanticRuntimeStore() {
 				apply({
 					byAsset: {
 						...state.byAsset,
-					[assetId]: cloneAssetState(undefined)
+						[assetId]: cloneAssetState(undefined)
 					}
 				})
 			);

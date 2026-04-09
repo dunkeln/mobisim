@@ -74,6 +74,8 @@ type SemanticAssignmentCommand = {
 	materialSelections?: ScopedMaterialSelection[];
 };
 
+type InferredSemanticScope = 'selected' | 'highlighted' | 'material_targets' | 'hidden';
+
 function normalizeSemanticLookupToken(value: string): string {
 	return value
 		.toLowerCase()
@@ -200,7 +202,7 @@ async function deriveSelectedMaterialIds(
 
 function resolveScopedSemanticTargets(input: {
 	activeAssetId: VehicleAssetId;
-	scope: NonNullable<ManageVehicleSemanticGroupToolArgs['scope']>;
+	scope?: ManageVehicleSemanticGroupToolArgs['scope'];
 	selectedNodes: VehicleNodeSelection[];
 	presentation?: FooterChatPresentationContext;
 	query?: string;
@@ -212,14 +214,22 @@ function resolveScopedSemanticTargets(input: {
 	const scopedSelections = input.selectedNodes.filter(
 		(selection) => selection.assetId === input.activeAssetId
 	);
-	if (input.scope === 'highlighted') {
+	const effectiveScope: InferredSemanticScope =
+		input.scope ??
+		(scopedSelections.length > 0
+			? 'selected'
+			: (input.presentation?.highlightedTargets?.length ?? 0) > 0
+				? 'highlighted'
+				: 'selected');
+
+	if (effectiveScope === 'highlighted') {
 		const materialIds = input.query
 			? selectMatchingPresentationTargetIds(input.query, input.presentation?.highlightedTargets)
 			: (input.presentation?.highlightedTargets ?? []).map((target) => target.targetId);
 		return { nodeIds: [], materialIds };
 	}
 
-	if (input.scope === 'hidden') {
+	if (effectiveScope === 'hidden') {
 		const nodeIds = input.query
 			? selectMatchingPresentationTargetIds(input.query, input.presentation?.hiddenTargets)
 			: (input.presentation?.hiddenTargets ?? []).map((target) => target.targetId);
@@ -260,6 +270,13 @@ async function resolveTypedSemanticMutationTargets(input: {
 	const explicitNodeIds = dedupeSorted(input.args.nodeIds ?? []);
 	const explicitMaterialIds = dedupeSorted(input.args.materialIds ?? []);
 	const explicitTargetScope = input.args.targetScope;
+	const effectiveScope: InferredSemanticScope =
+		input.args.scope ??
+		(scopedSelections.length > 0
+			? 'selected'
+			: (input.presentation?.highlightedTargets?.length ?? 0) > 0
+				? 'highlighted'
+				: 'selected');
 
 	if (explicitNodeIds.length > 0 && explicitMaterialIds.length === 0) {
 		return {
@@ -297,7 +314,7 @@ async function resolveTypedSemanticMutationTargets(input: {
 		};
 	}
 
-	if (input.args.scope === 'hidden') {
+	if (effectiveScope === 'hidden') {
 		const nodeIds = input.args.query
 			? selectMatchingPresentationTargetIds(input.args.query, input.presentation?.hiddenTargets)
 			: (input.presentation?.hiddenTargets ?? []).map((target) => target.targetId);
@@ -308,7 +325,7 @@ async function resolveTypedSemanticMutationTargets(input: {
 		};
 	}
 
-	if (input.args.scope === 'material_targets') {
+	if (effectiveScope === 'material_targets') {
 		const materialIds = input.args.query
 			? selectMatchingPresentationTargetIds(input.args.query, input.presentation?.materialTargets)
 			: (input.presentation?.materialTargets ?? []).map((target) => target.targetId);
@@ -319,7 +336,7 @@ async function resolveTypedSemanticMutationTargets(input: {
 		};
 	}
 
-	if (input.args.scope === 'highlighted') {
+	if (effectiveScope === 'highlighted') {
 		const highlightedNodeIds = dedupeSorted(
 			selectPresentationTargetsByType(input.presentation?.highlightedTargets, 'node', input.args.query)
 		);
@@ -453,6 +470,14 @@ async function executeSemanticAssignmentMutation(
 		throw new OpenAIChatInputError('No active vehicle asset is available for this request.');
 	}
 
+	const effectiveScope: InferredSemanticScope =
+		args.scope ??
+		(selectedNodes.some((selection) => selection.assetId === activeAssetId)
+			? 'selected'
+			: (presentation?.highlightedTargets?.length ?? 0) > 0
+				? 'highlighted'
+				: 'selected');
+
 	const resolvedTargets = await resolveTypedSemanticMutationTargets({
 		activeAssetId,
 		args,
@@ -492,17 +517,17 @@ async function executeSemanticAssignmentMutation(
 				acceptedGroupCount: overlay.acceptedGroups.length
 			})
 		},
-		semanticOverlay: overlay,
-		presentationRestore:
-			args.action === 'unassign' &&
-			args.scope === 'highlighted' &&
-			resolvedTargets.materialIds.length > 0
-				? {
-						highlightedTargetIds: resolvedTargets.materialIds,
-						label: 'restore original view'
-					}
-				: undefined
-	};
+			semanticOverlay: overlay,
+			presentationRestore:
+				args.action === 'unassign' &&
+				effectiveScope === 'highlighted' &&
+				resolvedTargets.materialIds.length > 0
+					? {
+							highlightedTargetIds: resolvedTargets.materialIds,
+							label: 'restore original view'
+						}
+					: undefined
+		};
 }
 
 async function executeSemanticGroupManagement(
@@ -553,13 +578,13 @@ async function executeSemanticGroupManagement(
 			};
 		}
 
-		const scopedTargets = resolveScopedSemanticTargets({
-			activeAssetId,
-			scope: args.scope ?? 'selected',
-			selectedNodes,
-			presentation,
-			query: args.query
-		});
+			const scopedTargets = resolveScopedSemanticTargets({
+				activeAssetId,
+				scope: args.scope,
+				selectedNodes,
+				presentation,
+				query: args.query
+			});
 
 		if (scopedTargets.nodeIds.length === 0 && scopedTargets.materialIds.length === 0) {
 			return {
@@ -678,13 +703,7 @@ async function executeSemanticGroupManagement(
 			});
 		}
 
-		const nextOverlay = await writeVehicleSemanticOverlay({
-			...overlay,
-			generatedAt: new Date().toISOString(),
-			acceptedGroups: overlay.acceptedGroups.filter(
-				(group) => !matchedGroups.some((matchedGroup) => matchedGroup.id === group.id)
-			)
-		});
+		const nextOverlay = await persistMaterializedSemanticOverlay(activeAssetId);
 
 		return {
 			message: {

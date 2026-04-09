@@ -17,6 +17,10 @@
 		"observability:up": "docker compose up -d otel-lgtm",
 		"observability:down": "docker compose stop otel-lgtm",
 		"observability:status": "docker compose ps otel-lgtm",
+		"context-history:up": "docker compose up -d dynamodb-local",
+		"context-history:down": "docker compose stop dynamodb-local",
+		"context-history:status": "docker compose ps dynamodb-local",
+		"context-history:bootstrap": "node scripts/bootstrap-context-history-table.mjs",
 		"semantic:flush": "node scripts/flush-semantic-overlays.mjs",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run"
@@ -48,6 +52,9 @@
 		"vitest": "^4.1.0"
 	},
 	"dependencies": {
+		"@auth/sveltekit": "^1.11.1",
+		"@aws-sdk/client-dynamodb": "^3.1027.0",
+		"@aws-sdk/lib-dynamodb": "^3.1027.0",
 		"@gltf-transform/core": "^4.3.0",
 		"@gltf-transform/extensions": "^4.3.0",
 		"@gltf-transform/functions": "^4.3.0",

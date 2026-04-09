@@ -2,12 +2,14 @@ import type { ChatCompletionToolChoiceOption } from 'openai/resources/chat/compl
 import { isVehicleEditRequest } from '$lib/server/connectors/vehicle-intents';
 import {
 	EDIT_VEHICLE_SEMANTICS_TOOL_NAME,
+	EDIT_VEHICLE_SELECTION_TOOL_NAME,
 	GET_VEHICLE_TOOL_CATALOG_TOOL_NAME,
 } from './internal';
 import type {
 	FooterChatExecutionRoute,
 	NormalizedFooterChatRequest
 } from './internal';
+import { resolveIntentDraft, type FooterChatIntentDraft } from './intent-resolver';
 
 function isToolCatalogRequest(message: string): boolean {
 	return /\b(what tools are available|available tools|show (?:me )?(?:the )?tools|what can you do here|what can i do here|capabilities)\b/i.test(
@@ -18,8 +20,26 @@ function isToolCatalogRequest(message: string): boolean {
 function needsToolPlanningFirst(message: string): boolean {
 	return (
 		/\b(and then|then|also|while|at the same time|along with|plus)\b/i.test(message) ||
-		/\b(walk me through|talk me through|figure out|decide|choose|plan|best way)\b/i.test(message) ||
-		/\b(summary|summarize|sidebar|footer|list)\b/i.test(message)
+		/\b(walk me through|talk me through|figure out|decide|choose|plan|best way)\b/i.test(message)
+	);
+}
+
+function wantsStructuredAssistantUi(message: string): boolean {
+	return /\b(footer|supplementary|sidebar|list|status|options|changed targets|what changed)\b/i.test(
+		message
+	);
+}
+
+function wantsStructuredUiForAction(
+	message: string,
+	intentDraft: FooterChatIntentDraft
+): boolean {
+	return (
+		wantsStructuredAssistantUi(message) &&
+		(intentDraft.operation === 'appearance' ||
+			intentDraft.operation === 'focus' ||
+			intentDraft.operation === 'restore' ||
+			isVehicleEditRequest(message))
 	);
 }
 
@@ -76,12 +96,15 @@ export function isSelectionExpansionRequest(message: string): boolean {
 }
 
 export function shouldAttemptDirectSelectionEdit(input: NormalizedFooterChatRequest): boolean {
+	const intentDraft = resolveIntentDraft(input);
 	const scopedSelections = input.selectedNodes.filter((entry) => entry.assetId === input.assetId);
 	if (!input.assetId || scopedSelections.length === 0) {
 		return false;
 	}
 
 	if (
+		intentDraft.domain === 'semantics' ||
+		intentDraft.domain === 'selection' ||
 		!isVehicleEditRequest(input.message) ||
 		isSemanticRefreshRequest(input.message) ||
 		isSemanticAnnotationRequest(input.message) ||
@@ -100,8 +123,11 @@ export function shouldAttemptDirectSelectionEdit(input: NormalizedFooterChatRequ
 }
 
 export function shouldAttemptDirectVehicleEdit(input: NormalizedFooterChatRequest): boolean {
+	const intentDraft = resolveIntentDraft(input);
 	if (
 		!input.assetId ||
+		intentDraft.domain === 'semantics' ||
+		intentDraft.domain === 'selection' ||
 		!isVehicleEditRequest(input.message) ||
 		isSemanticRefreshRequest(input.message)
 	) {
@@ -116,14 +142,27 @@ export function shouldAttemptDirectVehicleEdit(input: NormalizedFooterChatReques
 }
 
 export function classifyExecutionRoute(
-	_input: NormalizedFooterChatRequest
+	input: NormalizedFooterChatRequest
 ): FooterChatExecutionRoute {
+	if (
+		/\b(unhighlight|clear highlights|restore|reset view|return .* normal|disable .*?(wireframe|xray|uv|postprocess))\b/i.test(
+			input.message
+		)
+	) {
+		return 'presentation_restore';
+	}
+
+	if (shouldAttemptDirectSelectionEdit(input) || shouldAttemptDirectVehicleEdit(input)) {
+		return 'direct_edit';
+	}
+
 	return 'llm';
 }
 
 export function getToolChoiceForRequest(
 	input: NormalizedFooterChatRequest
 ): ChatCompletionToolChoiceOption | undefined {
+	const intentDraft = resolveIntentDraft(input);
 	if (isToolCatalogRequest(input.message)) {
 		return {
 			type: 'function',
@@ -142,7 +181,45 @@ export function getToolChoiceForRequest(
 		};
 	}
 
+	if (
+		intentDraft.domain === 'semantics' &&
+		(intentDraft.operation === 'assign' ||
+			intentDraft.operation === 'reassign' ||
+			intentDraft.operation === 'unassign' ||
+			intentDraft.operation === 'refresh')
+	) {
+		return {
+			type: 'function',
+			function: {
+				name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME
+			}
+		};
+	}
+
+	if (intentDraft.domain === 'selection' && intentDraft.operation === 'expand_selection') {
+		return {
+			type: 'function',
+			function: {
+				name: EDIT_VEHICLE_SELECTION_TOOL_NAME
+			}
+		};
+	}
+
 	if (needsToolPlanningFirst(input.message)) {
+		return {
+			type: 'function',
+			function: {
+				name: GET_VEHICLE_TOOL_CATALOG_TOOL_NAME
+			}
+		};
+	}
+
+	if (
+		wantsStructuredUiForAction(input.message, intentDraft) &&
+		(intentDraft.domain === 'presentation' ||
+			intentDraft.domain === 'semantics' ||
+			intentDraft.domain === 'inspection')
+	) {
 		return {
 			type: 'function',
 			function: {

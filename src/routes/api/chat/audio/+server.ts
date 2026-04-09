@@ -1,29 +1,14 @@
 import { json } from '@sveltejs/kit';
 import { createFooterAudioChatResponse } from '$lib/server/connectors/openai-chat/audio';
+import { parseFooterAudioChatFormData } from '$lib/server/connectors/openai-chat/audio-request';
 import {
 	OpenAIChatConfigError,
 	OpenAIChatInputError,
 	OpenAIChatUpstreamError
 } from '$lib/server/connectors/openai-chat';
-import type { FooterChatRequest } from '$lib/server/connectors/openai-chat/types';
+import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
 
-function readStringField(value: FormDataEntryValue | null): string | undefined {
-	return typeof value === 'string' ? value.trim() || undefined : undefined;
-}
-
-function readJsonField<T>(value: FormDataEntryValue | null, fallback: T): T {
-	if (typeof value !== 'string' || value.trim().length === 0) {
-		return fallback;
-	}
-
-	if (value.trim() === 'undefined' || value.trim() === 'null') {
-		return fallback;
-	}
-
-	return JSON.parse(value) as T;
-}
-
-export async function POST({ request }) {
+export async function POST({ request, locals }) {
 	let formData: FormData;
 
 	try {
@@ -32,30 +17,25 @@ export async function POST({ request }) {
 		return json({ error: 'Invalid form body.' }, { status: 400 });
 	}
 
-	const audio = formData.get('audio');
-	if (!(audio instanceof File)) {
-		return json({ error: 'Audio file is required.' }, { status: 400 });
-	}
-
-	let payload: Omit<FooterChatRequest, 'message'>;
+	let audio: File;
+	let payload;
 
 	try {
-		payload = {
-			assetId: readStringField(formData.get('assetId')) as FooterChatRequest['assetId'],
-			selectedNodeId: readStringField(formData.get('selectedNodeId')),
-			selectedNodeName: readStringField(formData.get('selectedNodeName')),
-			selectedNodePath: readStringField(formData.get('selectedNodePath')),
-			selectedNodes: readJsonField(formData.get('selectedNodes'), []),
-			presentation: readJsonField(formData.get('presentation'), undefined),
-			sidebar: readJsonField(formData.get('sidebar'), undefined),
-			supplementaryList: readJsonField(formData.get('supplementaryList'), undefined)
-		};
-	} catch {
-		return json({ error: 'Invalid audio chat metadata.' }, { status: 400 });
+		({ audio, payload } = parseFooterAudioChatFormData(formData));
+	} catch (error) {
+		return json(
+			{
+				error: error instanceof Error ? error.message : 'Invalid audio chat request.'
+			},
+			{ status: 400 }
+		);
 	}
 
 	try {
-		const response = await createFooterAudioChatResponse(audio, payload);
+		const session = await locals.auth();
+		const response = await createFooterAudioChatResponse(audio, payload, {
+			userId: resolveAuthenticatedUserId(session)
+		});
 		return json(response);
 	} catch (error) {
 		if (error instanceof OpenAIChatInputError) {
@@ -73,6 +53,11 @@ export async function POST({ request }) {
 		}
 
 		console.error('chat audio unknown error', error);
-		return json({ error: 'Audio chat request failed.' }, { status: 500 });
+		return json(
+			{
+				error: error instanceof Error ? error.message : 'Audio chat request failed.'
+			},
+			{ status: 500 }
+		);
 	}
 }

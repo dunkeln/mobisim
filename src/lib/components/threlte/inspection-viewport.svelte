@@ -15,9 +15,7 @@
 	import {
 		buildRuntimeNodeLookup,
 		buildRuntimeNodePath,
-		resolveRuntimeSelection,
-		resolveRuntimeSelectionDebug,
-		type RuntimeSelectionDebugSnapshot
+		resolveRuntimeSelection
 	} from '$lib/components/threlte/runtime-selection';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
@@ -48,7 +46,6 @@
 	const XRAY_OPACITY = 0.18;
 	const SELECTION_CLICK_DRAG_THRESHOLD = 8;
 	const SELECTION_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.95, 0.79, 0.42, 0.94];
-	const SELECTION_DEBUG_GROUP_NAME = '__mobisim-selection-debug__';
 
 	let camera = $state<THREE.PerspectiveCamera | undefined>();
 	let controls = $state<ThreeOrbitControls | undefined>();
@@ -66,8 +63,6 @@
 	let cameraConfig = $state<CameraConfig | null>(null);
 	let loadedScene = $state<THREE.Object3D | undefined>();
 	let materialSummaryById = $state<Map<string, VehicleInspectionMaterialSummary>>(new Map());
-	let selectionDebugEnabled = $state(false);
-	let selectionDebugSnapshot = $state<RuntimeSelectionDebugSnapshot | null>(null);
 	const originalNodeState = new WeakMap<
 		THREE.Object3D,
 		{
@@ -715,101 +710,6 @@
 		});
 	}
 
-	function disposeSelectionDebugObject(node: THREE.Object3D): void {
-		if ('geometry' in node) {
-			const geometry = node.geometry;
-			if (geometry instanceof THREE.BufferGeometry) {
-				geometry.dispose();
-			}
-		}
-
-		if ('material' in node) {
-			const material = node.material;
-			if (material instanceof THREE.Material) {
-				material.dispose();
-			} else if (Array.isArray(material)) {
-				for (const item of material) {
-					item.dispose();
-				}
-			}
-		}
-
-		for (const child of node.children) {
-			disposeSelectionDebugObject(child);
-		}
-	}
-
-	function clearSelectionDebug(scene: THREE.Object3D): void {
-		const debugGroup = scene.getObjectByName(SELECTION_DEBUG_GROUP_NAME);
-		if (!debugGroup) {
-			return;
-		}
-
-		scene.remove(debugGroup);
-		disposeSelectionDebugObject(debugGroup);
-	}
-
-	function addSelectionDebug(scene: THREE.Object3D, snapshot: RuntimeSelectionDebugSnapshot): void {
-		clearSelectionDebug(scene);
-
-		const debugGroup = new THREE.Group();
-		debugGroup.name = SELECTION_DEBUG_GROUP_NAME;
-
-		for (const sample of snapshot.samples) {
-			const points = [
-				new THREE.Vector3(...sample.origin),
-				new THREE.Vector3(...sample.rayEnd)
-			];
-			const geometry = new THREE.BufferGeometry().setFromPoints(points);
-			const material = new THREE.LineBasicMaterial({
-				color: new THREE.Color(
-					...(sample.isWinningSample ? ([0.96, 0.78, 0.42] as const) : ([0.5, 0.81, 0.84] as const))
-				),
-				transparent: true,
-				opacity: sample.isWinningSample ? 0.94 : 0.52,
-				depthTest: false
-			});
-			const line = new THREE.Line(geometry, material);
-			line.name = '__mobisim-selection-debug-ray__';
-			line.renderOrder = 30;
-			debugGroup.add(line);
-
-			if (sample.rejectedHitPoint) {
-				const rejectedMarker = new THREE.Mesh(
-					new THREE.SphereGeometry(0.038, 12, 12),
-					new THREE.MeshBasicMaterial({
-						color: new THREE.Color(0.72, 0.31, 0.24),
-						transparent: true,
-						opacity: 0.92,
-						depthTest: false
-					})
-				);
-				rejectedMarker.name = '__mobisim-selection-debug-rejected-hit__';
-				rejectedMarker.position.set(...sample.rejectedHitPoint);
-				rejectedMarker.renderOrder = 31;
-				debugGroup.add(rejectedMarker);
-			}
-		}
-
-		if (snapshot.winningPoint) {
-			const winningMarker = new THREE.Mesh(
-				new THREE.SphereGeometry(0.065, 16, 16),
-				new THREE.MeshBasicMaterial({
-					color: new THREE.Color(0.96, 0.78, 0.42),
-					transparent: true,
-					opacity: 0.96,
-					depthTest: false
-				})
-			);
-			winningMarker.name = '__mobisim-selection-debug-hit__';
-			winningMarker.position.set(...snapshot.winningPoint);
-			winningMarker.renderOrder = 32;
-			debugGroup.add(winningMarker);
-		}
-
-		scene.add(debugGroup);
-	}
-
 	function handleViewportPointerDown(event: PointerEvent): void {
 		if ($chatRequestState.pending) {
 			selectionPointerDown = null;
@@ -866,28 +766,14 @@
 			return;
 		}
 
-		const selectionResult = selectionDebugEnabled
-			? resolveRuntimeSelectionDebug({
-					scene: loadedScene,
-					camera,
-					canvasRect: rect,
-					clientX: event.clientX,
-					clientY: event.clientY,
-					anchorToCenterSample: additiveSelection
-				})
-			: {
-					selection: resolveRuntimeSelection({
-						scene: loadedScene,
-						camera,
-						canvasRect: rect,
-						clientX: event.clientX,
-						clientY: event.clientY,
-						anchorToCenterSample: additiveSelection
-					}),
-					debugSnapshot: null
-				};
-		const resolvedHit = selectionResult.selection;
-		selectionDebugSnapshot = selectionResult.debugSnapshot;
+		const resolvedHit = resolveRuntimeSelection({
+			scene: loadedScene,
+			camera,
+			canvasRect: rect,
+			clientX: event.clientX,
+			clientY: event.clientY,
+			anchorToCenterSample: additiveSelection
+		});
 
 		if (!resolvedHit) {
 			if (!additiveSelection) {
@@ -1198,24 +1084,6 @@
 	});
 
 	$effect(() => {
-		if (typeof window === 'undefined') {
-			return;
-		}
-
-		const syncSelectionDebugEnabled = (): void => {
-			const raw = new URLSearchParams(window.location.search).get('selectionDebug')?.toLowerCase();
-			selectionDebugEnabled = raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
-		};
-
-		syncSelectionDebugEnabled();
-		window.addEventListener('popstate', syncSelectionDebugEnabled);
-
-		return () => {
-			window.removeEventListener('popstate', syncSelectionDebugEnabled);
-		};
-	});
-
-	$effect(() => {
 		const patchState = $vehiclePatchState;
 
 		if (!loadedScene || patchState.assetId !== assetId) {
@@ -1250,19 +1118,6 @@
 				selection.materialIndex
 			);
 		}
-	});
-
-	$effect(() => {
-		if (!loadedScene) {
-			return;
-		}
-
-		if (!selectionDebugEnabled || !selectionDebugSnapshot) {
-			clearSelectionDebug(loadedScene);
-			return;
-		}
-
-		addSelectionDebug(loadedScene, selectionDebugSnapshot);
 	});
 
 	$effect(() => {
@@ -1312,7 +1167,6 @@
 
 		loadedScene = undefined;
 		materialSummaryById = new Map();
-		selectionDebugSnapshot = null;
 		vehicleNodeSelection.clear(assetId);
 		void loadSemanticOverlayStatus();
 
@@ -1350,11 +1204,6 @@
 				class="pointer-events-auto absolute top-4 left-4 flex flex-col items-start gap-2 sm:top-5 sm:left-6"
 			>
 				<AssetSelectionDropdown class="origin-top-left scale-[0.8] xl:scale-100" />
-				{#if selectionDebugEnabled}
-					<div class="rounded-full border border-[color:color-mix(in_oklab,var(--color-boundary-tertiary)_28%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_78%,black)] px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-boundary-tertiary shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-tertiary)_12%,transparent)]">
-						Selection Debug
-					</div>
-				{/if}
 			</div>
 			<div
 				class="pointer-events-auto absolute top-4 right-4 flex flex-col items-end gap-4 sm:top-5 sm:right-6"

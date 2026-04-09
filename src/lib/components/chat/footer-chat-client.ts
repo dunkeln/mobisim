@@ -1,9 +1,4 @@
 import { get } from 'svelte/store';
-import { toast } from '$lib/components/ui/sonner';
-import {
-	buildPresentationRestoreFromContext,
-	summarizeRestoreInstruction
-} from '$lib/contracts/footer-chat-restore';
 import { inspectorSidebarState } from '$lib/stores/inspector-sidebar';
 import { footerActiveTool } from '$lib/stores/footer-active-tool';
 import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
@@ -11,7 +6,6 @@ import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 import type {
-	FooterChatMessage as ChatMessage,
 	FooterChatPresentationContext,
 	FooterChatSidebarState,
 	FooterChatSupplementaryListState,
@@ -22,39 +16,6 @@ import type {
 import type { VehicleSemanticOverlaySnapshot } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
-
-type ChatErrorResponse = {
-	error?: string;
-};
-
-export function isChatResponse(
-	payload: ChatResponse | ChatErrorResponse
-): payload is ChatResponse {
-	return 'message' in payload && 'model' in payload;
-}
-
-export function isUndoRequest(content: string): boolean {
-	return /\b(undo|revert|go back|step back)\b/i.test(content.trim());
-}
-
-export function isRedoRequest(content: string): boolean {
-	return /\b(redo|reapply|do that again)\b/i.test(content.trim());
-}
-
-export function isResetRequest(content: string): boolean {
-	return /^(reset|reset (the )?(car|vehicle|view|changes)|undo all(?: changes| edits| operations)?|revert all(?: changes| edits| operations)?|reset everything|revert everything|undo everything|clear changes|start over)$/i.test(
-		content.trim()
-	);
-}
-
-export function isClearHighlightRequest(content: string): boolean {
-	return /^(clear|remove|undo|reset) (the )?(highlight|highlights)$/i.test(content.trim());
-}
-
-function describeIntentLabel(label: string | null | undefined, fallback: string): string {
-	const normalized = label?.trim();
-	return normalized && normalized.length > 0 ? normalized : fallback;
-}
 
 function summarizeTargets(
 	operations: VehicleInspectionPatchOperation[],
@@ -156,106 +117,6 @@ export function getSupplementaryListContext(): FooterChatSupplementaryListState 
 export function beginFooterResponseCycle(): void {
 	footerActiveTool.reset();
 	footerSupplementaryList.reset();
-}
-
-export function handleLocalChatCommand(content: string, assetId?: VehicleAssetId): boolean {
-	if (isResetRequest(content)) {
-		const didReset = vehiclePatchState.reset(assetId);
-		const assistantMessage: ChatMessage = {
-			role: 'assistant',
-			content: didReset
-				? 'Reset the vehicle to its original GLB state.'
-				: 'There are no vehicle changes to reset.'
-		};
-		toast.success(didReset ? 'Vehicle reset' : 'Nothing to reset', {
-			description: assistantMessage.content
-		});
-		return true;
-	}
-
-	const selectiveUndoQuery = vehiclePatchState.extractSelectiveUndoQuery(content);
-	if (selectiveUndoQuery) {
-		const revertedLabel = vehiclePatchState.undoMatching(assetId, selectiveUndoQuery);
-		toast.success(revertedLabel ? 'Undo applied' : 'Nothing matched', {
-			description: revertedLabel
-				? `Undid ${revertedLabel}.`
-				: `No active change matched "${selectiveUndoQuery}".`
-		});
-		return true;
-	}
-
-	if (isUndoRequest(content)) {
-		const previousState = get(vehiclePatchState);
-		const didUndo = vehiclePatchState.undo(assetId);
-		const nextState = get(vehiclePatchState);
-		const undoneLabel = describeIntentLabel(previousState.intentLabel, 'the last vehicle change');
-		const restoredLabel = describeIntentLabel(nextState.intentLabel, 'the previous vehicle state');
-		const assistantMessage: ChatMessage = {
-			role: 'assistant',
-			content: didUndo
-				? `Undid ${undoneLabel} and restored ${restoredLabel}.`
-				: 'There is no vehicle change to undo.'
-		};
-		toast.success(didUndo ? 'Undo applied' : 'Nothing to undo', {
-			description: assistantMessage.content
-		});
-		return true;
-	}
-
-	if (isRedoRequest(content)) {
-		const previousState = get(vehiclePatchState);
-		const didRedo = vehiclePatchState.redo(assetId);
-		const nextState = get(vehiclePatchState);
-		const redoneLabel = describeIntentLabel(
-			nextState.intentLabel,
-			previousState.intentLabel ?? 'the last undone change'
-		);
-		const assistantMessage: ChatMessage = {
-			role: 'assistant',
-			content: didRedo ? `Reapplied ${redoneLabel}.` : 'There is no vehicle change to redo.'
-		};
-		toast.success(didRedo ? 'Redo applied' : 'Nothing to redo', {
-			description: assistantMessage.content
-		});
-		return true;
-	}
-
-	if (isClearHighlightRequest(content)) {
-		const didClear = vehiclePatchState.apply(assetId, {
-			kind: 'clear_highlights',
-			intentLabel: 'clear highlights'
-		});
-		const assistantMessage: ChatMessage = {
-			role: 'assistant',
-			content: didClear
-				? 'Cleared the active highlight overlays.'
-				: 'There are no highlight overlays to clear.'
-		};
-		toast.success(didClear ? 'Highlights cleared' : 'No highlights to clear', {
-			description: assistantMessage.content
-		});
-		return true;
-	}
-
-	const presentationRestore = buildPresentationRestoreFromContext(
-		content,
-		getPresentationContext(assetId)
-	);
-	if (presentationRestore) {
-		const didRestore = vehiclePatchState.apply(assetId, {
-			kind: 'restore',
-			intentLabel: presentationRestore.label?.trim() || 'restore original view',
-			restore: presentationRestore
-		});
-		toast.success(didRestore ? 'Restore applied' : 'Nothing to restore', {
-			description: didRestore
-				? summarizeRestoreInstruction(presentationRestore)
-				: 'No active presentation matched the restore request.'
-		});
-		return true;
-	}
-
-	return false;
 }
 
 export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {

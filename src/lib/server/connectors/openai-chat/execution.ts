@@ -8,6 +8,7 @@ import {
 	getVehicleSemanticOverlayStatus,
 	readVehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay';
+import type { VehicleSemanticGroupAnnotation } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import {
 	planNormalizedVehiclePaintIntent,
 	resolveVehicleIntent
@@ -29,7 +30,6 @@ import {
 	type EditVehicleSelectionToolArgs,
 	type ExecutedToolResult,
 	type ExpandVehicleSelectionToolArgs,
-	type FooterChatExecutionRoute,
 	type NormalizedFooterChatRequest,
 	type RestoreVehiclePresentationToolArgs,
 	type SemanticOverlayPromptContext,
@@ -54,7 +54,7 @@ import {
 	parseSetVehicleViewModeToolArgs
 } from './tool-args';
 import { executeSemanticToolCall } from './semantic-execution';
-import { buildVehicleToolCatalog, CHAT_TOOLS } from './tool-definitions';
+import { buildVehicleToolCatalog } from './tool-definitions';
 import {
 	isSelectionExpansionRequest,
 	isSemanticAnnotationRequest,
@@ -63,6 +63,7 @@ import {
 	shouldAttemptDirectSelectionEdit,
 	shouldAttemptDirectVehicleEdit
 } from './routing';
+import { resolveIntentDraft } from './intent-resolver';
 import type {
 	FooterChatPresentationContext,
 	FooterChatPresentationTarget,
@@ -156,7 +157,9 @@ export async function attemptDirectVehicleEdit(
 		return null;
 	}
 
-	const result = await resolveVehicleIntent(input.assetId, input.message);
+	const result = await resolveVehicleIntent(input.assetId, input.message, {
+		presentation: input.presentation
+	});
 	const shouldScopeToSelection = shouldAttemptDirectSelectionEdit(input);
 	const plannedOperations = shouldScopeToSelection
 		? await restrictOperationsToSelection(input.assetId, input.selectedNodes, result.operations)
@@ -177,6 +180,165 @@ export async function attemptDirectVehicleEdit(
 		vehiclePatchAssetId: input.assetId,
 		vehiclePatchLabel: summary,
 		vehiclePatchOperations: plannedOperations
+	};
+}
+
+const DIRECT_SEMANTIC_GROUP_PATTERNS: Array<{
+	match: RegExp;
+	semanticGroup?: string;
+	category?: VehicleSemanticGroupAnnotation['category'];
+	humanLabel?: string;
+}> = [
+	{ match: /\bbody(?:\s+shell)?\b/i, semanticGroup: 'body_shell' },
+	{ match: /\bfront(?:\s+face)?\b/i, semanticGroup: 'front_face' },
+	{ match: /\bglasshouse\b|\bwindows?\b|\bglass\b/i, semanticGroup: 'glasshouse' },
+	{ match: /\bheadlights?\b/i, semanticGroup: 'headlights' },
+	{ match: /\bfront\s+lighting\b/i, semanticGroup: 'front_lighting' },
+	{ match: /\btaillights?\b|\brear\s+lighting\b/i, semanticGroup: 'rear_lighting' },
+	{ match: /\bwheels?\b/i, semanticGroup: 'wheels', category: 'wheels', humanLabel: 'wheels' },
+	{ match: /\bdoors?\b/i, semanticGroup: 'doors', category: 'doors', humanLabel: 'doors' },
+	{ match: /\btrim\b/i, semanticGroup: 'trim' },
+	{ match: /\binterior\b/i, semanticGroup: 'interior' }
+];
+
+function resolveDirectSemanticGroup(message: string): {
+	semanticGroup?: string;
+	category?: VehicleSemanticGroupAnnotation['category'];
+	humanLabel?: string;
+} | null {
+	for (const candidate of DIRECT_SEMANTIC_GROUP_PATTERNS) {
+		if (candidate.match.test(message)) {
+			return {
+				semanticGroup: candidate.semanticGroup,
+				category: candidate.category,
+				humanLabel: candidate.humanLabel
+			};
+		}
+	}
+
+	return null;
+}
+
+function humanizeSemanticGroupLabel(input: string | undefined): string {
+	if (!input) {
+		return 'the requested semantic group';
+	}
+
+	return input.replaceAll('_', ' ');
+}
+
+export async function attemptDirectSemanticEdit(
+	input: NormalizedFooterChatRequest,
+	model: string,
+	executeTool: (
+		toolCall: { id: string; function: { name: string; arguments: string } },
+		activeAssetId?: VehicleAssetId,
+		selectedNodes?: VehicleNodeSelection[],
+		presentation?: FooterChatPresentationContext
+	) => Promise<ExecutedToolResult>
+) {
+	if (!input.assetId) {
+		return null;
+	}
+
+	const intentDraft = resolveIntentDraft(input);
+	if (!['assign', 'reassign', 'unassign'].includes(intentDraft.operation)) {
+		return null;
+	}
+
+	if (intentDraft.domain !== 'semantics') {
+		return null;
+	}
+
+	const hasScopedSelection = input.selectedNodes.some((entry) => entry.assetId === input.assetId);
+	const hasHighlight = (input.presentation?.highlightedTargets?.length ?? 0) > 0;
+	const scopedSelectionCount = input.selectedNodes.filter((entry) => entry.assetId === input.assetId).length;
+	if (!hasScopedSelection && !hasHighlight) {
+		return null;
+	}
+
+	const groupReference = resolveDirectSemanticGroup(input.message);
+	if (!groupReference) {
+		return null;
+	}
+
+	const toolResult = await executeTool(
+		{
+			id: 'direct-semantic-edit',
+			function: {
+				name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME,
+				arguments: JSON.stringify({
+					action: intentDraft.operation,
+					scope: hasScopedSelection ? 'selected' : 'highlighted',
+					targetScope:
+						intentDraft.targetScope === 'node' ||
+						intentDraft.targetScope === 'material' ||
+						intentDraft.targetScope === 'mixed'
+							? intentDraft.targetScope
+							: undefined,
+					semanticGroup: groupReference.semanticGroup,
+					category: groupReference.category,
+					humanLabel: groupReference.humanLabel
+				})
+			}
+		},
+		input.assetId,
+		input.selectedNodes,
+		input.presentation
+	);
+
+	const errorMessage =
+		typeof toolResult.message.content === 'string'
+			? (() => {
+					try {
+						const payload = JSON.parse(toolResult.message.content) as { error?: string };
+						return payload.error;
+					} catch {
+						return undefined;
+					}
+				})()
+			: undefined;
+	if (errorMessage) {
+		return null;
+	}
+
+	return {
+		model,
+		message: {
+			role: 'assistant' as const,
+			content:
+				intentDraft.operation === 'assign'
+					? hasScopedSelection
+						? scopedSelectionCount === 1
+							? 'Updated the semantic grouping for the selected node.'
+							: 'Updated the semantic grouping for the selected nodes.'
+						: intentDraft.targetScope === 'material'
+							? `Added the highlighted material-backed member to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+							: intentDraft.targetScope === 'node'
+								? `Added the highlighted node-backed member to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+								: `Added the highlighted target to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+					: intentDraft.operation === 'reassign'
+						? hasScopedSelection
+							? scopedSelectionCount === 1
+								? `Reassigned the selected node to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+								: `Reassigned the selected nodes to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+							: intentDraft.targetScope === 'material'
+								? `Reassigned the highlighted material-backed member to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+								: intentDraft.targetScope === 'node'
+									? `Reassigned the highlighted node-backed member to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+									: `Reassigned the highlighted target to ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+						: hasScopedSelection
+							? scopedSelectionCount === 1
+								? `Removed the selected node from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+								: `Removed the selected nodes from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+							: intentDraft.targetScope === 'material'
+								? `Removed the highlighted material-backed member from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+								: intentDraft.targetScope === 'node'
+									? `Removed the highlighted node-backed member from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+									: `Removed the highlighted target from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
+		},
+		semanticOverlay: toolResult.semanticOverlay,
+		semanticOverlayStatus: 'fresh' as const
 	};
 }
 
@@ -560,7 +722,9 @@ export async function executeToolCall(
 					'A freeform appearance request or normalized paint fields are required.'
 				);
 			}
-			const result = await resolveVehicleIntent(activeAssetId, args.request);
+			const result = await resolveVehicleIntent(activeAssetId, args.request, {
+				presentation
+			});
 			const plannedOperations =
 				args.scope === 'selection'
 					? await restrictOperationsToSelection(activeAssetId, selectedNodes, result.operations)
@@ -593,7 +757,9 @@ export async function executeToolCall(
 			if (!activeAssetId) {
 				throw new OpenAIChatInputError('No active vehicle asset is available for this request.');
 			}
-			const result = await resolveVehicleIntent(activeAssetId, args.request);
+			const result = await resolveVehicleIntent(activeAssetId, args.request, {
+				presentation
+			});
 			const plannedOperations =
 				args.scope === 'selection'
 					? await restrictOperationsToSelection(activeAssetId, selectedNodes, result.operations)
@@ -661,7 +827,9 @@ export async function executeToolCall(
 			if (!activeAssetId) {
 				throw new OpenAIChatInputError('No active vehicle asset is available for this request.');
 			}
-			const result = await resolveVehicleIntent(activeAssetId, buildViewModeRequest(args));
+			const result = await resolveVehicleIntent(activeAssetId, buildViewModeRequest(args), {
+				presentation
+			});
 			return {
 				message: {
 					role: 'tool',

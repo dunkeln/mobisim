@@ -2,11 +2,12 @@ export type VehicleAssetId =
 	| 'audi_r8'
 	| 'acura_nsx_type_s_2022'
 	| '2017_lexus_lc_500'
-	| '2006_chevrolet_camaro_concept_2007_bumblebee'
 	| '2015_cadillac_escalade_esv'
-	| '2021_koenigsegg_gemera'
+	| 'isuzu_cargo_base_truck'
+	| 'mini_rov_guardian'
+	| 'komatsu_hd_465_7eo'
+	| 'patria_amv'
 	| 'northrop_grumman_b_2_spirit_free'
-	| 'ks_blade_runner_spinner'
 	| 'arkham_knight_batmobile_advanced_rig';
 
 export type VehicleCatalogEntry = {
@@ -55,15 +56,6 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 			'Grand touring coupe retained as a contrast asset for broader body proportions and softer luxury-oriented surfacing.',
 		lengthMeters: 4.77
 	},
-	'2006_chevrolet_camaro_concept_2007_bumblebee': {
-		id: '2006_chevrolet_camaro_concept_2007_bumblebee',
-		fileName: '2006__chevrolet_camaro_concept__2007_bumblebee.glb',
-		displayName: '2006 Chevrolet Camaro Concept',
-		title: '2006 Chevrolet Camaro Concept / 2007 Bumblebee',
-		description:
-			'Transformer-era concept coupe kept as a stylized muscle-car asset. Replace this copy and the measured length if you want a stricter source note.',
-		lengthMeters: 4.74
-	},
 	'2015_cadillac_escalade_esv': {
 		id: '2015_cadillac_escalade_esv',
 		fileName: '2015_cadillac_escalade_esv.glb',
@@ -73,14 +65,41 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 			'Full-size SUV asset used for large-body proportion checks and alternative inspection framing. Copy and dimensions are editable placeholders.',
 		lengthMeters: 5.7
 	},
-	'2021_koenigsegg_gemera': {
-		id: '2021_koenigsegg_gemera',
-		fileName: '2021_koenigsegg_gemera.glb',
-		displayName: '2021 Koenigsegg Gemera',
-		title: '2021 Koenigsegg Gemera',
+	isuzu_cargo_base_truck: {
+		id: 'isuzu_cargo_base_truck',
+		fileName: 'isuzu_cargo_base_truck.glb',
+		displayName: 'Isuzu Cargo Base Truck',
+		title: 'Isuzu Cargo Base Truck',
 		description:
-			'Four-seat hypercar asset kept for low-slung exotic proportions and alternate high-end review framing. Copy is editable placeholder text.',
-		lengthMeters: 4.98
+			'Cargo truck asset retained for medium-duty commercial vehicle framing and hard-surface inspection checks. Length is an editable placeholder until the source measurement is confirmed.',
+		lengthMeters: 6.8
+	},
+	mini_rov_guardian: {
+		id: 'mini_rov_guardian',
+		fileName: 'mini-rov_guardian.glb',
+		displayName: 'Mini ROV Guardian',
+		title: 'Mini ROV Guardian',
+		description:
+			'Compact ROV asset retained as a small-scale inspection contrast case. Length is an editable placeholder until the source measurement is confirmed.',
+		lengthMeters: 1.4
+	},
+	komatsu_hd_465_7eo: {
+		id: 'komatsu_hd_465_7eo',
+		fileName: 'komatsu_hd-465-7eo.glb',
+		displayName: 'Komatsu HD465-7EO',
+		title: 'Komatsu HD465-7EO',
+		description:
+			'Rigid dump truck asset retained for heavy-equipment scale, framing, and material inspection checks. Length is an editable placeholder until the source measurement is confirmed.',
+		lengthMeters: 11.1
+	},
+	patria_amv: {
+		id: 'patria_amv',
+		fileName: 'patria_amv.glb',
+		displayName: 'Patria AMV',
+		title: 'Patria AMV',
+		description:
+			'Armored vehicle asset retained as a military wheeled-platform contrast case for stance, silhouette, and hard-surface inspection. Length is an editable placeholder until the source measurement is confirmed.',
+		lengthMeters: 7.7
 	},
 	northrop_grumman_b_2_spirit_free: {
 		id: 'northrop_grumman_b_2_spirit_free',
@@ -90,15 +109,6 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 		description:
 			'Flying-wing stealth bomber asset retained as an extreme wide-body contrast case for framing, material, and semantic-surface checks.',
 		lengthMeters: 21.0
-	},
-	ks_blade_runner_spinner: {
-		id: 'ks_blade_runner_spinner',
-		fileName: 'ks_blade_runner_spinner.glb',
-		displayName: 'Blade Runner Spinner',
-		title: 'Blade Runner Spinner',
-		description:
-			'Fictional spinner vehicle retained as a sci-fi contrast asset for silhouette and lighting experiments. Length is an approximate placeholder.',
-		lengthMeters: 6.4
 	},
 	arkham_knight_batmobile_advanced_rig: {
 		id: 'arkham_knight_batmobile_advanced_rig',
@@ -112,11 +122,12 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 };
 
 export const VEHICLE_CATALOG_LIST = Object.values(VEHICLE_CATALOG);
+export const defaultVehicleAssetId = VEHICLE_CATALOG_LIST[0]?.id ?? 'audi_r8';
 
 export function isVehicleAssetId(value: string | null): value is VehicleAssetId {
 	return value !== null && value in VEHICLE_CATALOG;
 }
 
 export function resolveVehicleAssetId(value: string | null): VehicleAssetId {
-	return isVehicleAssetId(value) ? value : (VEHICLE_CATALOG_LIST[0]?.id ?? 'audi_r8');
+	return isVehicleAssetId(value) ? value : defaultVehicleAssetId;
 }

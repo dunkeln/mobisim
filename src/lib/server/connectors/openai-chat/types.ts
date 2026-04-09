@@ -6,6 +6,7 @@ import type {
 	VehicleSemanticOverlay,
 	VehicleSemanticOverlayStatus
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import type { HistorySourceUsed, ResolvedHistoryContext } from '$lib/server/connectors/context-history/types';
 
 export type FooterChatRole = 'user' | 'assistant';
 
@@ -61,6 +62,14 @@ export type FooterChatTrace = {
 	toolCalls: string[];
 	sidebarAction: 'unchanged' | 'updated' | 'cleared';
 	supplementaryListAction: 'unchanged' | 'updated' | 'cleared';
+	historySourceUsed?: HistorySourceUsed;
+	historyCompactionApplied?: boolean;
+	plannerModel?: string;
+	replyModel?: string;
+	planningMode?: 'direct' | 'single_tool' | 'multi_tool' | 'clarification';
+	toolRoundsUsed?: number;
+	clarificationIssued?: boolean;
+	composedToolChain?: boolean;
 };
 
 export type FooterChatRequest = {
@@ -73,6 +82,11 @@ export type FooterChatRequest = {
 	presentation?: FooterChatPresentationContext;
 	sidebar?: FooterChatSidebarState;
 	supplementaryList?: FooterChatSupplementaryListState;
+};
+
+export type FooterChatExecutionContext = {
+	userId?: string | null;
+	resolvedHistoryContext?: ResolvedHistoryContext;
 };
 
 export type FooterChatVehiclePatchOperation = VehicleInspectionPatchOperation;
@@ -109,3 +123,29 @@ export type FooterChatAudioResponse = {
 	audioVoice?: string;
 	chat: FooterChatResponse;
 };
+
+export type FooterChatAudioStreamEvent =
+	| {
+			type: 'started';
+	  }
+	| {
+			type: 'transcribed';
+			transcript: string;
+	  }
+	| {
+			type: 'chat';
+			chat: FooterChatResponse;
+	  }
+	| {
+			type: 'audio';
+			audioBase64: string;
+			audioMimeType: string;
+			audioVoice: string;
+	  }
+	| {
+			type: 'complete';
+	  }
+	| {
+			type: 'error';
+			message: string;
+	  };

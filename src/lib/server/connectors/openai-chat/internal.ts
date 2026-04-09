@@ -19,6 +19,7 @@ import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ing
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { ResolvedHistoryContext } from '$lib/server/connectors/context-history/types';
 
 export const DEFAULT_MODEL = 'gpt-5.2';
 export const MAX_TOOL_ROUNDS = 3;
@@ -201,6 +202,9 @@ export type ExecutedToolResult = {
 export type PromptBuilderInput = {
 	input: NormalizedFooterChatRequest;
 	semanticOverlay: SemanticOverlayPromptContext;
+	historyContext: ResolvedHistoryContext;
+	policySummary: string;
+	intentSummary: string;
 	describePresentationTargets: (
 		label: string,
 		targets: FooterChatPresentationTarget[] | undefined

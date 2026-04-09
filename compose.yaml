@@ -17,5 +17,14 @@ services:
       - 3000:3000
       - 4317:4317
       - 4318:4318
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    restart: unless-stopped
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data"
+    ports:
+      - 8000:8000
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
 volumes:
   pgdata:
+  dynamodb_data:

@@ -34,9 +34,7 @@
 	</div>
 	<div class="footer-blueprint__cluster footer-blueprint__cluster--center">
 		<div class="footer-blueprint__stack footer-blueprint__stack--left">
-			<div in:scale={{ duration: 180, start: 0.9 }} out:scale={{ duration: 140, start: 1 }}>
-				<FooterActiveTool class="footer-blueprint__tool-chip" />
-			</div>
+			<FooterActiveTool class="footer-blueprint__tool-chip" />
 		</div>
 		<div class="footer-blueprint__orb-slot">
 			<FooterOrb class="footer-blueprint__orb-live" />

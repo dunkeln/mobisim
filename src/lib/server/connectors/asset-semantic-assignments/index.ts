@@ -255,7 +255,7 @@ export async function listReviewedSemanticGroupExamples(
 	const knownGroupIds = new Set(definitions.map((definition) => definition.id));
 	const grouped = new Map<string, ReviewedSemanticGroupExample[]>();
 
-	let assetEntries: string[] = [];
+	let assetEntries: string[];
 	try {
 		assetEntries = await readdir(resolveSemanticAssignmentsRootDirectory());
 	} catch {

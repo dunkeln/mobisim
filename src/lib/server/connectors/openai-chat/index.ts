@@ -1,4 +1,3 @@
-import { env } from '$env/dynamic/private';
 import OpenAI from 'openai';
 import { buildPresentationRestoreFromContext, summarizeRestoreInstruction } from '$lib/contracts/footer-chat-restore';
 import { getOpenAIChatClient } from './client';
@@ -9,11 +8,17 @@ import {
 } from './errors';
 import type { FooterChatRequest, FooterChatResponse } from './types';
 import { classifyExecutionRoute, getToolChoiceForRequest } from './routing';
-import { normalizeRequest, describePresentationTargets } from './normalize';
+import {
+	normalizeRequest,
+	describePresentationTargets,
+	normalizeSupplementaryListState
+} from './normalize';
 import { toOpenAIMessages } from './prompt';
 import { CHAT_TOOLS } from './tool-definitions';
+import { getToolModel } from './model-routing';
 import { withActiveSpan } from '$lib/server/telemetry';
 import {
+	attemptDirectSemanticEdit,
 	attemptDirectVehicleEdit,
 	executeToolCall,
 	mergePatchOperations,
@@ -22,17 +27,27 @@ import {
 	resolveSupplementaryListAction
 } from './execution';
 import {
-	DEFAULT_MODEL,
 	MAX_TOOL_ROUNDS,
-	type FooterChatExecutionRoute,
-	type SemanticOverlayPromptContext
+	type SemanticOverlayPromptContext,
+	GET_VEHICLE_TOOL_CATALOG_TOOL_NAME
 } from './internal';
+import {
+	deriveFooterChatPolicy,
+	deriveObservedPlanningMode,
+	describeFooterChatPolicy
+} from './policy';
+import { describeIntentDraft, resolveIntentDraft } from './intent-resolver';
 import type {
+	FooterChatExecutionContext,
 	FooterChatPresentationContext,
-	FooterChatPresentationRestore,
 	FooterChatVehiclePatchOperation
 } from './types';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+import {
+	buildHistoryTrace,
+	persistContextHistory,
+	resolveContextHistory
+} from '$lib/server/connectors/context-history';
 
 export {
 	OpenAIChatConfigError,
@@ -74,103 +89,6 @@ function summarizeTargets(
 	return Array.from(targets.values());
 }
 
-function buildPresentationContextFromOperations(
-	basePresentation: FooterChatPresentationContext | undefined,
-	operations: FooterChatVehiclePatchOperation[],
-	intentLabel?: string
-): FooterChatPresentationContext | undefined {
-	const viewerModes = operations
-		.filter(
-			(operation) =>
-				operation.targetType === 'viewer' &&
-				operation.op === 'set_enabled' &&
-				operation.value === true &&
-				(operation.targetId === 'wireframe' ||
-					operation.targetId === 'xray' ||
-					operation.targetId === 'uv_debug' ||
-					operation.targetId === 'postprocess')
-		)
-		.map((operation) => operation.targetId as NonNullable<FooterChatPresentationContext['viewerModes']>[number]);
-
-	const hiddenTargets = operations.filter(
-		(operation) => operation.targetType === 'node' && operation.op === 'set_visibility' && operation.value === false
-	);
-	const context: FooterChatPresentationContext = {
-		activeIntentLabel: intentLabel ?? basePresentation?.activeIntentLabel,
-		highlightedTargets: summarizeTargets(
-			operations.filter((operation) => operation.op === 'set_overlay_highlight')
-		),
-		materialTargets: summarizeTargets(
-			operations.filter(
-				(operation) =>
-					operation.targetType === 'material' && operation.op !== 'set_overlay_highlight'
-			),
-			true
-		),
-		hiddenTargets: summarizeTargets(hiddenTargets),
-		viewerModes: viewerModes.length > 0 ? viewerModes : basePresentation?.viewerModes
-	};
-
-	if (
-		!context.activeIntentLabel &&
-		(context.highlightedTargets?.length ?? 0) === 0 &&
-		(context.materialTargets?.length ?? 0) === 0 &&
-		(context.hiddenTargets?.length ?? 0) === 0 &&
-		(context.viewerModes?.length ?? 0) === 0
-	) {
-		return undefined;
-	}
-
-	return context;
-}
-
-function applyPresentationRestoreToContext(
-	presentation: FooterChatPresentationContext | undefined,
-	restore: FooterChatPresentationRestore | undefined
-): FooterChatPresentationContext | undefined {
-	if (!presentation || !restore) {
-		return presentation;
-	}
-
-	if (restore.restoreAll) {
-		return undefined;
-	}
-
-	const next: FooterChatPresentationContext = {
-		...presentation,
-		highlightedTargets: restore.highlightedTargetIds
-			? (presentation.highlightedTargets ?? []).filter(
-					(target) => !restore.highlightedTargetIds?.includes(target.targetId)
-			  )
-			: presentation.highlightedTargets,
-		materialTargets: restore.materialTargetIds
-			? (presentation.materialTargets ?? []).filter(
-					(target) => !restore.materialTargetIds?.includes(target.targetId)
-			  )
-			: presentation.materialTargets,
-		hiddenTargets: restore.hiddenTargetIds
-			? (presentation.hiddenTargets ?? []).filter(
-					(target) => !restore.hiddenTargetIds?.includes(target.targetId)
-			  )
-			: presentation.hiddenTargets,
-		viewerModes: restore.viewerModes
-			? (presentation.viewerModes ?? []).filter((mode) => !restore.viewerModes?.includes(mode))
-			: presentation.viewerModes
-	};
-
-	if (
-		!next.activeIntentLabel &&
-		(next.highlightedTargets?.length ?? 0) === 0 &&
-		(next.materialTargets?.length ?? 0) === 0 &&
-		(next.hiddenTargets?.length ?? 0) === 0 &&
-		(next.viewerModes?.length ?? 0) === 0
-	) {
-		return undefined;
-	}
-
-	return next;
-}
-
 function getToolResultContent(toolResult: {
 	message: { content?: string | Array<unknown> | null };
 }): string | null {
@@ -193,13 +111,170 @@ function getToolResultError(toolResult: {
 	}
 }
 
+function parseToolPayload(content: string | null): Record<string, unknown> | null {
+	if (!content) {
+		return null;
+	}
+
+	try {
+		const parsed = JSON.parse(content) as unknown;
+		return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function requestWantsSupplementaryFallback(message: string): boolean {
+	return /\b(footer|supplementary|list|options|status|available tools|what tools are available|what can you do here|what can i do here|capabilities|changed targets|what changed)\b/i.test(
+		message
+	);
+}
+
+function summarizeOperationTargets(operations: FooterChatVehiclePatchOperation[]): string | undefined {
+	const labels = summarizeTargets(operations)
+		.map((target) => target.targetName ?? target.targetId)
+		.filter((value, index, values) => value && values.indexOf(value) === index);
+
+	if (labels.length === 0) {
+		return undefined;
+	}
+
+	if (labels.length <= 3) {
+		return labels.join(', ');
+	}
+
+	return `${labels.slice(0, 3).join(', ')} +${labels.length - 3} more`;
+}
+
+function buildSupplementaryListFromCatalogPayload(
+	payload: Record<string, unknown>
+) {
+	const tools = Array.isArray(payload.tools) ? payload.tools : [];
+	const recommendations = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+	const entries = Object.fromEntries(
+		tools
+			.map((tool) => {
+				if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
+					return null;
+				}
+
+				const name = typeof tool.name === 'string' ? tool.name.trim() : '';
+				const purpose = typeof tool.purpose === 'string' ? tool.purpose.trim() : '';
+				if (!name || !purpose) {
+					return null;
+				}
+
+				return [name, purpose] as const;
+			})
+			.filter((entry): entry is readonly [string, string] => entry !== null)
+			.slice(0, 5)
+	);
+
+	const primaryRecommendation = recommendations.find(
+		(value): value is string => typeof value === 'string' && value.trim().length > 0
+	);
+	if (primaryRecommendation) {
+		entries.Next = primaryRecommendation.trim();
+	}
+
+	return normalizeSupplementaryListState({
+		active: Object.keys(entries).length > 0,
+		entries
+	});
+}
+
+function buildSupplementaryListFromExecutionResult(input: {
+	message: string;
+	vehiclePatchLabel?: string;
+	vehiclePatchOperations: FooterChatVehiclePatchOperation[];
+	selectionUpdateCount: number;
+	finalText: string;
+}) {
+	const entries: Record<string, string> = {};
+	const actionSummary = input.vehiclePatchLabel?.trim() || input.finalText.trim();
+	if (actionSummary) {
+		entries.Action = actionSummary;
+	}
+
+	const targets = summarizeOperationTargets(input.vehiclePatchOperations);
+	if (targets) {
+		entries.Targets = targets;
+	}
+
+	if (input.selectionUpdateCount > 0) {
+		entries.Selection = `${input.selectionUpdateCount} selected`;
+	}
+
+	if (
+		Object.keys(entries).length === 1 &&
+		!/\b(changed targets|what changed|footer|supplementary|list|status|options)\b/i.test(
+			input.message
+		)
+	) {
+		return undefined;
+	}
+
+	return normalizeSupplementaryListState({
+		active: Object.keys(entries).length > 0,
+		entries
+	});
+}
+
+function buildSupplementaryListFallback(input: {
+	message: string;
+	existing: FooterChatResponse['supplementaryList'];
+	toolCatalogPayload?: Record<string, unknown>;
+	vehiclePatchLabel?: string;
+	vehiclePatchOperations: FooterChatVehiclePatchOperation[];
+	selectionUpdateCount: number;
+	finalText: string;
+}) {
+	const existingActive =
+		input.existing?.active === true && Object.keys(input.existing.entries ?? {}).length > 0;
+	if (existingActive || !requestWantsSupplementaryFallback(input.message)) {
+		return input.existing;
+	}
+
+	const executionFallback = buildSupplementaryListFromExecutionResult({
+		message: input.message,
+		vehiclePatchLabel: input.vehiclePatchLabel,
+		vehiclePatchOperations: input.vehiclePatchOperations,
+		selectionUpdateCount: input.selectionUpdateCount,
+		finalText: input.finalText
+	});
+	if (executionFallback?.active) {
+		return executionFallback;
+	}
+
+	const catalogFallback = input.toolCatalogPayload
+		? buildSupplementaryListFromCatalogPayload(input.toolCatalogPayload)
+		: undefined;
+	if (catalogFallback?.active) {
+		return catalogFallback;
+	}
+
+	return input.existing;
+}
+
 export async function createFooterChatResponse(
-	input: FooterChatRequest
+	input: FooterChatRequest,
+	executionContext: FooterChatExecutionContext = {}
 ): Promise<FooterChatResponse> {
 	const normalized = normalizeRequest(input);
-	const model = env.OPENAI_MODEL || DEFAULT_MODEL;
-	const toolChoice = getToolChoiceForRequest(normalized);
+	const model = getToolModel();
+	const intentDraft = resolveIntentDraft(normalized);
+	const policy = deriveFooterChatPolicy(normalized, MAX_TOOL_ROUNDS, intentDraft);
+	const toolChoice = policy.toolChoice ?? getToolChoiceForRequest(normalized);
 	const route = classifyExecutionRoute(normalized);
+	const historyContext =
+		executionContext.resolvedHistoryContext ??
+		(await resolveContextHistory({
+			userId: executionContext.userId,
+			assetId: normalized.assetId
+		}));
+	const historyTrace = buildHistoryTrace(historyContext);
 
 	return withActiveSpan(
 		'mobisim.chat',
@@ -209,6 +284,12 @@ export async function createFooterChatResponse(
 				'mobisim.chat.route': route,
 				'mobisim.chat.tool_choice':
 					typeof toolChoice === 'string' ? toolChoice : toolChoice?.type ?? 'none',
+				'mobisim.chat.planner_model': model,
+				'mobisim.chat.policy_mode': policy.mode,
+				'mobisim.chat.intent_domain': intentDraft.domain,
+				'mobisim.chat.intent_operation': intentDraft.operation,
+				'mobisim.chat.intent_referent': intentDraft.referent,
+				'mobisim.chat.intent_target_scope': intentDraft.targetScope,
 				'mobisim.chat.asset_id': normalized.assetId ?? 'none',
 				'mobisim.chat.has_selection': normalized.selectedNodes.length > 0,
 				'mobisim.chat.selected_node_count': normalized.selectedNodes.length
@@ -216,6 +297,7 @@ export async function createFooterChatResponse(
 		},
 		async () => {
 			try {
+				let effectiveRoute = route;
 				const semanticOverlayForTrace: SemanticOverlayPromptContext = {
 					status: 'unknown',
 					sidebarCadence: 'stable'
@@ -226,10 +308,7 @@ export async function createFooterChatResponse(
 						normalized.message,
 						normalized.presentation
 					);
-					if (!presentationRestore) {
-						throw new OpenAIChatConfigError('Restore route resolved without presentation context.');
-					}
-
+					if (presentationRestore) {
 					return {
 						model,
 						message: {
@@ -242,9 +321,87 @@ export async function createFooterChatResponse(
 								semanticOverlayStatus: semanticOverlayForTrace.status,
 								toolCalls: [],
 								sidebarAction: 'unchanged',
-								supplementaryListAction: 'unchanged'
+								supplementaryListAction: 'unchanged',
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+									toolRoundsUsed: 0,
+									clarificationIssued: false,
+									composedToolChain: false
+								}
+							};
+					}
+
+					effectiveRoute = 'llm';
+				}
+
+				if (policy.clarificationMessage) {
+					return {
+						model,
+						message: {
+							role: 'assistant',
+							content: policy.clarificationMessage
+						},
+						trace: {
+							route: 'llm',
+							semanticOverlayStatus: semanticOverlayForTrace.status,
+							toolCalls: [],
+							sidebarAction: 'unchanged',
+							supplementaryListAction: 'unchanged',
+							...historyTrace,
+							plannerModel: model,
+							planningMode: 'clarification',
+							toolRoundsUsed: 0,
+							clarificationIssued: true,
+							composedToolChain: false
+						}
+					};
+				}
+
+				if (policy.mode === 'direct') {
+					const directSemanticResponse = await attemptDirectSemanticEdit(
+						normalized,
+						model,
+						executeToolCall
+					);
+					if (directSemanticResponse) {
+						return {
+							...directSemanticResponse,
+							trace: {
+								route: 'direct_edit',
+								semanticOverlayStatus: directSemanticResponse.semanticOverlayStatus ?? 'unknown',
+								toolCalls: ['edit_vehicle_semantics'],
+								sidebarAction: 'unchanged',
+								supplementaryListAction: 'unchanged',
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+								toolRoundsUsed: 0,
+								clarificationIssued: false,
+								composedToolChain: false
 							}
 						};
+					}
+
+					const directResponse = await attemptDirectVehicleEdit(normalized, model);
+					if (directResponse) {
+						return {
+							...directResponse,
+							trace: {
+								route: 'direct_edit',
+								semanticOverlayStatus: semanticOverlayForTrace.status,
+								toolCalls: [],
+								sidebarAction: 'unchanged',
+								supplementaryListAction: 'unchanged',
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+								toolRoundsUsed: 0,
+								clarificationIssued: false,
+								composedToolChain: false
+							}
+						};
+					}
 				}
 
 				const semanticOverlay = await resolveSemanticOverlayPromptContext(normalized);
@@ -252,20 +409,26 @@ export async function createFooterChatResponse(
 				const messages = toOpenAIMessages({
 					input: normalized,
 					semanticOverlay,
+					historyContext,
+					policySummary: describeFooterChatPolicy(policy),
+					intentSummary: describeIntentDraft(intentDraft),
 					describePresentationTargets
 				});
 
 				let vehiclePatchOperations: FooterChatVehiclePatchOperation[] = [];
 				let vehiclePatchLabel: string | undefined;
 				let presentationRestore = undefined;
-				let selectionUpdate = undefined;
+				let selectionUpdate: VehicleNodeSelection[] | undefined = undefined;
 				let selectionUpdateLabel: string | undefined;
 				let latestSemanticOverlay = undefined;
 				let latestSemanticOverlayStatus = semanticOverlay.status;
 				let latestSemanticIngressBindings = undefined;
 				let sidebar = normalized.sidebar;
 				let supplementaryList = normalized.supplementaryList;
+				let latestToolCatalogPayload: Record<string, unknown> | undefined;
 				const toolCallsUsed: string[] = [];
+				let toolRoundsUsed = 0;
+				let clarificationIssued = false;
 
 				let completion = await openai.chat.completions.create({
 					model,
@@ -274,13 +437,15 @@ export async function createFooterChatResponse(
 					tool_choice: toolChoice
 				});
 
-				for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+				for (let round = 0; round < policy.toolBudget; round += 1) {
 					const assistantMessage = completion.choices[0]?.message;
 					const toolCalls = assistantMessage?.tool_calls;
 
 					if (!toolCalls || toolCalls.length === 0) {
 						break;
 					}
+
+					toolRoundsUsed += 1;
 
 					messages.push(assistantMessage);
 
@@ -323,6 +488,13 @@ export async function createFooterChatResponse(
 							supplementaryList = toolResult.supplementaryList;
 						}
 
+						if (toolCall.function.name === GET_VEHICLE_TOOL_CATALOG_TOOL_NAME) {
+							const payload = parseToolPayload(getToolResultContent(toolResult));
+							if (payload) {
+								latestToolCatalogPayload = payload;
+							}
+						}
+
 						if (toolResult.semanticOverlay !== undefined) {
 							latestSemanticOverlay = toolResult.semanticOverlay;
 							latestSemanticOverlayStatus = toolResult.semanticOverlay ? 'fresh' : 'missing';
@@ -348,8 +520,25 @@ export async function createFooterChatResponse(
 							.trim()
 					: content?.trim();
 
+				clarificationIssued = !!text && /\?\s*$/.test(text);
+				supplementaryList = buildSupplementaryListFallback({
+					message: normalized.message,
+					existing: supplementaryList,
+					toolCatalogPayload: latestToolCatalogPayload,
+					vehiclePatchLabel,
+					vehiclePatchOperations,
+					selectionUpdateCount: selectionUpdate?.length ?? 0,
+					finalText: text ?? ''
+				});
+
 				if (!text) {
 					if (vehiclePatchOperations.length > 0) {
+						const planningMode = deriveObservedPlanningMode({
+							policy,
+							route: effectiveRoute,
+							toolCallsUsed,
+							clarificationIssued: false
+						});
 						return {
 							model,
 							message: {
@@ -374,14 +563,20 @@ export async function createFooterChatResponse(
 							semanticOverlay: latestSemanticOverlay,
 							semanticIngressBindings: latestSemanticIngressBindings,
 							trace: {
-								route,
+								route: effectiveRoute,
 								semanticOverlayStatus: latestSemanticOverlayStatus,
 								toolCalls: toolCallsUsed,
 								sidebarAction: resolveSidebarAction(normalized.sidebar, sidebar),
 								supplementaryListAction: resolveSupplementaryListAction(
 									normalized.supplementaryList,
 									supplementaryList
-								)
+								),
+								...historyTrace,
+								plannerModel: model,
+								planningMode,
+								toolRoundsUsed,
+								clarificationIssued: false,
+								composedToolChain: toolCallsUsed.length > 1
 							}
 						};
 					}
@@ -409,13 +604,26 @@ export async function createFooterChatResponse(
 								supplementaryListAction: resolveSupplementaryListAction(
 									normalized.supplementaryList,
 									supplementaryList
-								)
+								),
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+								toolRoundsUsed,
+								clarificationIssued: false,
+								composedToolChain: toolCallsUsed.length > 1
 							}
 						};
 					}
 				}
 
-				return {
+				const planningMode = deriveObservedPlanningMode({
+					policy,
+					route: effectiveRoute,
+					toolCallsUsed,
+					clarificationIssued
+				});
+
+				const response: FooterChatResponse = {
 					model,
 					message: {
 						role: 'assistant',
@@ -441,16 +649,31 @@ export async function createFooterChatResponse(
 					semanticOverlay: latestSemanticOverlay,
 					semanticIngressBindings: latestSemanticIngressBindings,
 					trace: {
-						route,
+						route: effectiveRoute,
 						semanticOverlayStatus: latestSemanticOverlayStatus,
 						toolCalls: toolCallsUsed,
 						sidebarAction: resolveSidebarAction(normalized.sidebar, sidebar),
 						supplementaryListAction: resolveSupplementaryListAction(
 							normalized.supplementaryList,
 							supplementaryList
-						)
+						),
+						...historyTrace,
+						plannerModel: model,
+						planningMode,
+						toolRoundsUsed,
+						clarificationIssued,
+						composedToolChain: toolCallsUsed.length > 1
 					}
 				};
+
+				await persistContextHistory({
+					userId: executionContext.userId,
+					request: normalized,
+					response,
+					rawUserMessage: input.message
+				});
+
+				return response;
 			} catch (error) {
 				if (error instanceof OpenAI.APIError) {
 					throw new OpenAIChatUpstreamError(error.message);

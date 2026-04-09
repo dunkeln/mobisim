@@ -6,8 +6,9 @@ import {
 	OpenAIChatUpstreamError
 } from '$lib/server/connectors/openai-chat';
 import type { FooterChatRequest } from '$lib/server/connectors/openai-chat/types';
+import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
 
-export async function POST({ request }) {
+export async function POST({ request, locals }) {
 	let payload: FooterChatRequest;
 
 	try {
@@ -17,7 +18,10 @@ export async function POST({ request }) {
 	}
 
 	try {
-		const response = await createFooterChatResponse(payload);
+		const session = await locals.auth();
+		const response = await createFooterChatResponse(payload, {
+			userId: resolveAuthenticatedUserId(session)
+		});
 		return json(response);
 	} catch (error) {
 		if (error instanceof OpenAIChatInputError) {
@@ -35,6 +39,11 @@ export async function POST({ request }) {
 		}
 
 		console.error('chat unknown error', error);
-		return json({ error: 'Chat request failed.' }, { status: 500 });
+		return json(
+			{
+				error: error instanceof Error ? error.message : 'Chat request failed.'
+			},
+			{ status: 500 }
+		);
 	}
 }

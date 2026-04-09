@@ -12,46 +12,6 @@ export type ResolvedRuntimeSelection = {
 	materialName?: string;
 };
 
-export type RuntimeSelectionDebugSample = {
-	dx: number;
-	dy: number;
-	weight: number;
-	origin: [number, number, number];
-	rayEnd: [number, number, number];
-	firstHitPoint?: [number, number, number];
-	acceptedHitPoint?: [number, number, number];
-	rejectedHitPoint?: [number, number, number];
-	candidateKeys: string[];
-	isWinningSample: boolean;
-};
-
-export type RuntimeSelectionDebugCandidate = {
-	key: string;
-	nodeId: string;
-	nodeName: string;
-	materialIndex?: number;
-	materialName?: string;
-	score: number;
-	totalWeight: number;
-	hitCount: number;
-	bestDistance: number;
-	bestDepthRank: number;
-	bestFacingScore: number;
-	bestSampleDistance: number;
-	bestPoint?: [number, number, number];
-};
-
-export type RuntimeSelectionDebugSnapshot = {
-	samples: RuntimeSelectionDebugSample[];
-	candidates: RuntimeSelectionDebugCandidate[];
-	winningCandidateKey?: string;
-	winningNodeId?: string;
-	winningNodeName?: string;
-	winningMaterialIndex?: number;
-	winningMaterialName?: string;
-	winningPoint?: [number, number, number];
-};
-
 type SelectionRaySample = {
 	dx: number;
 	dy: number;
@@ -96,14 +56,8 @@ const SELECTION_APERTURE_SAMPLES: SelectionRaySample[] = [
 ];
 const SELECTION_OVERLAY_NAMES = new Set([
 	'__mobisim-highlight-overlay__',
-	'__mobisim-selection-overlay__',
-	'__mobisim-selection-debug__',
-	'__mobisim-selection-debug-ray__',
-	'__mobisim-selection-debug-hit__',
-	'__mobisim-selection-debug-rejected-hit__'
+	'__mobisim-selection-overlay__'
 ]);
-
-const SELECTION_DEBUG_FAR_DISTANCE = 18;
 
 function createNodeId(index: number): string {
 	return `node-${index}`;
@@ -204,10 +158,6 @@ function scoreSelectionCandidate(candidate: SelectionCandidateAggregate): number
 	);
 }
 
-function toVec3Tuple(vector: THREE.Vector3): [number, number, number] {
-	return [vector.x, vector.y, vector.z];
-}
-
 export function buildRuntimeNodeLookup(scene: THREE.Object3D): RuntimeNodeLookup {
 	const nodeById = new Map<string, THREE.Object3D>();
 	const nodeIdByObject = new Map<THREE.Object3D, string>();
@@ -269,30 +219,20 @@ function resolveSelectableRuntimeNodeId(
 	return null;
 }
 
-function resolveRuntimeSelectionDetailed(
+export function resolveRuntimeSelection(
 	params: ResolveRuntimeSelectionParams
-): {
-	selection: ResolvedRuntimeSelection | null;
-	debugSnapshot: RuntimeSelectionDebugSnapshot;
-} {
+): ResolvedRuntimeSelection | null {
 	const { scene, camera, canvasRect, clientX, clientY } = params;
 	const granularity = params.granularity ?? 'node';
 	const anchorToCenterSample = params.anchorToCenterSample ?? false;
 	if (canvasRect.width <= 0 || canvasRect.height <= 0) {
-		return {
-			selection: null,
-			debugSnapshot: {
-				samples: [],
-				candidates: []
-			}
-		};
+		return null;
 	}
 
 	const lookup = buildRuntimeNodeLookup(scene);
 	const pointer = new THREE.Vector2();
 	const raycaster = new THREE.Raycaster();
 	const aggregates = new Map<string, SelectionCandidateAggregate>();
-	const debugSamples: RuntimeSelectionDebugSample[] = [];
 	let centerAnchorKey: string | null = null;
 
 	for (const sample of SELECTION_APERTURE_SAMPLES) {
@@ -300,30 +240,12 @@ function resolveRuntimeSelectionDetailed(
 		pointer.x = ((clientX + sample.dx - canvasRect.left) / canvasRect.width) * 2 - 1;
 		pointer.y = -((clientY + sample.dy - canvasRect.top) / canvasRect.height) * 2 + 1;
 		raycaster.setFromCamera(pointer, camera);
-		const debugSample: RuntimeSelectionDebugSample = {
-			dx: sample.dx,
-			dy: sample.dy,
-			weight: sample.weight,
-			origin: toVec3Tuple(raycaster.ray.origin),
-			rayEnd: toVec3Tuple(
-				raycaster.ray.origin
-					.clone()
-					.add(raycaster.ray.direction.clone().multiplyScalar(SELECTION_DEBUG_FAR_DISTANCE))
-			),
-			candidateKeys: [],
-			isWinningSample: false
-		};
 
 		const intersections = raycaster.intersectObject(scene, true);
 
 		for (const [depthRank, intersection] of intersections.entries()) {
 			if (SELECTION_OVERLAY_NAMES.has(intersection.object.name)) {
 				continue;
-			}
-
-			if (!debugSample.firstHitPoint) {
-				debugSample.firstHitPoint = toVec3Tuple(intersection.point);
-				debugSample.rayEnd = debugSample.firstHitPoint;
 			}
 
 			const object = intersection.object;
@@ -333,9 +255,6 @@ function resolveRuntimeSelectionDetailed(
 					: undefined;
 
 			if (shouldPassThroughSelectionHit(object, materialIndex)) {
-				if (!debugSample.rejectedHitPoint) {
-					debugSample.rejectedHitPoint = toVec3Tuple(intersection.point);
-				}
 				continue;
 			}
 
@@ -367,8 +286,6 @@ function resolveRuntimeSelectionDetailed(
 				centerAnchorKey = key;
 			}
 
-			debugSample.acceptedHitPoint ??= toVec3Tuple(intersection.point);
-			debugSample.candidateKeys.push(key);
 			const sampleDistance = Math.hypot(sample.dx, sample.dy);
 			const candidateWeight = sample.weight / (depthRank + 1);
 			const facingScore = computeFacingScore(intersection, raycaster.ray.direction);
@@ -408,8 +325,6 @@ function resolveRuntimeSelectionDetailed(
 				break;
 			}
 		}
-
-		debugSamples.push(debugSample);
 	}
 
 	const rankedCandidates = Array.from(aggregates.values()).sort((left, right) => {
@@ -431,73 +346,13 @@ function resolveRuntimeSelectionDetailed(
 
 	const bestCandidate = rankedCandidates[0];
 	if (!bestCandidate) {
-		return {
-			selection: null,
-			debugSnapshot: {
-				samples: debugSamples,
-				candidates: []
-			}
-		};
-	}
-
-	const winningCandidateKey = buildSelectionAggregateKey(
-		bestCandidate.nodeId,
-		bestCandidate.materialIndex,
-		bestCandidate.materialName,
-		granularity
-	);
-	for (const sample of debugSamples) {
-		sample.isWinningSample = sample.candidateKeys.includes(winningCandidateKey);
+		return null;
 	}
 
 	return {
-		selection: {
-			nodeId: bestCandidate.nodeId,
-			runtimeNode: bestCandidate.runtimeNode,
-			materialIndex: bestCandidate.materialIndex,
-			materialName: bestCandidate.materialName
-		},
-			debugSnapshot: {
-				samples: debugSamples,
-				candidates: rankedCandidates.map((candidate) => ({
-					key: buildSelectionAggregateKey(
-						candidate.nodeId,
-						candidate.materialIndex,
-						candidate.materialName,
-						granularity
-					),
-					nodeId: candidate.nodeId,
-					nodeName: candidate.runtimeNode.name.trim() || candidate.runtimeNode.type,
-				materialIndex: candidate.materialIndex,
-				materialName: candidate.materialName,
-				score: scoreSelectionCandidate(candidate),
-				totalWeight: candidate.totalWeight,
-				hitCount: candidate.hitCount,
-				bestDistance: candidate.bestDistance,
-				bestDepthRank: candidate.bestDepthRank,
-				bestFacingScore: candidate.bestFacingScore,
-				bestSampleDistance: candidate.bestSampleDistance,
-				bestPoint: toVec3Tuple(candidate.bestPoint)
-			})),
-			winningCandidateKey,
-			winningNodeId: bestCandidate.nodeId,
-			winningNodeName: bestCandidate.runtimeNode.name.trim() || bestCandidate.runtimeNode.type,
-			winningMaterialIndex: bestCandidate.materialIndex,
-			winningMaterialName: bestCandidate.materialName,
-			winningPoint: toVec3Tuple(bestCandidate.bestPoint)
-		}
+		nodeId: bestCandidate.nodeId,
+		runtimeNode: bestCandidate.runtimeNode,
+		materialIndex: bestCandidate.materialIndex,
+		materialName: bestCandidate.materialName
 	};
-}
-
-export function resolveRuntimeSelection(params: ResolveRuntimeSelectionParams): ResolvedRuntimeSelection | null {
-	return resolveRuntimeSelectionDetailed(params).selection;
-}
-
-export function resolveRuntimeSelectionDebug(
-	params: ResolveRuntimeSelectionParams
-): {
-	selection: ResolvedRuntimeSelection | null;
-	debugSnapshot: RuntimeSelectionDebugSnapshot;
-} {
-	return resolveRuntimeSelectionDetailed(params);
 }

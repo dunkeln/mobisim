@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const envMock = {
+	OPENAI_API_KEY: 'test-key',
+	OPENAI_MODEL: 'gpt-5.2',
+	OPENAI_TOOL_MODEL: 'gpt-5.2-reasoner',
+	OPENAI_REPLY_MODEL: 'gpt-4o-mini'
+};
+
 const createMock = vi.fn();
 const resolveVehicleIntentMock = vi.fn();
 const planNormalizedVehiclePaintIntentMock = vi.fn();
@@ -17,12 +24,11 @@ const patchSemanticGroupDefinitionMock = vi.fn();
 const deleteSemanticGroupDefinitionMock = vi.fn();
 const removeReviewedAssetSemanticAssignmentsMock = vi.fn();
 const writeVehicleSemanticOverlayMock = vi.fn();
+const resolveContextHistoryMock = vi.fn();
+const persistContextHistoryMock = vi.fn();
 
 vi.mock('$env/dynamic/private', () => ({
-	env: {
-		OPENAI_API_KEY: 'test-key',
-		OPENAI_MODEL: 'gpt-5.2'
-	}
+	env: envMock
 }));
 
 vi.mock('openai', () => {
@@ -82,8 +88,23 @@ vi.mock('$lib/server/connectors/semantic-ingress', () => ({
 	listSemanticIngressBindings: listSemanticIngressBindingsMock
 }));
 
+vi.mock('$lib/server/connectors/context-history', () => ({
+	resolveContextHistory: resolveContextHistoryMock,
+	persistContextHistory: persistContextHistoryMock,
+	buildHistoryTrace: (context: { sourceUsed: string; compactionApplied: boolean }) =>
+		context.sourceUsed === 'none' && !context.compactionApplied
+			? {}
+			: {
+					historySourceUsed: context.sourceUsed,
+					historyCompactionApplied: context.compactionApplied
+				}
+}));
+
 describe('createFooterChatResponse', () => {
 	beforeEach(() => {
+		envMock.OPENAI_MODEL = 'gpt-5.2';
+		envMock.OPENAI_TOOL_MODEL = 'gpt-5.2-reasoner';
+		envMock.OPENAI_REPLY_MODEL = 'gpt-4o-mini';
 		createMock.mockReset();
 		resolveVehicleIntentMock.mockReset();
 		planNormalizedVehiclePaintIntentMock.mockReset();
@@ -101,6 +122,13 @@ describe('createFooterChatResponse', () => {
 		deleteSemanticGroupDefinitionMock.mockReset();
 		removeReviewedAssetSemanticAssignmentsMock.mockReset();
 		writeVehicleSemanticOverlayMock.mockReset();
+		resolveContextHistoryMock.mockReset();
+		persistContextHistoryMock.mockReset();
+		resolveContextHistoryMock.mockResolvedValue({
+			historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
+			compactionApplied: false,
+			sourceUsed: 'none'
+		});
 	});
 
 	it('refreshes semantic overlays through the chat tool loop', async () => {
@@ -158,8 +186,11 @@ describe('createFooterChatResponse', () => {
 			message: 'refresh the semantic overlay for this asset'
 		});
 
+		expect(createMock.mock.calls[0]?.[0]?.model).toBe('gpt-5.2-reasoner');
 		expect(generateVehicleSemanticOverlayMock).toHaveBeenCalledWith('audi_r8', { force: true });
 		expect(response.message.content).toBe('Semantic overlay refreshed.');
+		expect(response.trace?.plannerModel).toBe('gpt-5.2-reasoner');
+		expect(response.trace?.planningMode).toBe('single_tool');
 	});
 
 	it('supports a catalog-to-action-to-ui tool chain in one turn', async () => {
@@ -307,6 +338,178 @@ describe('createFooterChatResponse', () => {
 			'edit_vehicle_presentation',
 			'set_assistant_ui'
 		]);
+		expect(response.trace?.planningMode).toBe('multi_tool');
+		expect(response.trace?.toolRoundsUsed).toBe(3);
+		expect(response.trace?.composedToolChain).toBe(true);
+	});
+
+	it('backfills the supplementary footer list from the tool catalog when the model forgets the ui tool', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-catalog-fallback-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue(null);
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-catalog-1',
+									type: 'function',
+									function: {
+										name: 'get_vehicle_tool_catalog',
+										arguments: JSON.stringify({
+											goal: 'show the available tools'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'The available controls are in the footer.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'what tools are available here?'
+		});
+
+		expect(response.message.content).toBe('The available controls are in the footer.');
+		expect(response.supplementaryList).toEqual({
+			active: true,
+			entries: expect.objectContaining({
+				edit_vehicle_presentation: 'appearance, focus, restore, and viewer mode changes',
+				edit_vehicle_selection: 'selection expansion',
+				edit_vehicle_semantics:
+					'semantic assignments, group CRUD, refresh, and ingress binding',
+				set_assistant_ui: 'assistant sidebar and supplementary list updates'
+			})
+		});
+		expect(response.trace?.supplementaryListAction).toBe('updated');
+		expect(response.trace?.toolCalls).toEqual(['get_vehicle_tool_catalog']);
+	});
+
+	it('backfills changed-target footer detail when a footer request omits the ui tool call', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-footer-fallback-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue(null);
+		resolveVehicleIntentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			operations: [
+				{
+					targetType: 'material',
+					targetId: 'wheel-material',
+					targetName: 'Wheels',
+					op: 'set_overlay_highlight',
+					value: true
+				}
+			],
+			rejected: [],
+			summary: 'Highlighted the wheels.'
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-catalog-1',
+									type: 'function',
+									function: {
+										name: 'get_vehicle_tool_catalog',
+										arguments: JSON.stringify({
+											goal: 'highlight the wheels and put the changed targets in the footer list'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-focus-1',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_presentation',
+										arguments: JSON.stringify({
+											action: 'focus',
+											request: 'highlight the wheels',
+											scope: 'asset'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Wheels are highlighted.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'highlight the wheels and put the changed targets in the footer list'
+		});
+
+		expect(response.vehiclePatchOperations).toEqual([
+			{
+				targetType: 'material',
+				targetId: 'wheel-material',
+				targetName: 'Wheels',
+				op: 'set_overlay_highlight',
+				value: true
+			}
+		]);
+		expect(response.supplementaryList).toEqual({
+			active: true,
+			entries: {
+				Action: 'Highlighted the wheels.',
+				Targets: 'Wheels'
+			}
+		});
+		expect(response.trace?.supplementaryListAction).toBe('updated');
+		expect(response.trace?.planningMode).toBe('multi_tool');
 	});
 
 	it('does not auto-refresh semantics during normal edit requests', async () => {
@@ -331,36 +534,32 @@ describe('createFooterChatResponse', () => {
 			rejected: [],
 			summary: 'Applied body paint.'
 		});
-		createMock.mockResolvedValueOnce({
-			choices: [
-				{
-					message: {
-						role: 'assistant',
-						content: 'I could not apply that directly from the current reasoning pass.'
-					}
-				}
-			]
-		});
 		const response = await createFooterChatResponse({
 			assetId: 'audi_r8',
 			message: 'paint the body midnight purple'
 		});
 
 		expect(generateVehicleSemanticOverlayMock).not.toHaveBeenCalled();
-		expect(createMock).toHaveBeenCalledTimes(1);
+		expect(createMock).not.toHaveBeenCalled();
 		expect(resolveVehicleIntentMock).toHaveBeenCalledWith(
 			'audi_r8',
-			'paint the body midnight purple'
+			'paint the body midnight purple',
+			{ presentation: undefined }
 		);
 		expect(response.vehiclePatchLabel).toBe('Applied body paint.');
 		expect(response.vehiclePatchOperations).toHaveLength(1);
 		expect(response.message.content).toBe('Applied body paint.');
 		expect(response.trace).toEqual({
 			route: 'direct_edit',
-			semanticOverlayStatus: 'missing',
+			semanticOverlayStatus: 'unknown',
 			toolCalls: [],
 			sidebarAction: 'unchanged',
-			supplementaryListAction: 'unchanged'
+			supplementaryListAction: 'unchanged',
+			plannerModel: 'gpt-5.2-reasoner',
+			planningMode: 'direct',
+			toolRoundsUsed: 0,
+			clarificationIssued: false,
+			composedToolChain: false
 		});
 	});
 
@@ -545,7 +744,9 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 
-		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'highlight these');
+		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'highlight these', {
+			presentation: undefined
+		});
 		expect(response.vehiclePatchOperations).toEqual([
 			{
 				targetType: 'material',
@@ -633,8 +834,10 @@ describe('createFooterChatResponse', () => {
 			message: 'turn on xray'
 		});
 
-		expect(createMock).toHaveBeenCalledTimes(1);
-		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'turn on xray');
+		expect(createMock).not.toHaveBeenCalled();
+		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'turn on xray', {
+			presentation: undefined
+		});
 		expect(response.vehiclePatchOperations).toEqual([
 			{
 				targetType: 'viewer',
@@ -902,7 +1105,12 @@ describe('createFooterChatResponse', () => {
 			semanticOverlayStatus: 'fresh',
 			toolCalls: ['set_assistant_ui'],
 			sidebarAction: 'updated',
-			supplementaryListAction: 'unchanged'
+			supplementaryListAction: 'unchanged',
+			plannerModel: 'gpt-5.2-reasoner',
+			planningMode: 'single_tool',
+			toolRoundsUsed: 1,
+			clarificationIssued: false,
+			composedToolChain: false
 		});
 		expect(response.sidebar).toEqual({
 			active: true,
@@ -981,7 +1189,12 @@ describe('createFooterChatResponse', () => {
 			semanticOverlayStatus: 'fresh',
 			toolCalls: ['set_assistant_ui'],
 			sidebarAction: 'unchanged',
-			supplementaryListAction: 'updated'
+			supplementaryListAction: 'updated',
+			plannerModel: 'gpt-5.2-reasoner',
+			planningMode: 'single_tool',
+			toolRoundsUsed: 1,
+			clarificationIssued: false,
+			composedToolChain: false
 		});
 		expect(response.supplementaryList).toEqual({
 			active: true,
@@ -1405,8 +1618,10 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 
-		expect(createMock).toHaveBeenCalledTimes(1);
-		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', '5% black tint');
+		expect(createMock).not.toHaveBeenCalled();
+		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', '5% black tint', {
+			presentation: undefined
+		});
 		expect(response.message.content).toBe('Applied 5% dark tint. Scoped to selection.');
 		expect(response.vehiclePatchOperations).toEqual([
 			{
@@ -1612,7 +1827,7 @@ describe('createFooterChatResponse', () => {
 			action: 'assign',
 			nodeIds: ['node-12'],
 			materialIds: [],
-			semanticGroup: undefined,
+			semanticGroup: 'doors',
 			category: 'doors',
 			humanLabel: 'doors',
 			aliases: undefined,
@@ -1625,6 +1840,53 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 		expect(response.message.content).toBe('Updated the semantic grouping for the selected node.');
+	});
+
+	it('directly assigns a selected target into a semantic group without relying on model tool selection', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-direct-semantic'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'doors' }]
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'assign this to the doors group',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-12',
+					nodeName: 'Door Panel',
+					nodePath: 'Scene/Door Panel'
+				}
+			]
+		});
+
+		expect(createMock).not.toHaveBeenCalled();
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: ['node-12'],
+			materialIds: [],
+			semanticGroup: 'doors',
+			category: 'doors',
+			humanLabel: 'doors',
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-12',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+		expect(response.message.content).toBe('Updated the semantic grouping for the selected node.');
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_semantics']);
 	});
 
 	it('accepts freeform semantic assignment phrases like "these are headlights"', async () => {
@@ -2153,6 +2415,82 @@ describe('createFooterChatResponse', () => {
 			label: 'restore original view'
 		});
 		expect(response.message.content).toBe('Removed the highlighted regions from headlights.');
+	});
+
+	it('defaults semantic mutation scope to highlighted targets when no selection exists', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-highlight-default'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-highlight-default',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'assign',
+											semanticGroup: 'wheels'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Added the highlighted target to wheels.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'add that to the wheels group',
+			presentation: {
+				highlightedTargets: [
+					{
+						targetId: 'material-wheel',
+						targetType: 'material',
+						targetName: 'Wheel'
+					}
+				]
+			}
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: [],
+			materialIds: ['material-wheel'],
+			semanticGroup: 'wheels',
+			category: 'wheels',
+			humanLabel: 'wheels',
+			aliases: undefined,
+			materialSelections: undefined
+		});
+		expect(response.message.content).toBe(
+			'Added the highlighted material-backed member to wheels.'
+		);
 	});
 
 	it('filters highlighted semantic mutation scope by query to avoid cross-highlight bleed', async () => {

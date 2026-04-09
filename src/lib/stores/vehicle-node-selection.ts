@@ -24,7 +24,7 @@ function getNodeSelectionKey(selection: VehicleNodeSelection): string {
 }
 
 function createVehicleNodeSelectionStore() {
-	const { subscribe, set, update } = writable<VehicleNodeSelection[]>([]);
+	const { subscribe, update } = writable<VehicleNodeSelection[]>([]);
 
 	return {
 		subscribe,

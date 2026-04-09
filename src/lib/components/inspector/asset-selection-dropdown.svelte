@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { scale } from 'svelte/transition';
+	import { buildInspectionRoute, resolveInspectionAssetId } from '$lib/routes/inspection';
 	import { VEHICLE_CATALOG_LIST, type VehicleAssetId } from '$lib/vehicles/catalog';
 
 	type Props = {
@@ -12,25 +12,15 @@
 	let { class: className = '' }: Props = $props();
 	let open = $state(false);
 
-	const selectedId = $derived.by(() => {
-		const currentAsset = page.url.searchParams.get('asset');
-		return (
-			VEHICLE_CATALOG_LIST.find((vehicle) => vehicle.id === currentAsset)?.id ??
-			VEHICLE_CATALOG_LIST[0]?.id ??
-			''
-		);
-	});
+	const selectedId = $derived(resolveInspectionAssetId(page.url));
 	const selectedVehicle = $derived(
 		VEHICLE_CATALOG_LIST.find((vehicle) => vehicle.id === selectedId) ?? VEHICLE_CATALOG_LIST[0]
 	);
 
 	async function selectVehicle(vehicleId: VehicleAssetId): Promise<void> {
-		const nextUrl = new URL(page.url);
-		nextUrl.searchParams.set('asset', vehicleId);
 		open = false;
-		const nextRoute = `${nextUrl.pathname}${nextUrl.search}` as `/?${string}`;
 
-		await goto(resolve(nextRoute), {
+		await goto(buildInspectionRoute(vehicleId, page.url.searchParams), {
 			keepFocus: true,
 			noScroll: true,
 			invalidateAll: true

@@ -154,7 +154,9 @@ export function parseMutateVehicleSemanticAssignmentToolArgs(
 			parsed.scope === 'material_targets' ||
 			parsed.scope === 'hidden'
 				? parsed.scope
-				: 'selected',
+				: parsed.scope === 'selected'
+					? 'selected'
+					: undefined,
 		targetScope:
 			parsed.targetScope === 'node' ||
 			parsed.targetScope === 'material' ||
@@ -197,7 +199,11 @@ export function parseManageVehicleSemanticGroupToolArgs(
 		action: parsed.action,
 		targetType: parsed.targetType === 'semantic_node' ? 'semantic_node' : 'semantic_group',
 		scope:
-			parsed.scope === 'highlighted' || parsed.scope === 'hidden' ? parsed.scope : 'selected',
+			parsed.scope === 'highlighted' || parsed.scope === 'hidden'
+				? parsed.scope
+				: parsed.scope === 'selected'
+					? 'selected'
+					: undefined,
 		query: typeof parsed.query === 'string' ? parsed.query.trim() || undefined : undefined,
 		groupId: typeof parsed.groupId === 'string' ? parsed.groupId.trim() || undefined : undefined,
 		nodeId: typeof parsed.nodeId === 'string' ? parsed.nodeId.trim() || undefined : undefined,
