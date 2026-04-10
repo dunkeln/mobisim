@@ -1,0 +1,17 @@
+node_modules
+.svelte-kit
+.git
+.gitignore
+.DS_Store
+npm-debug.log*
+coverage
+playwright-report
+test-results
+.env
+.env.*
+!.env.example
+assets
+docs
+.claude
+.codex
+.vscode

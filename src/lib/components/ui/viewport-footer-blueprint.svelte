@@ -2,7 +2,6 @@
 	import { scale } from 'svelte/transition';
 	import SemanticIngressLiveWindow from '$lib/components/inspector/semantic-ingress-live-window.svelte';
 	import SemanticIngressPanel from '$lib/components/inspector/semantic-ingress-panel.svelte';
-	import FooterActiveTool from '$lib/components/ui/footer-active-tool.svelte';
 	import FooterOrb from '$lib/components/ui/footer-orb.svelte';
 	import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -33,9 +32,6 @@
 		</div>
 	</div>
 	<div class="footer-blueprint__cluster footer-blueprint__cluster--center">
-		<div class="footer-blueprint__stack footer-blueprint__stack--left">
-			<FooterActiveTool class="footer-blueprint__tool-chip" />
-		</div>
 		<div class="footer-blueprint__orb-slot">
 			<FooterOrb class="footer-blueprint__orb-live" />
 			<span class="footer-blueprint__label footer-blueprint__label--orb">FRIDAY</span>
@@ -121,14 +117,6 @@
 		gap: 0.35rem;
 	}
 
-	.footer-blueprint__stack--left {
-		position: absolute;
-		right: calc(100% - 0.55rem);
-		top: 50%;
-		transform: translateY(-3rem);
-		z-index: 1;
-	}
-
 	.footer-blueprint__stack--right {
 		position: absolute;
 		left: calc(100% + 0.4rem);
@@ -157,11 +145,6 @@
 
 	.footer-blueprint__orb-live {
 		transform: scale(0.82);
-	}
-
-	:global(.footer-blueprint__tool-chip) {
-		position: relative;
-		z-index: 1;
 	}
 
 	.footer-blueprint__reference-list {

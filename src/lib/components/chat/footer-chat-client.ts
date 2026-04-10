@@ -1,6 +1,5 @@
 import { get } from 'svelte/store';
 import { inspectorSidebarState } from '$lib/stores/inspector-sidebar';
-import { footerActiveTool } from '$lib/stores/footer-active-tool';
 import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { vehiclePatchState } from '$lib/stores/vehicle-patches';
@@ -158,7 +157,6 @@ export function getSupplementaryListContext(assetId?: VehicleAssetId): FooterCha
 }
 
 export function beginFooterResponseCycle(assetId?: VehicleAssetId): void {
-	footerActiveTool.reset();
 	if (assetId) {
 		footerSupplementaryList.reset(assetId);
 	}
@@ -334,8 +332,6 @@ export async function approveSemanticIngressApplication(
 }
 
 export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {
-	footerActiveTool.setFromToolCalls(payload.trace?.toolCalls ?? []);
-
 	const semanticTargetAssetId = payload.semanticOverlay?.assetId ?? assetId;
 	if (semanticTargetAssetId && payload.semanticOverlay !== undefined) {
 		// Only update the overlay store when a semantic tool explicitly returned an overlay.
