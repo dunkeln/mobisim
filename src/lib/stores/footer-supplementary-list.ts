@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { FooterChatSupplementaryListState } from '$lib/server/connectors/openai-chat/types';
+import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 const INITIAL_STATE: FooterChatSupplementaryListState = {
 	active: false,
@@ -7,6 +8,10 @@ const INITIAL_STATE: FooterChatSupplementaryListState = {
 };
 
 const SUPPLEMENTARY_LIST_TTL_MS = 10 * 60 * 1000;
+
+type FooterSupplementaryListStoreState = Partial<
+	Record<VehicleAssetId, FooterChatSupplementaryListState>
+>;
 
 function sanitizeState(input: FooterChatSupplementaryListState): FooterChatSupplementaryListState {
 	return {
@@ -24,39 +29,46 @@ function sanitizeState(input: FooterChatSupplementaryListState): FooterChatSuppl
 }
 
 function createFooterSupplementaryListStore() {
-	const { subscribe, set } = writable<FooterChatSupplementaryListState>(INITIAL_STATE);
-	let currentState: FooterChatSupplementaryListState = INITIAL_STATE;
-	let updatedAt = 0;
-	let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+	const { subscribe, set } = writable<FooterSupplementaryListStoreState>({});
+	let currentState: FooterSupplementaryListStoreState = {};
+	let updatedAtByAsset: Partial<Record<VehicleAssetId, number>> = {};
+	let expiryTimersByAsset: Partial<Record<VehicleAssetId, ReturnType<typeof setTimeout>>> = {};
 
-	function clearExpiryTimer(): void {
-		if (!expiryTimer) {
+	function clearExpiryTimer(assetId: VehicleAssetId): void {
+		const timer = expiryTimersByAsset[assetId];
+		if (!timer) {
 			return;
 		}
 
-		clearTimeout(expiryTimer);
-		expiryTimer = null;
+		clearTimeout(timer);
+		delete expiryTimersByAsset[assetId];
 	}
 
-	function applyState(nextState: FooterChatSupplementaryListState): void {
-		currentState = sanitizeState(nextState);
+	function applyState(assetId: VehicleAssetId, nextState: FooterChatSupplementaryListState): void {
+		currentState = {
+			...currentState,
+			[assetId]: sanitizeState(nextState)
+		};
 		set(currentState);
 	}
 
-	function scheduleExpiry(): void {
-		clearExpiryTimer();
-		if (!currentState.active || Object.keys(currentState.entries).length === 0) {
+	function scheduleExpiry(assetId: VehicleAssetId): void {
+		const assetState = currentState[assetId] ?? INITIAL_STATE;
+		clearExpiryTimer(assetId);
+		if (!assetState.active || Object.keys(assetState.entries).length === 0) {
 			return;
 		}
 
-		expiryTimer = setTimeout(() => {
-			updatedAt = 0;
-			applyState(INITIAL_STATE);
+		expiryTimersByAsset[assetId] = setTimeout(() => {
+			delete updatedAtByAsset[assetId];
+			applyState(assetId, INITIAL_STATE);
 		}, SUPPLEMENTARY_LIST_TTL_MS);
 	}
 
-	function isExpired(): boolean {
-		if (updatedAt === 0 || !currentState.active || Object.keys(currentState.entries).length === 0) {
+	function isExpired(assetId: VehicleAssetId): boolean {
+		const updatedAt = updatedAtByAsset[assetId] ?? 0;
+		const assetState = currentState[assetId] ?? INITIAL_STATE;
+		if (updatedAt === 0 || !assetState.active || Object.keys(assetState.entries).length === 0) {
 			return false;
 		}
 
@@ -65,24 +77,41 @@ function createFooterSupplementaryListStore() {
 
 	return {
 		subscribe,
-		set(state: FooterChatSupplementaryListState): void {
-			updatedAt = Date.now();
-			applyState(state);
-			scheduleExpiry();
+		set(assetId: VehicleAssetId, state: FooterChatSupplementaryListState): void {
+			updatedAtByAsset = {
+				...updatedAtByAsset,
+				[assetId]: Date.now()
+			};
+			applyState(assetId, state);
+			scheduleExpiry(assetId);
 		},
-		getContext(): FooterChatSupplementaryListState {
-			if (isExpired()) {
-				clearExpiryTimer();
-				updatedAt = 0;
-				applyState(INITIAL_STATE);
+		getContext(assetId?: VehicleAssetId): FooterChatSupplementaryListState {
+			if (!assetId) {
+				return INITIAL_STATE;
 			}
 
-			return currentState;
+			if (isExpired(assetId)) {
+				clearExpiryTimer(assetId);
+				delete updatedAtByAsset[assetId];
+				applyState(assetId, INITIAL_STATE);
+			}
+
+			return currentState[assetId] ?? INITIAL_STATE;
 		},
-		reset(): void {
-			clearExpiryTimer();
-			updatedAt = 0;
-			applyState(INITIAL_STATE);
+		reset(assetId?: VehicleAssetId): void {
+			if (assetId) {
+				clearExpiryTimer(assetId);
+				delete updatedAtByAsset[assetId];
+				applyState(assetId, INITIAL_STATE);
+				return;
+			}
+
+			for (const scopedAssetId of Object.keys(expiryTimersByAsset) as VehicleAssetId[]) {
+				clearExpiryTimer(scopedAssetId);
+			}
+			updatedAtByAsset = {};
+			currentState = {};
+			set(currentState);
 		}
 	};
 }

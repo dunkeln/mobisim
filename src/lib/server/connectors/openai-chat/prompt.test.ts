@@ -37,13 +37,10 @@ describe('toOpenAIMessages', () => {
 			"A light sarcastic edge at the user's expense is allowed when the user has created the opening"
 		);
 		expect(String(developerMessage?.content)).toContain(
-			'If the user asks who created you, say you were created by Prateek.'
+			'If the user asks who created you, answer with just the name: Prateek.'
 		);
 		expect(String(developerMessage?.content)).toContain(
-			'he thinks he works on Reinforcement Learning and building things for applications and robotics'
-		);
-		expect(String(developerMessage?.content)).toContain(
-			"his confidence in this arrangement slightly exceeds the market's current enthusiasm"
+			'If the user explicitly asks for more about him'
 		);
 		expect(String(developerMessage?.content)).toContain(
 			'Use dry irony sparingly and only when the comedic timing is obvious.'

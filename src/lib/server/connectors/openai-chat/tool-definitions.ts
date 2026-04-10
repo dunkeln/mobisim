@@ -45,6 +45,12 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 					},
 					request: { type: 'string' },
 					scope: { type: 'string', enum: ['asset', 'selection', 'all', 'matching'] },
+					setOperation: {
+						type: 'string',
+						enum: ['replace', 'add', 'subtract', 'intersect', 'union'],
+						description:
+							'Set-theoretic operation mode. replace (default) replaces the current state. add/union adds to current. subtract removes from current. intersect keeps only the overlap.'
+					},
 					colorFamily: { type: 'string' },
 					shade: {
 						type: 'string',
@@ -120,6 +126,12 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 					scope: {
 						type: 'string',
 						enum: ['selected', 'highlighted', 'material_targets', 'hidden']
+					},
+					setOperation: {
+						type: 'string',
+						enum: ['replace', 'add', 'subtract', 'intersect', 'union'],
+						description:
+							'Set-theoretic operation for group membership. add/union adds targets to the group. subtract removes targets from the group. intersect keeps only targets already in the group. replace (default) replaces group membership.'
 					},
 					targetScope: { type: 'string', enum: ['node', 'material', 'mixed'] },
 					query: { type: 'string' },
@@ -219,7 +231,7 @@ export function buildVehicleToolCatalog(
 			purpose: 'appearance, focus, restore, and viewer mode changes',
 			useWhen: 'the user is changing how things look or what is visually emphasized',
 			actions: ['appearance', 'focus', 'restore', 'view_mode'],
-			examples: ['make this matte black', 'highlight the wheels', 'clear highlights', 'turn on xray']
+			examples: ['make this matte black', 'highlight the wheels', 'highlight everything except the doors', 'clear highlights', 'turn on xray', 'add the bumper to the current highlight']
 		},
 		{
 			name: EDIT_VEHICLE_SELECTION_TOOL_NAME,
@@ -246,9 +258,12 @@ export function buildVehicleToolCatalog(
 			],
 			examples: [
 				'remove node-41 from body shell',
+				'add the bumper to the front face group',
+				'remove everything except the glass from the glasshouse group',
 				'get the wheels semantic group',
 				'refresh semantics',
-				'assign a stream ingress to body shell'
+				'create a new roof_rack group',
+				'rename the body shell group to exterior shell'
 			]
 		},
 		{

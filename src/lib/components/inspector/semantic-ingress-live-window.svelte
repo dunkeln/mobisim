@@ -5,6 +5,7 @@
 		SemanticIngressSnapshot
 	} from '$lib/server/connectors/semantic-ingress/types';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
+	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 
 	type Props = {
 		assetId: VehicleAssetId;
@@ -13,8 +14,18 @@
 
 	let { assetId, class: className = '' }: Props = $props();
 
-	let bindings = $state<SemanticIngressBinding[]>([]);
 	let samplesByIngress = $state<Record<string, SemanticIngressNumericSample[]>>({});
+	const runtimeAsset = $derived.by(
+		() =>
+			$semanticRuntimeState.byAsset[assetId] ?? {
+				overlay: null,
+				overlayStatus: 'unknown',
+				ingressBindings: [],
+				selectedGroupId: null
+			}
+	);
+	const bindings = $derived.by(() => runtimeAsset.ingressBindings ?? []);
+	const selectedGroupId = $derived(runtimeAsset.selectedGroupId);
 
 	const MAX_POINTS = 60;
 	const CHART_WIDTH = 248;
@@ -32,7 +43,13 @@
 	}
 
 	function getPrimaryBinding(): SemanticIngressBinding | null {
-		return bindings[0] ?? null;
+		return (
+			bindings
+				.slice()
+				.sort((left, right) =>
+					left.transport === right.transport ? left.ingressId.localeCompare(right.ingressId) : left.transport === 'rest_sse' ? -1 : 1
+				)[0] ?? null
+		);
 	}
 
 	function getSamples(binding: SemanticIngressBinding | null): SemanticIngressNumericSample[] {
@@ -84,8 +101,9 @@
 
 	$effect(() => {
 		assetId;
+		selectedGroupId;
+		bindings;
 		let cancelled = false;
-		let nextPoll: ReturnType<typeof setTimeout> | undefined;
 		const eventSources = new Map<string, EventSource>();
 
 		const closeEventSources = () => {
@@ -144,48 +162,22 @@
 			eventSources.set(binding.ingressId, eventSource);
 		};
 
-		const loadBindings = async (): Promise<void> => {
-			try {
-				const response = await fetch(`/api/vehicle-assets/${assetId}/semantic-ingress`);
-				if (!response.ok) {
-					throw new Error(`Semantic ingress request failed: ${response.status}`);
-				}
+		for (const binding of bindings) {
+			connectBindingStream(binding);
+		}
 
-				const payload = (await response.json()) as { bindings?: SemanticIngressBinding[] };
-				if (cancelled) {
-					return;
-				}
-
-				bindings = Array.isArray(payload.bindings) ? payload.bindings : [];
-				for (const binding of bindings) {
-					connectBindingStream(binding);
-				}
-			} catch {
-				if (cancelled) {
-					return;
-				}
-
-				bindings = [];
-			} finally {
-				if (cancelled) {
-					return;
-				}
-
-				nextPoll = setTimeout(() => {
-					void loadBindings();
-				}, 5000);
+		for (const [ingressId, eventSource] of eventSources.entries()) {
+			if (bindings.some((binding) => binding.ingressId === ingressId)) {
+				continue;
 			}
-		};
 
-		bindings = [];
-		void loadBindings();
+			eventSource.close();
+			eventSources.delete(ingressId);
+		}
 
 		return () => {
 			cancelled = true;
 			closeEventSources();
-			if (nextPoll) {
-				clearTimeout(nextPoll);
-			}
 		};
 	});
 </script>

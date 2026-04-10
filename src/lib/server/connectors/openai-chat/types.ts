@@ -99,6 +99,16 @@ export type FooterChatSelectionUpdate = {
 
 export type FooterChatHistoryAction = 'undo' | 'redo' | 'reset' | 'clear_highlights';
 
+export type FooterChatSemanticIngressMutation = {
+	action: 'create' | 'replace' | 'delete';
+	targetType: 'semantic_group' | 'semantic_node';
+	targetId: string;
+	targetLabel?: string;
+	transport: 'rest_sse' | 'stream';
+	ingressId?: string;
+	replacedIngressId?: string;
+};
+
 export type FooterChatResponse = {
 	message: FooterChatMessage;
 	model: string;
@@ -113,6 +123,7 @@ export type FooterChatResponse = {
 	semanticOverlayStatus?: VehicleSemanticOverlayStatus;
 	semanticOverlay?: VehicleSemanticOverlay | null;
 	semanticIngressBindings?: SemanticIngressBinding[];
+	semanticIngressMutation?: FooterChatSemanticIngressMutation;
 	trace?: FooterChatTrace;
 };
 

@@ -4,25 +4,35 @@ import { vehicleNodeSelection, type VehicleNodeSelection } from './vehicle-node-
 
 const baseSelection: VehicleNodeSelection = {
 	assetId: 'audi_r8',
+	targetType: 'node',
+	targetId: 'node-1',
+	targetName: 'Glass',
+	nodeIds: ['node-1'],
 	nodeId: 'node-1',
 	nodeName: 'Glass',
 	nodePath: 'Scene/Glass'
 };
 
 describe('vehicleNodeSelection', () => {
-	it('accumulates additive selections while collapsing to one selection per node', () => {
+	it('accumulates additive selections without collapsing different semantic targets that share nodes', () => {
 		vehicleNodeSelection.clear();
 
 		vehicleNodeSelection.select({
 			...baseSelection,
-			materialIndex: 0,
-			materialName: 'Glass'
+			targetType: 'part',
+			targetId: 'front_left_wheel',
+			targetName: 'front left wheel',
+			nodeIds: ['node-1', 'node-2'],
+			anchorNodeId: 'node-1'
 		});
 		vehicleNodeSelection.select(
 			{
 				...baseSelection,
-				materialIndex: 1,
-				materialName: 'Trim'
+				targetType: 'part',
+				targetId: 'wheel_trim',
+				targetName: 'wheel trim',
+				nodeIds: ['node-1'],
+				anchorNodeId: 'node-1'
 			},
 			true
 		);
@@ -30,8 +40,19 @@ describe('vehicleNodeSelection', () => {
 		expect(get(vehicleNodeSelection)).toEqual([
 			{
 				...baseSelection,
-				materialIndex: 1,
-				materialName: 'Trim'
+				targetType: 'part',
+				targetId: 'front_left_wheel',
+				targetName: 'front left wheel',
+				nodeIds: ['node-1', 'node-2'],
+				anchorNodeId: 'node-1'
+			},
+			{
+				...baseSelection,
+				targetType: 'part',
+				targetId: 'wheel_trim',
+				targetName: 'wheel trim',
+				nodeIds: ['node-1'],
+				anchorNodeId: 'node-1'
 			}
 		]);
 	});
@@ -41,12 +62,20 @@ describe('vehicleNodeSelection', () => {
 
 		vehicleNodeSelection.select({
 			...baseSelection,
+			targetType: 'part',
+			targetId: 'glasshouse',
+			targetName: 'glasshouse',
+			nodeIds: ['node-1'],
 			materialIndex: 0,
 			materialName: 'Glass'
 		});
 		vehicleNodeSelection.select(
 			{
 				assetId: 'audi_r8',
+				targetType: 'node',
+				targetId: 'node-2',
+				targetName: 'Headlight',
+				nodeIds: ['node-2'],
 				nodeId: 'node-2',
 				nodeName: 'Headlight',
 				nodePath: 'Scene/Headlight'
@@ -56,6 +85,10 @@ describe('vehicleNodeSelection', () => {
 
 		vehicleNodeSelection.select({
 			assetId: 'audi_r8',
+			targetType: 'node',
+			targetId: 'node-3',
+			targetName: 'Door',
+			nodeIds: ['node-3'],
 			nodeId: 'node-3',
 			nodeName: 'Door',
 			nodePath: 'Scene/Door'
@@ -64,6 +97,10 @@ describe('vehicleNodeSelection', () => {
 		expect(get(vehicleNodeSelection)).toEqual([
 			{
 				assetId: 'audi_r8',
+				targetType: 'node',
+				targetId: 'node-3',
+				targetName: 'Door',
+				nodeIds: ['node-3'],
 				nodeId: 'node-3',
 				nodeName: 'Door',
 				nodePath: 'Scene/Door'
@@ -77,6 +114,10 @@ describe('vehicleNodeSelection', () => {
 		vehicleNodeSelection.select(
 			{
 				...baseSelection,
+				targetType: 'part',
+				targetId: 'glasshouse',
+				targetName: 'glasshouse',
+				nodeIds: ['node-1'],
 				materialIndex: 0,
 				materialName: 'Glass'
 			},
@@ -85,6 +126,10 @@ describe('vehicleNodeSelection', () => {
 		vehicleNodeSelection.select(
 			{
 				...baseSelection,
+				targetType: 'part',
+				targetId: 'glasshouse',
+				targetName: 'glasshouse',
+				nodeIds: ['node-1'],
 				materialIndex: 0,
 				materialName: 'Glass'
 			},
@@ -94,6 +139,10 @@ describe('vehicleNodeSelection', () => {
 		expect(get(vehicleNodeSelection)).toEqual([
 			{
 				...baseSelection,
+				targetType: 'part',
+				targetId: 'glasshouse',
+				targetName: 'glasshouse',
+				nodeIds: ['node-1'],
 				materialIndex: 0,
 				materialName: 'Glass'
 			}

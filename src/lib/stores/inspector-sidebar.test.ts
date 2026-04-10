@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inspectorSidebarState } from './inspector-sidebar';
 
 describe('inspectorSidebarState', () => {
+	const assetId = 'audi_r8';
+
 	beforeEach(() => {
 		vi.useFakeTimers();
 		inspectorSidebarState.reset();
@@ -13,7 +15,7 @@ describe('inspectorSidebarState', () => {
 	});
 
 	it('returns the active sidebar context before ttl expiry', () => {
-		inspectorSidebarState.set({
+		inspectorSidebarState.set(assetId, {
 			active: true,
 			cards: [
 				{
@@ -27,7 +29,7 @@ describe('inspectorSidebarState', () => {
 
 		vi.advanceTimersByTime(9 * 60 * 1000);
 
-		expect(inspectorSidebarState.getContext()).toEqual({
+		expect(inspectorSidebarState.getContext(assetId)).toEqual({
 			active: true,
 			cards: [
 				{
@@ -41,7 +43,7 @@ describe('inspectorSidebarState', () => {
 	});
 
 	it('expires the sidebar after ten minutes', () => {
-		inspectorSidebarState.set({
+		inspectorSidebarState.set(assetId, {
 			active: true,
 			cards: [
 				{
@@ -55,7 +57,7 @@ describe('inspectorSidebarState', () => {
 
 		vi.advanceTimersByTime(10 * 60 * 1000);
 
-		expect(inspectorSidebarState.getContext()).toEqual({
+		expect(inspectorSidebarState.getContext(assetId)).toEqual({
 			active: false,
 			cards: []
 		});

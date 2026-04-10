@@ -11,6 +11,10 @@
 		VehicleSemanticOverlaySnapshot,
 		VehicleSemanticPartUnit
 	} from '$lib/server/connectors/vehicle-semantic-overlay/types';
+	import {
+		buildVehicleSemanticOverlayRuntimeIndex,
+		type VehicleSemanticOverlayRuntimeIndex
+	} from '$lib/semantic-overlay/runtime';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 	type Props = {
@@ -22,11 +26,21 @@
 		id: string;
 		label: string;
 		category: string;
-		nodes: Array<{
-			id: string;
-			label: string;
-			highlightTargets: HighlightTargetRef[];
-		}>;
+		parts: SemanticPartView[];
+		uncoveredNodes: SemanticNodeView[];
+		highlightTargets: HighlightTargetRef[];
+	};
+
+	type SemanticPartView = {
+		id: string;
+		label: string;
+		nodes: SemanticNodeView[];
+		highlightTargets: HighlightTargetRef[];
+	};
+
+	type SemanticNodeView = {
+		id: string;
+		label: string;
 		highlightTargets: HighlightTargetRef[];
 	};
 
@@ -52,47 +66,52 @@
 			$semanticRuntimeState.byAsset[assetId] ?? {
 				overlay: null,
 				overlayStatus: 'unknown',
-				ingressBindings: []
+				ingressBindings: [],
+				selectedGroupId: null
 			}
 	);
 	const overlay = $derived(runtimeAsset.overlay);
 	const overlayStatus = $derived(runtimeAsset.overlayStatus);
+	const selectedGroupId = $derived(runtimeAsset.selectedGroupId);
 
-	function partMatchesGroup(part: VehicleSemanticPartUnit, group: VehicleSemanticGroup): boolean {
-		if (group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId))) {
-			return true;
-		}
-
-		return false;
+	function buildNodeView(
+		nodeId: string,
+		label: string
+	): SemanticNodeView {
+		return {
+			id: nodeId,
+			label,
+			highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
+		};
 	}
 
-	function buildGroupViews(currentOverlay: VehicleSemanticOverlay | null): SemanticGroupView[] {
+	function buildGroupViews(
+		currentOverlay: VehicleSemanticOverlay | null,
+		runtimeIndex: VehicleSemanticOverlayRuntimeIndex
+	): SemanticGroupView[] {
 		if (!currentOverlay) {
 			return [];
 		}
 
 		return currentOverlay.acceptedGroups
 			.map((group: VehicleSemanticGroup) => {
-				const matchedParts = currentOverlay.acceptedParts.filter((part: VehicleSemanticPartUnit) =>
-					partMatchesGroup(part, group)
+				const matchedParts = runtimeIndex.partsByGroupId.get(group.id) ?? [];
+				const parts = matchedParts.map((part: VehicleSemanticPartUnit) => ({
+					id: part.id,
+					label: part.humanLabel,
+					nodes: part.nodeIds.map((nodeId: string) => buildNodeView(nodeId, nodeId)),
+					highlightTargets: Array.from(
+						new Map(
+							part.nodeIds.map((targetId: string) => [
+								targetId,
+								{ targetId, targetType: 'node' as const }
+							])
+						).values()
+					)
+				}));
+				const uncoveredNodes = (runtimeIndex.uncoveredNodeIdsByGroupId.get(group.id) ?? []).map(
+					(nodeId: string) => buildNodeView(nodeId, nodeId)
 				);
-				const semanticNodes = [
-					...group.nodeIds.map((nodeId: string) => ({
-						id: nodeId,
-						label:
-							matchedParts.find((part: VehicleSemanticPartUnit) => part.nodeIds.includes(nodeId))
-								?.humanLabel ?? nodeId,
-						highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
-					})),
-					...matchedParts
-						.flatMap((part: VehicleSemanticPartUnit) =>
-							part.nodeIds.map((nodeId: string) => ({
-								id: nodeId,
-								label: part.humanLabel,
-								highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
-							}))
-						)
-				];
 				const groupHighlightTargets = [
 					...group.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const })),
 					...matchedParts.flatMap((part: VehicleSemanticPartUnit) =>
@@ -104,7 +123,8 @@
 					id: group.id,
 					label: group.humanLabel,
 					category: group.category,
-					nodes: Array.from(new Map(semanticNodes.map((node) => [node.id, node])).values()),
+					parts,
+					uncoveredNodes,
 					highlightTargets: Array.from(
 						new Map(
 							groupHighlightTargets.map((target) => [
@@ -121,7 +141,8 @@
 			);
 	}
 
-	const semanticGroups = $derived(buildGroupViews(overlay));
+	const semanticRuntimeIndex = $derived(buildVehicleSemanticOverlayRuntimeIndex(overlay));
+	const semanticGroups = $derived(buildGroupViews(overlay, semanticRuntimeIndex));
 	const visible = $derived(semanticGroups.length > 0);
 	const activeHighlightTargetKeys = $derived(
 		$vehiclePatchState.assetId === assetId
@@ -142,7 +163,15 @@
 				groupId: group.id
 			});
 
-			for (const node of group.nodes) {
+			for (const part of group.parts) {
+				descriptors.set(getNodeHighlightKey(group.id, part.id), {
+					targets: part.highlightTargets,
+					scope: 'node',
+					groupId: group.id
+				});
+			}
+
+			for (const node of group.uncoveredNodes) {
 				descriptors.set(getNodeHighlightKey(group.id, node.id), {
 					targets: node.highlightTargets,
 					scope: 'node',
@@ -163,6 +192,9 @@
 	}
 
 	function toggleGroup(groupId: string): void {
+		semanticRuntimeState.applyAssetState(assetId, {
+			selectedGroupId: groupId
+		});
 		expandedGroupIds = expandedGroupIds.includes(groupId)
 			? expandedGroupIds.filter((id) => id !== groupId)
 			: [...expandedGroupIds, groupId];
@@ -344,6 +376,14 @@
 				semanticRuntimeState.applyAssetState(assetId, {
 					overlaySnapshot: payload
 				});
+				if (
+					selectedGroupId &&
+					!(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === selectedGroupId)
+				) {
+					semanticRuntimeState.applyAssetState(assetId, {
+						selectedGroupId: null
+					});
+				}
 				expandedGroupIds = expandedGroupIds.filter((groupId) =>
 					(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === groupId)
 				);
@@ -391,18 +431,22 @@
 	<aside class={['sidebar', className]} aria-label="Semantic groups">
 		<div class="group-stack">
 			{#each semanticGroups as group, groupIndex (group.id)}
-				<section class="group-row" style={`--waterfall-delay:${groupIndex * 50}ms`}>
+				<section
+					class={['group-row', selectedGroupId === group.id ? 'group-row--selected' : '']}
+					style={`--waterfall-delay:${groupIndex * 50}ms`}
+				>
 					<div class="group-header">
 						<button
 							type="button"
-							class="group-trigger"
+							class={['group-trigger', selectedGroupId === group.id ? 'group-trigger--selected' : '']}
 							aria-expanded={isExpanded(group.id)}
+							aria-pressed={selectedGroupId === group.id}
 							onclick={() => toggleGroup(group.id)}
 						>
 							<span class="group-label">{group.label}</span>
 						</button>
 						<div class="group-actions">
-							<span class="group-meta">{group.nodes.length}</span>
+							<span class="group-meta">{group.parts.length + group.uncoveredNodes.length}</span>
 								{#if !isExpanded(group.id)}
 									{@const groupHighlightKey = getGroupHighlightKey(group.id)}
 									{@const groupIsHighlighted = isGroupDirectlyHighlighted(group.id)}
@@ -430,13 +474,45 @@
 					</div>
 					{#if isExpanded(group.id)}
 						<div class="node-stack">
-								{#each group.nodes as node, nodeIndex (`${group.id}-${node.id}`)}
+								{#each group.parts as part, partIndex (`${group.id}-${part.id}`)}
+									{@const partHighlightKey = getNodeHighlightKey(group.id, part.id)}
+									{@const partIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, part.id)}
+									{@const partIsDownstreamHighlighted = !partIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(part.highlightTargets)}
+									<div
+										class="node-line node-row"
+										style={`--waterfall-delay:${groupIndex * 50 + partIndex * 36}ms`}
+									>
+										<div class="node-copy">
+											<span class={['target-kind-indicator', 'target-kind-node']} aria-hidden="true"></span>
+											<span class="node-label">{part.label}</span>
+										</div>
+									<button
+										type="button"
+											class="highlight-button"
+											class:is-active={partIsDirectlyHighlighted}
+											class:is-downstream={partIsDownstreamHighlighted}
+											aria-label={getHighlightLabel(part.label, partHighlightKey, part.highlightTargets, partIsDownstreamHighlighted)}
+											aria-pressed={partIsDirectlyHighlighted}
+											title={getHighlightLabel(part.label, partHighlightKey, part.highlightTargets, partIsDownstreamHighlighted)}
+											disabled={$chatRequestState.pending}
+											onclick={() =>
+												toggleHighlight(
+													partHighlightKey,
+													part.highlightTargets,
+													part.label
+												)}
+										>
+										<Highlighter class="h-3.5 w-3.5" />
+									</button>
+								</div>
+							{/each}
+								{#each group.uncoveredNodes as node, nodeIndex (`${group.id}-${node.id}`)}
 									{@const nodeHighlightKey = getNodeHighlightKey(group.id, node.id)}
 									{@const nodeIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, node.id)}
 									{@const nodeIsDownstreamHighlighted = !nodeIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(node.highlightTargets)}
 									<div
 										class="node-line node-row"
-										style={`--waterfall-delay:${groupIndex * 50 + nodeIndex * 36}ms`}
+										style={`--waterfall-delay:${groupIndex * 50 + (group.parts.length + nodeIndex) * 36}ms`}
 									>
 										<div class="node-copy">
 											<span class={['target-kind-indicator', 'target-kind-node']} aria-hidden="true"></span>
@@ -501,6 +577,13 @@
 		animation-delay: var(--waterfall-delay, 0ms);
 	}
 
+	.group-row--selected {
+		padding: 0.4rem 0.5rem 0.45rem;
+		border-radius: 0.85rem;
+		background: color-mix(in oklab, var(--boundary-primary) 12%, transparent);
+		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--boundary-primary) 22%, transparent);
+	}
+
 	.group-trigger {
 		display: block;
 		width: 100%;
@@ -510,6 +593,10 @@
 		color: inherit;
 		text-align: left;
 		cursor: pointer;
+	}
+
+	.group-trigger--selected .group-label {
+		color: color-mix(in oklab, var(--boundary-text) 88%, var(--boundary-tertiary));
 	}
 
 	.group-trigger:disabled,

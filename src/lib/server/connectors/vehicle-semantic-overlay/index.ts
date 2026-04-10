@@ -5,9 +5,7 @@ import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-struc
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
 import {
 	readAssetSemanticAssignments,
-	listReviewedSemanticGroupExamples,
-	removeReviewedAssetSemanticAssignments,
-	upsertReviewedAssetSemanticAssignments
+	listReviewedSemanticGroupExamples
 } from '$lib/server/connectors/asset-semantic-assignments';
 import { upsertPendingAssetSemanticProposals } from '$lib/server/connectors/asset-semantic-proposals';
 import {
@@ -354,26 +352,6 @@ function normalizeActionSupportArray(value: unknown): VehicleSemanticActionSuppo
 	).sort((left, right) => left.localeCompare(right));
 }
 
-function normalizeDerivedFromArray(
-	value: unknown
-): Array<'llm' | 'synthetic' | 'materials' | 'parts' | 'user'> {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-
-	return Array.from(
-		new Set(
-			value.filter(
-				(entry): entry is 'llm' | 'synthetic' | 'materials' | 'parts' | 'user' =>
-					entry === 'llm' ||
-					entry === 'synthetic' ||
-					entry === 'materials' ||
-					entry === 'parts' ||
-					entry === 'user'
-			)
-		)
-	).sort((left, right) => left.localeCompare(right));
-}
 
 function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 	if (!value || typeof value !== 'object') {
@@ -395,7 +373,6 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 	const nodeIds = normalizeStringArray(candidate.nodeIds);
 	const meshIds = normalizeStringArray(candidate.meshIds);
 	const materialIds = normalizeStringArray(candidate.materialIds);
-	const derivedFrom = normalizeDerivedFromArray(candidate.derivedFrom);
 
 	if (
 		humanLabel.length === 0 ||
@@ -404,6 +381,20 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 		!Number.isFinite(confidence)
 	) {
 		return null;
+	}
+
+	// Parse author field. For backward-compat with old overlay files that have
+	// derivedFrom but no author, infer from derivedFrom: if it includes 'user' → 'user',
+	// otherwise → 'agent'.
+	let author: 'agent' | 'user' = 'agent';
+	if (typeof candidate.author === 'string' && (candidate.author === 'user' || candidate.author === 'agent')) {
+		author = candidate.author;
+	} else {
+		// Backward-compat: infer from old derivedFrom field
+		const derivedFromArray = Array.isArray(candidate.derivedFrom) ? candidate.derivedFrom : [];
+		if (derivedFromArray.includes('user')) {
+			author = 'user';
+		}
 	}
 
 	return {
@@ -416,7 +407,7 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 		nodeIds,
 		meshIds,
 		materialIds,
-		derivedFrom
+		author
 	};
 }
 
@@ -1062,7 +1053,7 @@ function synthesizeSemanticGroups(
 			materialIds: matched
 				.map((entry) => entry.targetId)
 				.sort((left, right) => left.localeCompare(right)),
-			derivedFrom: ['materials', 'synthetic']
+			author: 'agent' as const
 		};
 	};
 
@@ -1095,7 +1086,7 @@ function synthesizeSemanticGroups(
 			materialIds: Array.from(new Set(matched.flatMap((entry) => entry.materialIds))).sort(
 				(left, right) => left.localeCompare(right)
 			),
-			derivedFrom: ['parts', 'synthetic']
+			author: 'agent' as const
 		};
 	};
 
@@ -1356,63 +1347,18 @@ async function deriveReviewedSemanticGroups(
 			nodeIds,
 			meshIds,
 			materialIds,
-			derivedFrom: ['user']
+			author: 'user' as const
 		});
 	}
 
 	return groups.sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function mergePlannerVisibleGroups(
-	baseGroups: VehicleSemanticGroup[],
-	reviewedGroups: VehicleSemanticGroup[]
+function mergeAgentAndUserGroups(
+	agentGroups: VehicleSemanticGroup[],
+	userGroups: VehicleSemanticGroup[]
 ): VehicleSemanticGroup[] {
-	const deterministicGroups = baseGroups.filter(
-		(group) =>
-			!(group.derivedFrom ?? []).includes('llm') && !(group.derivedFrom ?? []).includes('user')
-	);
-
-	return reduceVisibleSemanticGroups(
-		reduceSemanticGroups([...deterministicGroups, ...reviewedGroups])
-	);
-}
-
-function syncAcceptedPartsWithReviewedGroups(
-	baseParts: VehicleSemanticPartUnit[],
-	reviewedGroups: VehicleSemanticGroup[]
-): VehicleSemanticPartUnit[] {
-	const partCountByCategory = new Map<VehicleSemanticPartCategory, number>();
-
-	for (const part of baseParts) {
-		partCountByCategory.set(part.category, (partCountByCategory.get(part.category) ?? 0) + 1);
-	}
-
-	return baseParts.map((part) => {
-		if ((partCountByCategory.get(part.category) ?? 0) !== 1 || part.category === 'other') {
-			return part;
-		}
-
-		const compatibleGroups = reviewedGroups.filter(
-			(group) => mapGroupCategoryToPartCategory(group.category) === part.category
-		);
-		if (compatibleGroups.length !== 1) {
-			return part;
-		}
-
-		const compatibleGroup = compatibleGroups[0]!;
-		return {
-			...part,
-			nodeIds: Array.from(new Set([...part.nodeIds, ...compatibleGroup.nodeIds])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			meshIds: Array.from(new Set([...part.meshIds, ...compatibleGroup.meshIds])).sort((left, right) =>
-				left.localeCompare(right)
-			),
-			materialIds: Array.from(new Set([...part.materialIds, ...compatibleGroup.materialIds])).sort(
-				(left, right) => left.localeCompare(right)
-			)
-		};
-	});
+	return reduceVisibleSemanticGroups(reduceSemanticGroups([...agentGroups, ...userGroups]));
 }
 
 function resolveGroupNodeIds(
@@ -1483,22 +1429,32 @@ export async function readVehicleSemanticOverlay(
 	assetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
 	const overlay = await readStoredVehicleSemanticOverlay(assetId);
-	if (!overlay) {
-		return null;
+	if (!overlay) return null;
+	// One-time migration: if no user groups are present, attempt to import
+	// any existing assignments from the legacy two-store architecture.
+	if (!overlay.acceptedGroups.some((g) => g.author === 'user')) {
+		return migrateLegacyAssignments(assetId, overlay);
 	}
+	return overlay;
+}
 
-	const structure = await deriveStructuralAssetSnapshot(assetId);
-	const reviewedGroups = await deriveReviewedSemanticGroups(
-		assetId,
-		overlay.structuralGeneratedAt,
-		structure
-	);
-
-	return {
-		...overlay,
-		acceptedParts: syncAcceptedPartsWithReviewedGroups(overlay.acceptedParts, reviewedGroups),
-		acceptedGroups: mergePlannerVisibleGroups(overlay.acceptedGroups, reviewedGroups)
-	};
+async function migrateLegacyAssignments(
+	assetId: VehicleAssetId,
+	overlay: VehicleSemanticOverlay
+): Promise<VehicleSemanticOverlay> {
+	try {
+		const structure = await deriveStructuralAssetSnapshot(assetId);
+		const reviewedGroups = await deriveReviewedSemanticGroups(
+			assetId,
+			overlay.structuralGeneratedAt,
+			structure
+		);
+		if (reviewedGroups.length === 0) return overlay;
+		const mergedGroups = mergeAgentAndUserGroups(overlay.acceptedGroups, reviewedGroups);
+		return writeVehicleSemanticOverlay({ ...overlay, acceptedGroups: mergedGroups });
+	} catch {
+		return overlay;
+	}
 }
 
 export async function writeVehicleSemanticOverlay(
@@ -1579,16 +1535,14 @@ export async function generateVehicleSemanticOverlay(
 		validatedMaterials.acceptedMaterials,
 		minAcceptedConfidence
 	);
-	const reviewedGroups = await deriveReviewedSemanticGroups(
-		assetId,
-		capabilities.generatedAt,
-		structure
-	);
-	const mergedGroups = mergePlannerVisibleGroups(
-		validatedGroups.acceptedGroups,
-		reviewedGroups
-	);
-	const mergedParts = syncAcceptedPartsWithReviewedGroups(validatedParts.acceptedParts, reviewedGroups);
+
+	// Read existing overlay to preserve user-authored groups
+	const existingOverlay = await readStoredVehicleSemanticOverlay(assetId);
+	const preservedUserGroups = existingOverlay?.acceptedGroups.filter((g) => g.author === 'user') ?? [];
+
+	// Merge new agent groups with preserved user groups
+	const newAgentGroups = validatedGroups.acceptedGroups;
+	const mergedGroups = mergeAgentAndUserGroups(newAgentGroups, preservedUserGroups);
 
 	return writeVehicleSemanticOverlay({
 		assetId,
@@ -1597,7 +1551,7 @@ export async function generateVehicleSemanticOverlay(
 		model: getSemanticModel(),
 		minAcceptedConfidence,
 		acceptedMaterials: validatedMaterials.acceptedMaterials,
-		acceptedParts: mergedParts,
+		acceptedParts: validatedParts.acceptedParts,
 		acceptedGroups: mergedGroups,
 		discardedSuggestions: [
 			...validatedMaterials.discardedSuggestions,
@@ -1669,13 +1623,14 @@ export async function mutateVehicleSemanticAssignment(
 		throw new Error(`Unknown node ID: ${unknownNodeIds.join(', ')}`);
 	}
 
-	const existing = await readStoredVehicleSemanticOverlay(assetId);
+	// Read current overlay. This will apply any pending migrations from the legacy store.
+	const overlay = await readVehicleSemanticOverlay(assetId);
 	const baseOverlay: VehicleSemanticOverlay =
-		existing && existing.structuralGeneratedAt === capabilities.generatedAt
-			? existing
+		overlay && overlay.structuralGeneratedAt === capabilities.generatedAt
+			? overlay
 			: {
 					assetId,
-					revision: existing?.revision ?? 0,
+					revision: (await readStoredVehicleSemanticOverlay(assetId))?.revision ?? 0,
 					structuralGeneratedAt: capabilities.generatedAt,
 					generatedAt: new Date().toISOString(),
 					model: getSemanticModel(),
@@ -1697,57 +1652,118 @@ export async function mutateVehicleSemanticAssignment(
 		throw new Error('At least one runtime node or material target is required.');
 	}
 
+	// Resolve the target group definition
+	const definition = await (mutation.action === 'unassign'
+		? findSemanticGroupDefinition({
+				semanticGroup: mutation.semanticGroup,
+				category: mutation.category
+			})
+		: resolveSemanticGroupDefinition({
+				semanticGroup: mutation.semanticGroup,
+				category: mutation.category,
+				humanLabel: mutation.humanLabel,
+				aliases: mutation.aliases
+			}));
+
+	if (!definition) {
+		throw new Error('Could not resolve semantic group definition');
+	}
+
+	// Compute the group ID using the same scheme as deriveReviewedSemanticGroups
+	const groupId = definition.category === 'other' ? definition.id : `group_${definition.id}`;
+
+	// For REASSIGN: remove the nodeIds/materialIds from any other group in the same exclusive family
 	if (mutation.action === 'reassign') {
-		await removeReviewedAssetSemanticAssignments({
-			assetId,
-			structuralGeneratedAt: capabilities.generatedAt,
-			nodeIds: annotationNodeIds,
-			materialIds
-		});
+		const { definitions } = await readSemanticGroupDefinitions();
+		const definitionById = new Map(definitions.map((d) => [d.id, d]));
+
+		for (const group of baseOverlay.acceptedGroups) {
+			// Extract the definition ID from the group ID
+			const groupDefId = group.id.startsWith('group_') ? group.id.slice(6) : group.id;
+			const groupDef = definitionById.get(groupDefId);
+			if (
+				groupDef &&
+				groupDef.exclusiveFamily &&
+				groupDef.exclusiveFamily === definition.exclusiveFamily &&
+				groupDef.id !== definition.id
+			) {
+				// Remove these node/material IDs from this group
+				group.nodeIds = group.nodeIds.filter((n) => !annotationNodeIds.includes(n));
+				group.materialIds = group.materialIds.filter((m) => !materialIds.includes(m));
+			}
+		}
 	}
 
+	// For ASSIGN or REASSIGN: find or create the target group and update it
 	if (mutation.action === 'assign' || mutation.action === 'reassign') {
-		const definition = await resolveSemanticGroupDefinition({
-			semanticGroup: mutation.semanticGroup,
-			category: mutation.category,
-			humanLabel: mutation.humanLabel,
-			aliases: mutation.aliases
-		});
-		await upsertReviewedAssetSemanticAssignments({
-			assetId,
-			structuralGeneratedAt: capabilities.generatedAt,
-			nodeIds: annotationNodeIds,
-			materialIds,
-			semanticGroupId: definition.id,
-			reviewer: 'user'
-		});
-	} else {
-		const definition = await findSemanticGroupDefinition({
-			semanticGroup: mutation.semanticGroup,
-			category: mutation.category
-		});
-		await removeReviewedAssetSemanticAssignments({
-			assetId,
-			structuralGeneratedAt: capabilities.generatedAt,
-			nodeIds: annotationNodeIds,
-			materialIds,
-			semanticGroupId: definition?.id
-		});
+		let targetGroup = baseOverlay.acceptedGroups.find((g) => g.id === groupId);
+		if (!targetGroup) {
+			targetGroup = {
+				id: groupId,
+				humanLabel: definition.humanLabel,
+				aliases: definition.aliases,
+				confidence: 1,
+				category: definition.category,
+				supports: definition.supports,
+				nodeIds: [],
+				meshIds: [],
+				materialIds: [],
+				author: 'user'
+			};
+			baseOverlay.acceptedGroups.push(targetGroup);
+		} else {
+			targetGroup.author = 'user';
+		}
+
+		// Union the new nodeIds and materialIds
+		targetGroup.nodeIds = Array.from(new Set([...targetGroup.nodeIds, ...annotationNodeIds])).sort(
+			(a, b) => a.localeCompare(b)
+		);
+		targetGroup.materialIds = Array.from(new Set([...targetGroup.materialIds, ...materialIds])).sort(
+			(a, b) => a.localeCompare(b)
+		);
+
+		// Compute meshIds from nodeIds
+		const meshById = new Map(structure.meshes.map((m) => [m.id, m]));
+		const nodeById = new Map(structure.nodes.map((n) => [n.id, n]));
+		targetGroup.meshIds = Array.from(
+			new Set(
+				targetGroup.nodeIds
+					.map((nodeId) => nodeById.get(nodeId)?.meshId)
+					.filter((meshId): meshId is string => meshId !== undefined)
+			)
+		).sort((a, b) => a.localeCompare(b));
+	} else if (mutation.action === 'unassign') {
+		// For UNASSIGN: find the group and remove the nodeIds/materialIds
+		const targetGroup = baseOverlay.acceptedGroups.find((g) => g.id === groupId);
+		if (targetGroup) {
+			targetGroup.nodeIds = targetGroup.nodeIds.filter((n) => !annotationNodeIds.includes(n));
+			targetGroup.materialIds = targetGroup.materialIds.filter((m) => !materialIds.includes(m));
+
+			// If the group has no coverage left and is user-authored, remove it entirely
+			if (
+				targetGroup.author === 'user' &&
+				targetGroup.nodeIds.length === 0 &&
+				targetGroup.meshIds.length === 0 &&
+				targetGroup.materialIds.length === 0
+			) {
+				baseOverlay.acceptedGroups = baseOverlay.acceptedGroups.filter((g) => g.id !== groupId);
+			} else {
+				// Recompute meshIds
+				const nodeById = new Map(structure.nodes.map((n) => [n.id, n]));
+				targetGroup.meshIds = Array.from(
+					new Set(
+						targetGroup.nodeIds
+							.map((nodeId) => nodeById.get(nodeId)?.meshId)
+							.filter((meshId): meshId is string => meshId !== undefined)
+					)
+				).sort((a, b) => a.localeCompare(b));
+			}
+		}
 	}
 
-	const reviewedGroups = await deriveReviewedSemanticGroups(
-		assetId,
-		capabilities.generatedAt,
-		structure
-	);
-	const nextOverlay: VehicleSemanticOverlay = {
-		...baseOverlay,
-		generatedAt: new Date().toISOString(),
-		acceptedParts: syncAcceptedPartsWithReviewedGroups(baseOverlay.acceptedParts, reviewedGroups),
-		acceptedGroups: mergePlannerVisibleGroups(baseOverlay.acceptedGroups, reviewedGroups)
-	};
-
-	return writeVehicleSemanticOverlay(nextOverlay);
+	// Write the updated overlay directly
+	return writeVehicleSemanticOverlay(baseOverlay);
 }
 
 function createRefreshKey(
@@ -1790,13 +1806,15 @@ export function refreshVehicleSemanticOverlayInBackground(
 	return refreshPromise;
 }
 
-async function readFreshOverlay(
-	assetId: VehicleAssetId,
-	structuralGeneratedAt: string
+async function readBestAvailableOverlay(
+	assetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
-	const overlay = await readVehicleSemanticOverlay(assetId);
-
-	return overlay?.structuralGeneratedAt === structuralGeneratedAt ? overlay : null;
+	// Return the overlay regardless of structural freshness, consistent with how
+	// the sidebar API and prompt context already treat stale overlays as actionable.
+	// A stale overlay is still the best available semantic data — previously this
+	// function returned null when structuralGeneratedAt didn't match, which caused
+	// the model to deny that groups exist that the sidebar panel clearly shows.
+	return readVehicleSemanticOverlay(assetId);
 }
 
 export async function getVehicleSemanticOverlayStatus(
@@ -1891,7 +1909,7 @@ export async function listSemanticMaterialsByTags(
 	structuralGeneratedAt: string,
 	tags: VehicleSemanticTag[]
 ): Promise<VehicleSemanticMaterialSuggestion[]> {
-	const overlay = await readFreshOverlay(assetId, structuralGeneratedAt);
+	const overlay = await readBestAvailableOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1906,7 +1924,7 @@ export async function listSemanticMaterialsByQuery(
 	structuralGeneratedAt: string,
 	query: string
 ): Promise<VehicleSemanticMaterialSuggestion[]> {
-	const overlay = await readFreshOverlay(assetId, structuralGeneratedAt);
+	const overlay = await readBestAvailableOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1919,7 +1937,7 @@ export async function listSemanticPartsByQuery(
 	structuralGeneratedAt: string,
 	query: string
 ): Promise<VehicleSemanticPartUnit[]> {
-	const overlay = await readFreshOverlay(assetId, structuralGeneratedAt);
+	const overlay = await readBestAvailableOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1933,7 +1951,7 @@ export async function listSemanticGroupsByQuery(
 	query: string,
 	support?: VehicleSemanticActionSupport
 ): Promise<VehicleSemanticGroup[]> {
-	const overlay = await readFreshOverlay(assetId, structuralGeneratedAt);
+	const overlay = await readBestAvailableOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1998,9 +2016,7 @@ function mergeSemanticGroup(
 		materialIds: Array.from(new Set([...existing.materialIds, ...incoming.materialIds])).sort(
 			(left, right) => left.localeCompare(right)
 		),
-		derivedFrom: Array.from(
-			new Set([...(existing.derivedFrom ?? []), ...(incoming.derivedFrom ?? [])])
-		).sort((left, right) => left.localeCompare(right))
+		author: (existing.author === 'user' || incoming.author === 'user') ? 'user' : 'agent'
 	};
 }
 
@@ -2040,10 +2056,10 @@ function reduceVisibleSemanticGroups(
 			return rightCoverageScore - leftCoverageScore;
 		}
 
-		const leftSyntheticScore = left.derivedFrom?.includes('synthetic') ? 1 : 0;
-		const rightSyntheticScore = right.derivedFrom?.includes('synthetic') ? 1 : 0;
-		if (leftSyntheticScore !== rightSyntheticScore) {
-			return rightSyntheticScore - leftSyntheticScore;
+		const leftAgentScore = left.author === 'agent' ? 1 : 0;
+		const rightAgentScore = right.author === 'agent' ? 1 : 0;
+		if (leftAgentScore !== rightAgentScore) {
+			return rightAgentScore - leftAgentScore;
 		}
 
 		if (!preferStructuralCoverage && leftCoverageScore !== rightCoverageScore) {

@@ -22,6 +22,11 @@ export type ContextHistoryConfig = {
 };
 
 export type ContextHistorySelectionSummary = {
+	targetType: 'part' | 'node';
+	targetId: string;
+	targetName: string;
+	nodeIds: string[];
+	anchorNodeId?: string;
 	nodeId: string;
 	nodeName: string;
 	nodePath: string;

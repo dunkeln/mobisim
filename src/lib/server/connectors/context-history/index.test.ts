@@ -10,6 +10,10 @@ describe('compactResolvedHistoryContext', () => {
 				assetId: 'audi_r8',
 				selection: [
 					{
+						targetType: 'node',
+						targetId: 'node-wheel-left',
+						targetName: 'Front Left Wheel',
+						nodeIds: ['node-wheel-left'],
 						nodeId: 'node-wheel-left',
 						nodeName: 'Front Left Wheel',
 						nodePath: 'Car/Wheels/FrontLeft'

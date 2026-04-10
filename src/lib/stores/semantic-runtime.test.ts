@@ -116,7 +116,8 @@ describe('semanticRuntimeState', () => {
 			overlay: null,
 			overlayRevision: null,
 			overlayStatus: 'stale',
-			ingressBindings: []
+			ingressBindings: [],
+			selectedGroupId: null
 		});
 	});
 
@@ -136,6 +137,7 @@ describe('semanticRuntimeState', () => {
 						{
 							id: 'body_shell',
 							humanLabel: 'Body Shell',
+							author: 'agent',
 							aliases: ['outer shell'],
 							confidence: 0.9,
 							category: 'body_shell',
@@ -173,6 +175,7 @@ describe('semanticRuntimeState', () => {
 					ingressId: 'ingress-body-shell',
 					assetId: 'audi_r8',
 					structuralGeneratedAt: 'struct-1',
+					scope: 'global',
 					targetType: 'semantic_group',
 					targetId: 'body_shell',
 					targetLabel: 'Body Shell',
@@ -186,5 +189,13 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8').ingressBindings).toHaveLength(1);
+	});
+
+	it('tracks the selected semantic group inside the merged semantic runtime store', () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			selectedGroupId: 'body_shell'
+		});
+
+		expect(semanticRuntimeState.getAssetState('audi_r8').selectedGroupId).toBe('body_shell');
 	});
 });

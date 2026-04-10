@@ -476,6 +476,50 @@ describe('createFooterChatResponse', () => {
 		});
 		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
 		readVehicleSemanticOverlayMock.mockResolvedValue(null);
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-highlight-override',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_presentation',
+										arguments: JSON.stringify({
+											action: 'appearance',
+											request: 'make the highlighted wheel black'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Applied wheel finish.'
+						}
+					}
+				]
+			})
+			.mockResolvedValue({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Applied wheel finish.'
+						}
+					}
+				]
+			});
 		resolveVehicleIntentMock.mockResolvedValue({
 			assetId: 'audi_r8',
 			operations: [
@@ -621,6 +665,36 @@ describe('createFooterChatResponse', () => {
 			toolRoundsUsed: 0,
 			clarificationIssued: false,
 			composedToolChain: false
+		});
+	});
+
+	it('builds a targeted highlight restore when non-highlight operations override highlighted targets', async () => {
+		const { buildHighlightOverrideRestore } = await import('./index');
+
+		expect(
+			buildHighlightOverrideRestore({
+				presentation: {
+					highlightedTargets: [
+						{
+							targetId: 'material-wheel',
+							targetType: 'material',
+							targetName: 'Wheel'
+						}
+					]
+				},
+				vehiclePatchOperations: [
+					{
+						targetType: 'material',
+						targetId: 'material-wheel',
+						targetName: 'Wheel',
+						op: 'set_base_color_factor',
+						value: [0.1, 0.1, 0.1, 1]
+					}
+				]
+			})
+		).toEqual({
+			highlightedTargetIds: ['material-wheel'],
+			label: 'restore original view'
 		});
 	});
 
@@ -1290,6 +1364,7 @@ describe('createFooterChatResponse', () => {
 			ingressId: 'semantic_group-body_shell-rest_sse',
 			assetId: 'audi_r8',
 			structuralGeneratedAt: 'structural-ingress-1',
+			scope: 'global',
 			targetType: 'semantic_group',
 			targetId: 'body_shell',
 			targetLabel: 'Body Shell',
@@ -1353,6 +1428,15 @@ describe('createFooterChatResponse', () => {
 		});
 		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_semantics']);
 		expect(response.message.content).toBe('Ingress assigned for Body Shell.');
+		expect(response.semanticIngressMutation).toEqual({
+			action: 'create',
+			targetType: 'semantic_group',
+			targetId: 'body_shell',
+			targetLabel: 'Body Shell',
+			transport: 'rest_sse',
+			ingressId: 'semantic_group-body_shell-rest_sse',
+			replacedIngressId: undefined
+		});
 	});
 
 	it('restores targeted hidden nodes through the presentation restore tool', async () => {
@@ -2554,6 +2638,10 @@ describe('createFooterChatResponse', () => {
 		expect(response.message.content).toBe(
 			'Added the highlighted material-backed member to wheels.'
 		);
+		expect(response.presentationRestore).toEqual({
+			highlightedTargetIds: ['material-wheel'],
+			label: 'restore original view'
+		});
 	});
 
 	it('filters highlighted semantic mutation scope by query to avoid cross-highlight bleed', async () => {
@@ -3171,18 +3259,159 @@ describe('createFooterChatResponse', () => {
 			selectedNodes: [
 				{
 					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-10',
+					targetName: 'Wheel FL',
+					nodeIds: ['node-10'],
 					nodeId: 'node-10',
 					nodeName: 'Wheel FL',
 					nodePath: 'Scene/Wheel FL'
 				},
 				{
 					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-11',
+					targetName: 'Wheel FR',
+					nodeIds: ['node-11'],
 					nodeId: 'node-11',
 					nodeName: 'Wheel FR',
 					nodePath: 'Scene/Wheel FR'
 				}
 			],
 			label: 'Expanded selection to semantic group wheels.'
+		});
+	});
+
+	it('expands a raw node selection into a reviewed semantic part through the chat tool loop', async () => {
+		const { createFooterChatResponse } = await import('./index');
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-expand-part-1'
+		});
+		deriveStructuralAssetSnapshotMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-expand-part-1',
+			assetPath: '/tmp/audi_r8.glb',
+			scenes: [],
+			nodes: [
+				{
+					id: 'node-10',
+					name: 'Wheel FL',
+					path: 'Scene/Wheel FL',
+					parentId: null,
+					childIds: [],
+					childCount: 0,
+					meshId: 'mesh-1',
+					translation: [0, 0, 0],
+					worldTranslation: [0, 0, 0],
+					rotation: [0, 0, 0, 1],
+					scale: [1, 1, 1]
+				}
+			],
+			meshes: [
+				{
+					id: 'mesh-1',
+					name: 'Wheel FL',
+					primitiveCount: 1,
+					attributeSemantics: ['POSITION'],
+					materialIds: ['material-1'],
+					materialNames: ['Wheel'],
+					hasTexcoord0: true,
+					hasTexcoord1: false
+				}
+			],
+			materials: [{ id: 'material-1', nodeIds: ['node-10'] }]
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: 'structural-expand-part-1',
+			generatedAt: 'semantic-expand-part-1',
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [
+				{
+					id: 'front_left_wheel',
+					humanLabel: 'front left wheel',
+					aliases: ['wheel fl'],
+					confidence: 0.96,
+					category: 'wheel',
+					nodeIds: ['node-10'],
+					meshIds: ['mesh-1'],
+					materialIds: ['material-1'],
+					anchorNodeId: 'node-10',
+					side: 'left',
+					region: 'front'
+				}
+			],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-expand-part-1',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_selection',
+										arguments: JSON.stringify({
+											action: 'expand',
+											target: 'part'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Expanded the current selection to the front left wheel.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'expand this to the part',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-10',
+					nodeName: 'Wheel FL',
+					nodePath: 'Scene/Wheel FL'
+				}
+			]
+		});
+
+		expect(response.selectionUpdate).toEqual({
+			mode: 'replace',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					targetType: 'part',
+					targetId: 'front_left_wheel',
+					targetName: 'front left wheel',
+					nodeIds: ['node-10'],
+					anchorNodeId: 'node-10',
+					nodeId: 'node-10',
+					nodeName: 'Wheel FL',
+					nodePath: 'Scene/Wheel FL'
+				}
+			],
+			label: 'Expanded selection to part front left wheel.'
 		});
 	});
 

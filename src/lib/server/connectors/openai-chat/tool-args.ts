@@ -15,10 +15,20 @@ import {
 	type RestoreVehiclePresentationToolArgs,
 	type SetIntentSidebarToolArgs,
 	type SetSupplementaryReferenceListToolArgs,
-	type SetVehicleViewModeToolArgs
+	type SetVehicleViewModeToolArgs,
+	type SetOperationMode
 } from './internal';
 import { normalizeSidebarCard, normalizeSupplementaryListState } from './normalize';
 import type { FooterChatSidebarCard } from './types';
+
+const VALID_SET_OPERATIONS: SetOperationMode[] = ['replace', 'add', 'subtract', 'intersect', 'union'];
+
+function parseSetOperation(value: unknown): SetOperationMode | undefined {
+	if (typeof value === 'string' && VALID_SET_OPERATIONS.includes(value as SetOperationMode)) {
+		return value as SetOperationMode;
+	}
+	return undefined;
+}
 
 export function parseApplyVehicleAppearanceIntentToolArgs(
 	input: string

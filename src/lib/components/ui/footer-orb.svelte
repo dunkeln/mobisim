@@ -15,6 +15,7 @@
 	import { toast } from '$lib/components/ui/sonner';
 	import {
 		approveBulkApplication,
+		approveSemanticIngressApplication,
 		applyChatResponse,
 		beginFooterResponseCycle,
 		getPresentationContext,
@@ -285,8 +286,8 @@
 			selectedNodePath: selectedNodeContext.selectedNodePath,
 			selectedNodes: selectedNodeContext.selectedNodes,
 			presentation: getPresentationContext(assetId),
-			sidebar: getSidebarContext(),
-			supplementaryList: getSupplementaryListContext()
+			sidebar: getSidebarContext(assetId),
+			supplementaryList: getSupplementaryListContext(assetId)
 		};
 	}
 
@@ -374,6 +375,28 @@
 							selectionUpdate: undefined,
 							sidebar: undefined,
 							supplementaryList: undefined
+						})
+					}
+				});
+				sendRealtimeEvent({
+					type: 'response.create'
+				});
+				return;
+			}
+			const ingressApproval = await approveSemanticIngressApplication(chatResponse, assetId);
+			if (!ingressApproval.approved) {
+				sendRealtimeEvent({
+					type: 'conversation.item.create',
+					item: {
+						type: 'function_call_output',
+						call_id: callId,
+						output: JSON.stringify({
+							...chatResponse,
+							message: {
+								role: 'assistant',
+								content: ingressApproval.blockedMessage
+							},
+							semanticIngressBindings: undefined
 						})
 					}
 				});
@@ -613,9 +636,9 @@
 		const file = await blobToFile(audioBlob);
 		const selectedNodeContext = getSelectedNodeContext(assetId);
 		const presentation = getPresentationContext(assetId);
-		const sidebarContext = getSidebarContext();
-		const supplementaryListContext = getSupplementaryListContext();
-		beginFooterResponseCycle();
+		const sidebarContext = getSidebarContext(assetId);
+		const supplementaryListContext = getSupplementaryListContext(assetId);
+		beginFooterResponseCycle(assetId);
 		const formData = new FormData();
 		formData.set('audio', file);
 		if (assetId) {
@@ -674,6 +697,14 @@
 			resetOrbState();
 			toast.error('Request not applied', {
 				description: approval.blockedMessage
+			});
+			return;
+		}
+		const ingressApproval = await approveSemanticIngressApplication(payload.chat, assetId);
+		if (!ingressApproval.approved) {
+			resetOrbState();
+			toast.error('Request not applied', {
+				description: ingressApproval.blockedMessage
 			});
 			return;
 		}
@@ -739,6 +770,24 @@
 								description: chatPayload.message.content
 							});
 						} else {
+							const ingressApproval = await approveSemanticIngressApplication(event.chat, assetId);
+							if (!ingressApproval.approved) {
+								chatApproved = false;
+								chatPayload = {
+									...event.chat,
+									message: {
+										role: 'assistant',
+										content:
+											ingressApproval.blockedMessage ??
+											'Ingress approval declined. No semantic ingress changes were applied.'
+									}
+								};
+								toast.error('Request not applied', {
+									description: chatPayload.message.content
+								});
+								newlineIndex = buffer.indexOf('\n');
+								continue;
+							}
 							chatPayload = event.chat;
 							applyChatResponse(event.chat, assetId);
 							toast.success('Voice request sent', {

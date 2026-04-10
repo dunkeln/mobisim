@@ -40,6 +40,7 @@ import { describeIntentDraft, resolveIntentDraft } from './intent-resolver';
 import type {
 	FooterChatExecutionContext,
 	FooterChatPresentationContext,
+	FooterChatPresentationRestore,
 	FooterChatVehiclePatchOperation
 } from './types';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
@@ -258,6 +259,79 @@ function buildSupplementaryListFallback(input: {
 	return input.existing;
 }
 
+export function buildHighlightOverrideRestore(input: {
+	presentation?: FooterChatPresentationContext;
+	vehiclePatchOperations: FooterChatVehiclePatchOperation[];
+}): FooterChatPresentationRestore | undefined {
+	const highlightedTargets = input.presentation?.highlightedTargets ?? [];
+	if (highlightedTargets.length === 0 || input.vehiclePatchOperations.length === 0) {
+		return undefined;
+	}
+
+	const highlightedTargetIds = new Set(highlightedTargets.map((target) => target.targetId));
+	const overriddenHighlightIds = Array.from(
+		new Set(
+			input.vehiclePatchOperations
+				.filter((operation) => operation.op !== 'set_overlay_highlight')
+				.map((operation) => operation.targetId)
+				.filter((targetId) => highlightedTargetIds.has(targetId))
+		)
+	).sort((left, right) => left.localeCompare(right));
+
+	if (overriddenHighlightIds.length === 0) {
+		return undefined;
+	}
+
+	return {
+		highlightedTargetIds: overriddenHighlightIds,
+		label: 'restore original view'
+	};
+}
+
+function mergePresentationRestores(
+	base: FooterChatPresentationRestore | undefined,
+	incoming: FooterChatPresentationRestore | undefined
+): FooterChatPresentationRestore | undefined {
+	if (!base) {
+		return incoming;
+	}
+
+	if (!incoming) {
+		return base;
+	}
+
+	if (base.restoreAll || incoming.restoreAll) {
+		return {
+			restoreAll: true,
+			label: incoming.label ?? base.label ?? 'restore original view'
+		};
+	}
+
+	const mergeIds = (left?: string[], right?: string[]) => {
+		const merged = Array.from(new Set([...(left ?? []), ...(right ?? [])])).sort((a, b) =>
+			a.localeCompare(b)
+		);
+		return merged.length > 0 ? merged : undefined;
+	};
+
+	const mergeModes = (left?: string[], right?: string[]) => {
+		const merged = Array.from(new Set([...(left ?? []), ...(right ?? [])])).sort((a, b) =>
+			a.localeCompare(b)
+		);
+		return merged.length > 0 ? merged : undefined;
+	};
+
+	return {
+		highlightedTargetIds: mergeIds(base.highlightedTargetIds, incoming.highlightedTargetIds),
+		materialTargetIds: mergeIds(base.materialTargetIds, incoming.materialTargetIds),
+		hiddenTargetIds: mergeIds(base.hiddenTargetIds, incoming.hiddenTargetIds),
+		viewerModes: mergeModes(base.viewerModes, incoming.viewerModes) as
+			| FooterChatPresentationRestore['viewerModes']
+			| undefined,
+		label: incoming.label ?? base.label
+	};
+}
+
 export async function createFooterChatResponse(
 	input: FooterChatRequest,
 	executionContext: FooterChatExecutionContext = {}
@@ -385,8 +459,16 @@ export async function createFooterChatResponse(
 
 					const directResponse = await attemptDirectVehicleEdit(normalized, model);
 					if (directResponse) {
+						const highlightOverrideRestore = buildHighlightOverrideRestore({
+							presentation: normalized.presentation,
+							vehiclePatchOperations: directResponse.vehiclePatchOperations ?? []
+						});
 						return {
 							...directResponse,
+							presentationRestore: mergePresentationRestores(
+								directResponse.presentationRestore,
+								highlightOverrideRestore
+							),
 							trace: {
 								route: 'direct_edit',
 								semanticOverlayStatus: semanticOverlayForTrace.status,
@@ -423,6 +505,7 @@ export async function createFooterChatResponse(
 				let latestSemanticOverlay = undefined;
 				let latestSemanticOverlayStatus = semanticOverlay.status;
 				let latestSemanticIngressBindings = undefined;
+				let latestSemanticIngressMutation = undefined;
 				let sidebar = normalized.sidebar;
 				let supplementaryList = normalized.supplementaryList;
 				let latestToolCatalogPayload: Record<string, unknown> | undefined;
@@ -509,6 +592,10 @@ export async function createFooterChatResponse(
 						if (toolResult.semanticIngressBindings) {
 							latestSemanticIngressBindings = toolResult.semanticIngressBindings;
 						}
+
+						if (toolResult.semanticIngressMutation) {
+							latestSemanticIngressMutation = toolResult.semanticIngressMutation;
+						}
 					}
 
 					if (toolFailureMessage) {
@@ -541,6 +628,7 @@ export async function createFooterChatResponse(
 						semanticOverlayStatus: latestSemanticOverlayStatus,
 						semanticOverlay: latestSemanticOverlay,
 						semanticIngressBindings: latestSemanticIngressBindings,
+						semanticIngressMutation: latestSemanticIngressMutation,
 						trace: {
 							route: effectiveRoute,
 							semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -587,6 +675,14 @@ export async function createFooterChatResponse(
 					selectionUpdateCount: selectionUpdate?.length ?? 0,
 					finalText: text ?? ''
 				});
+				const highlightOverrideRestore = buildHighlightOverrideRestore({
+					presentation: normalized.presentation,
+					vehiclePatchOperations
+				});
+				presentationRestore = mergePresentationRestores(
+					presentationRestore,
+					highlightOverrideRestore
+				);
 
 				if (!text) {
 					if (vehiclePatchOperations.length > 0) {
@@ -619,6 +715,7 @@ export async function createFooterChatResponse(
 							semanticOverlayStatus: latestSemanticOverlayStatus,
 							semanticOverlay: latestSemanticOverlay,
 							semanticIngressBindings: latestSemanticIngressBindings,
+							semanticIngressMutation: latestSemanticIngressMutation,
 							trace: {
 								route: effectiveRoute,
 								semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -648,11 +745,20 @@ export async function createFooterChatResponse(
 				) {
 					const fallbackVehicleEditResponse = await attemptDirectVehicleEdit(normalized, model);
 					if (fallbackVehicleEditResponse) {
+						const fallbackHighlightOverrideRestore = buildHighlightOverrideRestore({
+							presentation: normalized.presentation,
+							vehiclePatchOperations: fallbackVehicleEditResponse.vehiclePatchOperations ?? []
+						});
 						return {
 							...fallbackVehicleEditResponse,
+							presentationRestore: mergePresentationRestores(
+								fallbackVehicleEditResponse.presentationRestore,
+								fallbackHighlightOverrideRestore
+							),
 							semanticOverlayStatus: latestSemanticOverlayStatus,
 							semanticOverlay: latestSemanticOverlay,
 							semanticIngressBindings: latestSemanticIngressBindings,
+							semanticIngressMutation: latestSemanticIngressMutation,
 							trace: {
 								route: 'direct_edit',
 								semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -705,6 +811,7 @@ export async function createFooterChatResponse(
 					semanticOverlayStatus: latestSemanticOverlayStatus,
 					semanticOverlay: latestSemanticOverlay,
 					semanticIngressBindings: latestSemanticIngressBindings,
+					semanticIngressMutation: latestSemanticIngressMutation,
 					trace: {
 						route: effectiveRoute,
 						semanticOverlayStatus: latestSemanticOverlayStatus,

@@ -24,9 +24,15 @@
 		VehicleInspectionCapabilities,
 		VehicleInspectionMaterialSummary
 	} from '$lib/server/connectors/gltf-preprocess/types';
-	import type { VehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+	import type {
+		VehicleSemanticOverlayStatus,
+		VehicleSemanticPartUnit
+	} from '$lib/server/connectors/vehicle-semantic-overlay/types';
+	import {
+		buildVehicleSemanticOverlayRuntimeIndex
+	} from '$lib/semantic-overlay/runtime';
 	import { chatRequestState } from '$lib/stores/chat-request-state';
-	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+	import { vehicleNodeSelection, type VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -214,9 +220,11 @@
 			.filter((selection) => selection.assetId === assetId)
 			.map((selection) =>
 				[
+					selection.targetType,
+					selection.targetId,
+					selection.targetName,
 					selection.nodeId,
-					selection.nodeName,
-					selection.nodePath,
+					(selection.nodeIds ?? [selection.nodeId]).join(','),
 					typeof selection.materialIndex === 'number' ? selection.materialIndex : 'none',
 					selection.materialName ?? ''
 				].join(':')
@@ -238,6 +246,162 @@
 			: node.material
 				? [node.material]
 				: [];
+	}
+
+	function resolveClickedMaterialId(
+		nodePath: string,
+		materialIndex?: number,
+		materialName?: string
+	): string | undefined {
+		const candidates = Array.from(materialSummaryById.values()).filter((material) => {
+			if (!material.nodePaths.includes(nodePath)) {
+				return false;
+			}
+
+			if (typeof materialIndex === 'number') {
+				return material.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex));
+			}
+
+			if (materialName) {
+				return material.name === materialName;
+			}
+
+			return true;
+		});
+
+		const ranked = candidates.sort((left, right) => {
+			const leftScore =
+				(left.name === materialName ? 2 : 0) +
+				(left.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex ?? -1)) ? 4 : 0);
+			const rightScore =
+				(right.name === materialName ? 2 : 0) +
+				(right.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex ?? -1)) ? 4 : 0);
+			return rightScore - leftScore || left.id.localeCompare(right.id);
+		});
+
+		return ranked[0]?.id;
+	}
+
+	function buildNodeSelection(
+		resolvedHit: NonNullable<ReturnType<typeof resolveRuntimeSelection>>,
+		nodePath: string
+	): VehicleNodeSelection {
+		return {
+			assetId,
+			targetType: 'node',
+			targetId: resolvedHit.nodeId,
+			targetName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
+			nodeIds: [resolvedHit.nodeId],
+			nodeId: resolvedHit.nodeId,
+			nodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
+			nodePath,
+			materialIndex: resolvedHit.materialIndex,
+			materialName: resolvedHit.materialName
+		};
+	}
+
+	function buildPartSelection(
+		part: VehicleSemanticPartUnit,
+		hit: {
+			nodeId: string;
+			nodeName: string;
+			nodePath: string;
+			materialIndex?: number;
+			materialName?: string;
+		},
+		nodeLookup: Map<string, THREE.Object3D>,
+		scene: THREE.Object3D
+	): VehicleNodeSelection {
+		const anchorNodeId = part.anchorNodeId ?? (part.nodeIds.includes(hit.nodeId) ? hit.nodeId : part.nodeIds[0]!);
+		const anchorRuntimeNode = nodeLookup.get(anchorNodeId);
+		const anchorNodeName = anchorRuntimeNode?.name.trim() || hit.nodeName || part.humanLabel;
+		const anchorNodePath = anchorRuntimeNode
+			? buildRuntimeNodePath(anchorRuntimeNode, scene)
+			: hit.nodePath;
+
+		return {
+			assetId,
+			targetType: 'part',
+			targetId: part.id,
+			targetName: part.humanLabel,
+			nodeIds: [...part.nodeIds],
+			anchorNodeId,
+			nodeId: anchorNodeId,
+			nodeName: anchorNodeName,
+			nodePath: anchorNodePath,
+			materialIndex: hit.materialIndex,
+			materialName: hit.materialName
+		};
+	}
+
+	function resolveSemanticSelectionFromHit(
+		resolvedHit: NonNullable<ReturnType<typeof resolveRuntimeSelection>>,
+		scene: THREE.Object3D
+	): VehicleNodeSelection {
+		const nodePath = buildRuntimeNodePath(resolvedHit.runtimeNode, scene);
+		const fallbackSelection = buildNodeSelection(resolvedHit, nodePath);
+		const overlay = semanticRuntimeAsset.overlay;
+		if (!overlay) {
+			return fallbackSelection;
+		}
+
+		const overlayIndex = buildVehicleSemanticOverlayRuntimeIndex(overlay);
+		const hitMaterialId = resolveClickedMaterialId(
+			nodePath,
+			resolvedHit.materialIndex,
+			resolvedHit.materialName
+		);
+		const candidateParts = Array.from(
+			new Set([
+				...(overlayIndex.partsByNodeId.get(resolvedHit.nodeId) ?? []),
+				...(hitMaterialId ? (overlayIndex.partsByMaterialId.get(hitMaterialId) ?? []) : [])
+			])
+		);
+		if (candidateParts.length === 0) {
+			return fallbackSelection;
+		}
+
+		const nodeLookup = buildRuntimeNodeLookup(scene).nodeById;
+		const bestPart = candidateParts.sort((left, right) => {
+			const leftMaterialMatch = hitMaterialId ? left.materialIds.includes(hitMaterialId) : false;
+			const rightMaterialMatch = hitMaterialId ? right.materialIds.includes(hitMaterialId) : false;
+			if (leftMaterialMatch !== rightMaterialMatch) {
+				return leftMaterialMatch ? -1 : 1;
+			}
+
+			if (left.nodeIds.length !== right.nodeIds.length) {
+				return left.nodeIds.length - right.nodeIds.length;
+			}
+
+			if (left.confidence !== right.confidence) {
+				return right.confidence - left.confidence;
+			}
+
+			const leftAnchorMatch = left.anchorNodeId === resolvedHit.nodeId;
+			const rightAnchorMatch = right.anchorNodeId === resolvedHit.nodeId;
+			if (leftAnchorMatch !== rightAnchorMatch) {
+				return leftAnchorMatch ? -1 : 1;
+			}
+
+			return left.humanLabel.localeCompare(right.humanLabel);
+		})[0];
+
+		if (!bestPart) {
+			return fallbackSelection;
+		}
+
+		return buildPartSelection(
+			bestPart,
+			{
+				nodeId: resolvedHit.nodeId,
+				nodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
+				nodePath,
+				materialIndex: resolvedHit.materialIndex,
+				materialName: resolvedHit.materialName
+			},
+			nodeLookup,
+			scene
+		);
 	}
 
 	function hasWireframeProperty(
@@ -769,14 +933,7 @@
 		}
 
 		vehicleNodeSelection.select(
-			{
-				assetId,
-				nodeId: resolvedHit.nodeId,
-				nodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
-				nodePath: buildRuntimeNodePath(resolvedHit.runtimeNode, loadedScene),
-				materialIndex: resolvedHit.materialIndex,
-				materialName: resolvedHit.materialName
-			},
+			resolveSemanticSelectionFromHit(resolvedHit, loadedScene),
 			additiveSelection
 		);
 	}
@@ -1223,17 +1380,19 @@
 
 		const nodeLookup = buildRuntimeNodeLookup(loadedScene).nodeById;
 		for (const selection of selections) {
-			const runtimeNode = nodeLookup.get(selection.nodeId);
-			if (!runtimeNode) {
-				continue;
-			}
+			for (const nodeId of selection.nodeIds ?? [selection.nodeId]) {
+				const runtimeNode = nodeLookup.get(nodeId);
+				if (!runtimeNode) {
+					continue;
+				}
 
-			addHighlightOverlay(
-				runtimeNode,
-				SELECTION_HIGHLIGHT_FACTOR,
-				SELECTION_OVERLAY_NAME,
-				selection.materialIndex
-			);
+				addHighlightOverlay(
+					runtimeNode,
+					SELECTION_HIGHLIGHT_FACTOR,
+					SELECTION_OVERLAY_NAME,
+					selection.targetType === 'node' ? selection.materialIndex : undefined
+				);
+			}
 		}
 	});
 

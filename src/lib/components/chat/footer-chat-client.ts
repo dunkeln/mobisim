@@ -93,7 +93,12 @@ export function getPresentationContext(
 		.map((operation) => operation.targetId as FooterChatViewerMode);
 
 	const hiddenTargets = patchState.presentation.nodeVisibilityOperations.filter(
-		(operation) => operation.op === 'set_visibility' && operation.value === false
+		(operation) =>
+			(operation.op === 'set_visibility' && operation.value === false) ||
+			// set_alpha ops from remove/isolate should also appear as restorable hidden
+			// targets so the model can see and restore them the same way it restores
+			// explicitly hidden nodes.
+			(operation.op === 'set_alpha' && typeof operation.value === 'number' && (operation.value as number) < 1)
 	);
 
 	const context: FooterChatPresentationContext = {
@@ -123,23 +128,29 @@ export function getSelectedNodeContext(assetId?: VehicleAssetId) {
 	return {
 		assetId,
 		selectedNodeId: selectedNodes[0]?.nodeId,
-		selectedNodeName: selectedNodes[0]?.nodeName,
+		selectedNodeName: selectedNodes[0]
+			? selectedNodes[0].targetType === 'part'
+				? `${selectedNodes[0].targetName ?? selectedNodes[0].nodeName} part`
+				: selectedNodes[0].nodeName
+			: undefined,
 		selectedNodePath: selectedNodes[0]?.nodePath,
 		selectedNodes
 	};
 }
 
-export function getSidebarContext(): FooterChatSidebarState {
-	return inspectorSidebarState.getContext();
+export function getSidebarContext(assetId?: VehicleAssetId): FooterChatSidebarState {
+	return inspectorSidebarState.getContext(assetId);
 }
 
-export function getSupplementaryListContext(): FooterChatSupplementaryListState {
-	return footerSupplementaryList.getContext();
+export function getSupplementaryListContext(assetId?: VehicleAssetId): FooterChatSupplementaryListState {
+	return footerSupplementaryList.getContext(assetId);
 }
 
-export function beginFooterResponseCycle(): void {
+export function beginFooterResponseCycle(assetId?: VehicleAssetId): void {
 	footerActiveTool.reset();
-	footerSupplementaryList.reset();
+	if (assetId) {
+		footerSupplementaryList.reset(assetId);
+	}
 }
 
 async function requestApproval(requestVariable: string): Promise<boolean> {
@@ -261,14 +272,64 @@ export async function approveBulkApplication(payload: ChatResponse): Promise<App
 			};
 }
 
+function buildSemanticIngressRequestVariable(
+	mutation: ChatResponse['semanticIngressMutation'],
+	assetId?: VehicleAssetId
+): string | null {
+	if (!assetId || !mutation) {
+		return null;
+	}
+
+	const runtimeState = semanticRuntimeState.getAssetState(assetId);
+	const selectedGroupId = runtimeState.selectedGroupId;
+	if (mutation.targetType === 'semantic_group' && selectedGroupId && mutation.targetId !== selectedGroupId) {
+		return null;
+	}
+	const targetLabel = mutation.targetLabel?.trim() || mutation.targetId;
+	const transportLabel = mutation.transport === 'rest_sse' ? 'live' : 'stream';
+
+	switch (mutation.action) {
+		case 'create':
+			return `Create ${transportLabel} ingress for ${targetLabel}?`;
+		case 'replace':
+			return `Replace ${transportLabel} ingress for ${targetLabel}?`;
+		case 'delete':
+			return `Delete ${transportLabel} ingress for ${targetLabel}?`;
+		default:
+			return null;
+	}
+}
+
+export async function approveSemanticIngressApplication(
+	payload: ChatResponse,
+	assetId?: VehicleAssetId
+): Promise<AppLayerApprovalResult> {
+	if (!payload.semanticIngressMutation) {
+		return { approved: true };
+	}
+
+	const requestVariable = buildSemanticIngressRequestVariable(payload.semanticIngressMutation, assetId);
+	if (!requestVariable) {
+		return { approved: true };
+	}
+
+	const approved = await requestApproval(requestVariable);
+	return approved
+		? { approved: true }
+		: {
+				approved: false,
+				blockedMessage: 'Ingress approval declined. No semantic ingress changes were applied.'
+			};
+}
+
 export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {
 	footerActiveTool.setFromToolCalls(payload.trace?.toolCalls ?? []);
 
 	const semanticTargetAssetId = payload.semanticOverlay?.assetId ?? assetId;
-	if (
-		semanticTargetAssetId &&
-		(payload.semanticOverlay !== undefined || payload.semanticOverlayStatus !== undefined)
-	) {
+	if (semanticTargetAssetId && payload.semanticOverlay !== undefined) {
+		// Only update the overlay store when a semantic tool explicitly returned an overlay.
+		// semanticOverlayStatus is present on every response (including pure presentation
+		// requests), so gating on that alone would wipe the store on every non-semantic call.
 		const snapshot: VehicleSemanticOverlaySnapshot = {
 			overlay: payload.semanticOverlay ?? null,
 			overlayRevision: payload.semanticOverlay?.revision ?? null,
@@ -347,13 +408,13 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 		vehicleNodeSelection.replace(assetId, payload.selectionUpdate.selectedNodes);
 	}
 
-	if (payload.sidebar) {
-		inspectorSidebarState.set(payload.sidebar);
+	if (payload.sidebar && assetId) {
+		inspectorSidebarState.set(assetId, payload.sidebar);
 	}
 
-	if (payload.supplementaryList) {
-		footerSupplementaryList.set(payload.supplementaryList);
-	} else {
-		footerSupplementaryList.reset();
+	if (assetId && payload.supplementaryList) {
+		footerSupplementaryList.set(assetId, payload.supplementaryList);
+	} else if (assetId) {
+		footerSupplementaryList.reset(assetId);
 	}
 }

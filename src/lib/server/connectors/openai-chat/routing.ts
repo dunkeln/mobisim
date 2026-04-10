@@ -18,10 +18,10 @@ function isToolCatalogRequest(message: string): boolean {
 }
 
 function needsToolPlanningFirst(message: string): boolean {
-	return (
-		/\b(and then|then|also|while|at the same time|along with|plus)\b/i.test(message) ||
-		/\b(walk me through|talk me through|figure out|decide|choose|plan|best way)\b/i.test(message)
-	);
+	// Only gate to the tool catalog when the user explicitly asks for help deciding
+	// what to do — not for compound action requests like "paint red and then highlight
+	// the wheels", which are fully deterministic and should execute directly.
+	return /\b(walk me through|talk me through|figure out|decide|choose|plan|best way)\b/i.test(message);
 }
 
 function wantsStructuredAssistantUi(message: string): boolean {

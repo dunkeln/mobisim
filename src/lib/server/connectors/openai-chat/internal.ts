@@ -2,6 +2,7 @@ import type { NormalizedVehiclePaintIntent } from '$lib/server/connectors/vehicl
 import type {
 	FooterChatPresentationContext,
 	FooterChatPresentationRestore,
+	FooterChatSemanticIngressMutation,
 	FooterChatPresentationTarget,
 	FooterChatRequest,
 	FooterChatSidebarCard,
@@ -68,9 +69,12 @@ export type ApplyVehicleAppearanceIntentToolArgs = Partial<NormalizedVehiclePain
 	scope?: 'asset' | 'selection';
 };
 
+export type SetOperationMode = 'replace' | 'add' | 'subtract' | 'intersect' | 'union';
+
 export type ApplyVehicleFocusIntentToolArgs = {
 	request: string;
 	scope?: 'asset' | 'selection';
+	setOperation?: SetOperationMode;
 };
 
 export type SetVehicleViewModeToolArgs = {
@@ -87,6 +91,7 @@ export type RestoreVehiclePresentationToolArgs = {
 	kind: 'highlights' | 'hidden' | 'viewer_modes' | 'materials' | 'all';
 	scope?: 'all' | 'matching';
 	query?: string;
+	setOperation?: SetOperationMode;
 };
 
 export type ExpandVehicleSelectionToolArgs = {
@@ -105,6 +110,7 @@ export type MutateVehicleSemanticAssignmentToolArgs = {
 	category?: VehicleSemanticGroupAnnotation['category'];
 	humanLabel?: string;
 	aliases?: string[];
+	setOperation?: SetOperationMode;
 };
 
 export type ManageVehicleSemanticGroupToolArgs = {
@@ -197,6 +203,7 @@ export type ExecutedToolResult = {
 	supplementaryList?: FooterChatSupplementaryListState;
 	semanticOverlay?: VehicleSemanticOverlay | null;
 	semanticIngressBindings?: SemanticIngressBinding[];
+	semanticIngressMutation?: FooterChatSemanticIngressMutation;
 };
 
 export type PromptBuilderInput = {

@@ -3,16 +3,25 @@ import {
 	assignSemanticIngress,
 	listSemanticIngressBindings
 } from '$lib/server/connectors/semantic-ingress';
+import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
 import { isVehicleAssetId } from '$lib/vehicles/catalog';
 import type { AssignSemanticIngressInput } from '$lib/server/connectors/semantic-ingress/types';
 
-export async function GET({ params }) {
+export async function GET({ params, locals, url }) {
 	if (!isVehicleAssetId(params.assetId)) {
 		return json({ error: 'Unknown asset id.' }, { status: 404 });
 	}
 
 	try {
-		const store = await listSemanticIngressBindings(params.assetId);
+		const session = await locals.auth();
+		const targetType = url.searchParams.get('targetType');
+		const targetId = url.searchParams.get('targetId');
+		const store = await listSemanticIngressBindings(params.assetId, {
+			userId: resolveAuthenticatedUserId(session),
+			targetType:
+				targetType === 'semantic_group' || targetType === 'semantic_node' ? targetType : undefined,
+			targetId: typeof targetId === 'string' && targetId.trim().length > 0 ? targetId.trim() : undefined
+		});
 		return json(store);
 	} catch (error) {
 		return json(
@@ -22,7 +31,7 @@ export async function GET({ params }) {
 	}
 }
 
-export async function POST({ params, request }) {
+export async function POST({ params, request, locals }) {
 	if (!isVehicleAssetId(params.assetId)) {
 		return json({ error: 'Unknown asset id.' }, { status: 404 });
 	}
@@ -43,13 +52,15 @@ export async function POST({ params, request }) {
 	}
 
 	try {
+		const session = await locals.auth();
 		const binding = await assignSemanticIngress({
 			assetId: params.assetId,
 			targetType: payload.targetType,
 			targetId: payload.targetId.trim(),
 			targetLabel: typeof payload.targetLabel === 'string' ? payload.targetLabel.trim() || undefined : undefined,
 			transport: payload.transport,
-			assignedBy: payload.assignedBy === 'model' ? 'model' : 'user'
+			assignedBy: payload.assignedBy === 'model' ? 'model' : 'user',
+			userId: resolveAuthenticatedUserId(session)
 		});
 		return json(binding);
 	} catch (error) {

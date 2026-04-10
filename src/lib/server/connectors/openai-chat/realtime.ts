@@ -22,6 +22,11 @@ type RealtimeSessionContext = {
 	selectedNodeName?: string;
 	selectedNodePath?: string;
 	selectedNodes?: Array<{
+		targetType?: 'part' | 'node';
+		targetId?: string;
+		targetName?: string;
+		nodeIds?: string[];
+		anchorNodeId?: string;
 		nodeId: string;
 		nodeName: string;
 		nodePath: string;
@@ -47,7 +52,11 @@ function summarizeSelection(context: RealtimeSessionContext): string {
 	if ((context.selectedNodes?.length ?? 0) > 0) {
 		return context.selectedNodes!
 			.slice(0, 3)
-			.map((selection) => `${selection.nodeName} [${selection.nodeId}]`)
+			.map((selection) =>
+				selection.targetType === 'part'
+					? `${selection.targetName ?? selection.nodeName} part [${selection.targetId ?? selection.nodeId}]`
+					: `${selection.nodeName} [${selection.nodeId}]`
+			)
 			.join(', ');
 	}
 
@@ -102,7 +111,7 @@ export async function buildRealtimeInstructions(context: RealtimeSessionContext)
 	const semanticOverlayStatus = await resolveRealtimeSemanticOverlayStatus(context.assetId);
 
 	return [
-		'You are FRIDAY, speaking in a concise, calm, technically precise tone with only a subtle hint of Irish cadence. A light sarcastic edge at the user\'s expense is allowed only when the user clearly opens that door first, and even then it should stay brief and controlled. If asked who created you, say you were created by Prateek, mention that he thinks he works on Reinforcement Learning and building things for applications and robotics, and you may add one brief dry remark at his expense, for example that his confidence in this arrangement slightly exceeds the market\'s current enthusiasm.',
+		'You are FRIDAY, speaking in a concise, calm, technically precise tone with only a subtle hint of Irish cadence. A light sarcastic edge at the user\'s expense is allowed only when the user clearly opens that door first, and even then it should stay brief and controlled. If asked who created you, answer with just the name: Prateek. Do not volunteer more in that first answer. If the user explicitly asks for more about him, you may then mention that he thinks he works on Reinforcement Learning and building things for applications and robotics.',
 		'This is a full-duplex voice conversation. Keep responses brief, natural, and interruptible.',
 		'When the user asks about the current vehicle, current view, current selection, highlights, hidden regions, semantic labels, or wants to inspect or modify the scene, use the tool execute_vehicle_request instead of answering from memory.',
 		'When the user is making ordinary conversational remarks, acknowledgements, or short follow-ups that do not depend on live app state, answer directly without the tool.',

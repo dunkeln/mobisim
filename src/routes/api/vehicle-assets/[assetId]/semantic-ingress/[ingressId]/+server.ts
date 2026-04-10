@@ -1,16 +1,23 @@
 import { json } from '@sveltejs/kit';
 import {
 	getSemanticIngressSnapshot,
-	ingestSemanticIngressSamples
+	ingestSemanticIngressSamples,
+	removeSemanticIngressBinding
 } from '$lib/server/connectors/semantic-ingress';
+import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
 import { isVehicleAssetId } from '$lib/vehicles/catalog';
 
-export async function GET({ params }) {
+export async function GET({ params, locals }) {
 	if (!isVehicleAssetId(params.assetId)) {
 		return json({ error: 'Unknown asset id.' }, { status: 404 });
 	}
 
-	const snapshot = await getSemanticIngressSnapshot(params.assetId, params.ingressId);
+	const session = await locals.auth();
+	const snapshot = await getSemanticIngressSnapshot(
+		params.assetId,
+		params.ingressId,
+		resolveAuthenticatedUserId(session)
+	);
 	if (!snapshot) {
 		return json({ error: 'Semantic ingress binding not found.' }, { status: 404 });
 	}
@@ -18,7 +25,7 @@ export async function GET({ params }) {
 	return json(snapshot);
 }
 
-export async function POST({ params, request }) {
+export async function POST({ params, request, locals }) {
 	if (!isVehicleAssetId(params.assetId)) {
 		return json({ error: 'Unknown asset id.' }, { status: 404 });
 	}
@@ -37,15 +44,42 @@ export async function POST({ params, request }) {
 			: [];
 
 	try {
+		const session = await locals.auth();
 		const snapshot = await ingestSemanticIngressSamples({
 			assetId: params.assetId,
 			ingressId: params.ingressId,
-			samples: samples as never[]
+			samples: samples as never[],
+			userId: resolveAuthenticatedUserId(session)
 		});
 		return json(snapshot);
 	} catch (error) {
 		return json(
 			{ error: error instanceof Error ? error.message : 'Unable to ingest semantic telemetry.' },
+			{ status: 400 }
+		);
+	}
+}
+
+export async function DELETE({ params, locals }) {
+	if (!isVehicleAssetId(params.assetId)) {
+		return json({ error: 'Unknown asset id.' }, { status: 404 });
+	}
+
+	try {
+		const session = await locals.auth();
+		const removed = await removeSemanticIngressBinding(
+			params.assetId,
+			params.ingressId,
+			resolveAuthenticatedUserId(session)
+		);
+		if (!removed) {
+			return json({ error: 'Semantic ingress binding not found.' }, { status: 404 });
+		}
+
+		return json({ removed: true });
+	} catch (error) {
+		return json(
+			{ error: error instanceof Error ? error.message : 'Unable to remove semantic ingress binding.' },
 			{ status: 400 }
 		);
 	}

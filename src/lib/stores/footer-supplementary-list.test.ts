@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { footerSupplementaryList } from './footer-supplementary-list';
 
 describe('footerSupplementaryList', () => {
+	const assetId = 'audi_r8';
+
 	beforeEach(() => {
 		vi.useFakeTimers();
 		footerSupplementaryList.reset();
@@ -13,7 +15,7 @@ describe('footerSupplementaryList', () => {
 	});
 
 	it('sanitizes and returns the active supplementary list context', () => {
-		footerSupplementaryList.set({
+		footerSupplementaryList.set(assetId, {
 			active: true,
 			entries: {
 				'  Scope  ': '  Wheels  ',
@@ -22,7 +24,7 @@ describe('footerSupplementaryList', () => {
 			}
 		});
 
-		expect(footerSupplementaryList.getContext()).toEqual({
+		expect(footerSupplementaryList.getContext(assetId)).toEqual({
 			active: true,
 			entries: {
 				Scope: 'Wheels',
@@ -32,7 +34,7 @@ describe('footerSupplementaryList', () => {
 	});
 
 	it('expires the supplementary list after the ttl', () => {
-		footerSupplementaryList.set({
+		footerSupplementaryList.set(assetId, {
 			active: true,
 			entries: {
 				Scope: 'Wheels'
@@ -41,7 +43,7 @@ describe('footerSupplementaryList', () => {
 
 		vi.advanceTimersByTime(10 * 60 * 1000);
 
-		expect(footerSupplementaryList.getContext()).toEqual({
+		expect(footerSupplementaryList.getContext(assetId)).toEqual({
 			active: false,
 			entries: {}
 		});

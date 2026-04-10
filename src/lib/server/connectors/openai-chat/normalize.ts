@@ -186,14 +186,22 @@ export function normalizeRequest(input: FooterChatRequest): NormalizedFooterChat
 				? input.selectedNodePath.trim() || undefined
 				: undefined,
 		selectedNodes: Array.isArray(input.selectedNodes)
-			? input.selectedNodes.filter(
-					(entry): entry is VehicleNodeSelection =>
-						!!entry &&
-						typeof entry.assetId === 'string' &&
-						typeof entry.nodeId === 'string' &&
-						typeof entry.nodeName === 'string' &&
-						typeof entry.nodePath === 'string'
-			  )
+			? input.selectedNodes
+					.filter(
+						(entry): entry is VehicleNodeSelection =>
+							!!entry &&
+							typeof entry.assetId === 'string' &&
+							typeof entry.nodeId === 'string' &&
+							typeof entry.nodeName === 'string' &&
+							typeof entry.nodePath === 'string'
+					)
+					.map((entry) => ({
+						...entry,
+						targetType: entry.targetType === 'part' ? 'part' : 'node',
+						targetId: entry.targetId ?? entry.nodeId,
+						targetName: entry.targetName ?? entry.nodeName,
+						nodeIds: Array.isArray(entry.nodeIds) && entry.nodeIds.length > 0 ? entry.nodeIds : [entry.nodeId]
+					}))
 			: [],
 		presentation: normalizePresentationContext(input.presentation),
 		sidebar: normalizeSidebarState(input.sidebar),

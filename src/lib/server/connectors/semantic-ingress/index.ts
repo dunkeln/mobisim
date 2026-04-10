@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
@@ -10,6 +11,7 @@ import type {
 	AssignSemanticIngressInput,
 	IngestSemanticIngressSamplesInput,
 	SemanticIngressBinding,
+	ListSemanticIngressBindingsOptions,
 	SemanticIngressNumericSample,
 	SemanticIngressSnapshot,
 	SemanticIngressStore
@@ -45,6 +47,54 @@ function buildIngressPaths(
 	};
 }
 
+function buildScopeKey(userId: string): string {
+	return createHash('sha1').update(userId).digest('hex').slice(0, 12);
+}
+
+function resolveBindingScope(input: AssignSemanticIngressInput): Pick<SemanticIngressBinding, 'scope' | 'scopeKey'> {
+	if (input.assignedBy === 'model') {
+		return {
+			scope: 'global'
+		};
+	}
+
+	if (!input.userId) {
+		throw new Error('A signed-in user is required for user-scoped semantic ingress.');
+	}
+
+	return {
+		scope: 'user',
+		scopeKey: buildScopeKey(input.userId)
+	};
+}
+
+function isBindingVisibleToUser(binding: SemanticIngressBinding, userId?: string | null): boolean {
+	if (binding.scope !== 'user') {
+		return true;
+	}
+
+	if (!userId) {
+		return false;
+	}
+
+	return binding.scopeKey === buildScopeKey(userId);
+}
+
+function matchesBindingFilter(
+	binding: SemanticIngressBinding,
+	options: ListSemanticIngressBindingsOptions
+): boolean {
+	if (options.targetType && binding.targetType !== options.targetType) {
+		return false;
+	}
+
+	if (typeof options.targetId === 'string' && options.targetId.trim().length > 0) {
+		return binding.targetId === options.targetId.trim();
+	}
+
+	return true;
+}
+
 function normalizeBinding(value: unknown): SemanticIngressBinding | null {
 	if (!value || typeof value !== 'object') {
 		return null;
@@ -55,6 +105,11 @@ function normalizeBinding(value: unknown): SemanticIngressBinding | null {
 	const assetId = typeof candidate.assetId === 'string' ? candidate.assetId.trim() : '';
 	const structuralGeneratedAt =
 		typeof candidate.structuralGeneratedAt === 'string' ? candidate.structuralGeneratedAt : '';
+	const scope = candidate.scope === 'user' || candidate.scope === 'global' ? candidate.scope : 'global';
+	const scopeKey =
+		typeof candidate.scopeKey === 'string' && candidate.scopeKey.trim().length > 0
+			? candidate.scopeKey.trim()
+			: undefined;
 	const targetType =
 		candidate.targetType === 'semantic_group' || candidate.targetType === 'semantic_node'
 			? candidate.targetType
@@ -78,6 +133,8 @@ function normalizeBinding(value: unknown): SemanticIngressBinding | null {
 		ingressId,
 		assetId: assetId as SemanticIngressBinding['assetId'],
 		structuralGeneratedAt,
+		scope,
+		scopeKey,
 		targetType,
 		targetId,
 		targetLabel,
@@ -264,13 +321,22 @@ export async function assignSemanticIngress(
 	const capabilities = await deriveVehicleInspectionCapabilities(input.assetId);
 	await assertTargetExists(input, capabilities.generatedAt);
 	const store = await readStore(input.assetId, capabilities.generatedAt);
-	const ingressId = `${input.targetType}-${slugify(input.targetId)}-${input.transport}`;
+	const bindingScope = resolveBindingScope(input);
+	const ingressId = [
+		input.targetType,
+		slugify(input.targetId),
+		input.transport,
+		bindingScope.scope === 'user' && bindingScope.scopeKey ? `user-${bindingScope.scopeKey}` : null
+	]
+		.filter((part): part is string => Boolean(part))
+		.join('-');
 	const assignedAt = new Date().toISOString();
 
 	const nextBinding: SemanticIngressBinding = {
 		ingressId,
 		assetId: input.assetId,
 		structuralGeneratedAt: capabilities.generatedAt,
+		...bindingScope,
 		targetType: input.targetType,
 		targetId: input.targetId,
 		targetLabel: input.targetLabel,
@@ -283,6 +349,8 @@ export async function assignSemanticIngress(
 	const filteredBindings = store.bindings.filter(
 		(binding) =>
 			!(
+				binding.scope === nextBinding.scope &&
+				(binding.scopeKey ?? '') === (nextBinding.scopeKey ?? '') &&
 				binding.targetType === nextBinding.targetType &&
 				binding.targetId === nextBinding.targetId &&
 				binding.transport === nextBinding.transport
@@ -302,31 +370,47 @@ export async function assignSemanticIngress(
 }
 
 export async function listSemanticIngressBindings(
-	assetId: AssignSemanticIngressInput['assetId']
+	assetId: AssignSemanticIngressInput['assetId'],
+	options: ListSemanticIngressBindingsOptions = {}
 ): Promise<SemanticIngressStore> {
-	return (
+	const store =
 		(await readLatestStoreForAsset(assetId)) ?? {
 			assetId,
 			structuralGeneratedAt: '',
 			bindings: [],
 			samplesByIngress: {}
-		}
+		};
+
+	const visibleBindings = store.bindings.filter(
+		(binding) => isBindingVisibleToUser(binding, options.userId) && matchesBindingFilter(binding, options)
 	);
+
+	return {
+		...store,
+		bindings: visibleBindings,
+		samplesByIngress: Object.fromEntries(
+			Object.entries(store.samplesByIngress ?? {}).filter(([ingressId]) =>
+				visibleBindings.some((binding) => binding.ingressId === ingressId)
+			)
+		)
+	};
 }
 
 export async function getSemanticIngressBinding(
 	assetId: AssignSemanticIngressInput['assetId'],
-	ingressId: string
+	ingressId: string,
+	userId?: string | null
 ): Promise<SemanticIngressBinding | null> {
-	const store = await listSemanticIngressBindings(assetId);
+	const store = await listSemanticIngressBindings(assetId, { userId });
 	return store.bindings.find((binding) => binding.ingressId === ingressId) ?? null;
 }
 
 export async function getSemanticIngressSnapshot(
 	assetId: AssignSemanticIngressInput['assetId'],
-	ingressId: string
+	ingressId: string,
+	userId?: string | null
 ): Promise<SemanticIngressSnapshot | null> {
-	const store = await listSemanticIngressBindings(assetId);
+	const store = await listSemanticIngressBindings(assetId, { userId });
 	const binding = store.bindings.find((entry) => entry.ingressId === ingressId);
 	if (!binding) {
 		return null;
@@ -339,12 +423,15 @@ export async function getSemanticIngressSnapshot(
 }
 
 export async function ingestSemanticIngressSamples(
-	input: IngestSemanticIngressSamplesInput
+	input: IngestSemanticIngressSamplesInput & { userId?: string | null }
 ): Promise<SemanticIngressSnapshot> {
 	const capabilities = await deriveVehicleInspectionCapabilities(input.assetId);
 	const store = await readStore(input.assetId, capabilities.generatedAt);
 	const binding = store.bindings.find((entry) => entry.ingressId === input.ingressId);
 	if (!binding) {
+		throw new Error(`Semantic ingress binding ${input.ingressId} was not found on the active asset.`);
+	}
+	if (!isBindingVisibleToUser(binding, input.userId)) {
 		throw new Error(`Semantic ingress binding ${input.ingressId} was not found on the active asset.`);
 	}
 
@@ -376,6 +463,33 @@ export async function ingestSemanticIngressSamples(
 		binding,
 		samples: nextSamples
 	};
+}
+
+export async function removeSemanticIngressBinding(
+	assetId: AssignSemanticIngressInput['assetId'],
+	ingressId: string,
+	userId?: string | null
+): Promise<boolean> {
+	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
+	const store = await readStore(assetId, capabilities.generatedAt);
+	const binding = store.bindings.find((entry) => entry.ingressId === ingressId);
+	if (!binding || !isBindingVisibleToUser(binding, userId)) {
+		return false;
+	}
+
+	const remainingBindings = store.bindings.filter((entry) => entry.ingressId !== ingressId);
+	const nextSamplesByIngress = Object.fromEntries(
+		Object.entries(store.samplesByIngress ?? {}).filter(([currentIngressId]) => currentIngressId !== ingressId)
+	);
+
+	await writeStore({
+		assetId,
+		structuralGeneratedAt: capabilities.generatedAt,
+		bindings: remainingBindings,
+		samplesByIngress: nextSamplesByIngress
+	});
+
+	return true;
 }
 
 export function subscribeSemanticIngressSamples(

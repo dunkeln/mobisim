@@ -12,6 +12,7 @@ export type SemanticRuntimeAssetState = {
 	overlayRevision: number | null;
 	overlayStatus: VehicleSemanticOverlayStatus;
 	ingressBindings: SemanticIngressBinding[];
+	selectedGroupId: string | null;
 };
 
 type SemanticRuntimeState = {
@@ -22,6 +23,7 @@ export type SemanticRuntimeAssetPatch = {
 	overlaySnapshot?: VehicleSemanticOverlaySnapshot;
 	overlayStatus?: VehicleSemanticOverlayStatus;
 	ingressBindings?: SemanticIngressBinding[];
+	selectedGroupId?: string | null;
 };
 
 const INITIAL_STATE: SemanticRuntimeState = {
@@ -36,7 +38,8 @@ function cloneAssetState(
 		overlayRevision:
 			typeof state?.overlayRevision === 'number' ? state.overlayRevision : state?.overlay?.revision ?? null,
 		overlayStatus: state?.overlayStatus ?? 'unknown',
-		ingressBindings: [...(state?.ingressBindings ?? [])]
+		ingressBindings: [...(state?.ingressBindings ?? [])],
+		selectedGroupId: state?.selectedGroupId ?? null
 	};
 }
 
@@ -95,7 +98,11 @@ function createSemanticRuntimeStore() {
 					ingressBindings:
 						patch.ingressBindings !== undefined
 							? [...patch.ingressBindings]
-							: currentAssetState.ingressBindings
+							: currentAssetState.ingressBindings,
+					selectedGroupId:
+						patch.selectedGroupId !== undefined
+							? patch.selectedGroupId
+							: currentAssetState.selectedGroupId
 				};
 
 				return apply({

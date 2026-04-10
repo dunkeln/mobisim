@@ -65,6 +65,7 @@ describe('semantic ingress', () => {
 			assignedBy: 'model'
 		});
 
+		expect(binding.scope).toBe('global');
 		expect(binding.restPath).toBe(
 			'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse'
 		);
@@ -86,11 +87,13 @@ describe('semantic ingress', () => {
 			targetType: 'semantic_node',
 			targetId: 'node-1',
 			targetLabel: 'Left Door',
-			transport: 'stream'
+			transport: 'stream',
+			userId: 'email:test@example.com'
 		});
 
+		expect(binding.scope).toBe('user');
 		expect(binding.streamPath).toBe(
-			'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_node-node-1-stream/events'
+			`/api/vehicle-assets/audi_r8/semantic-ingress/${binding.ingressId}/events`
 		);
 		expect(binding.restPath).toBeUndefined();
 	});
@@ -112,7 +115,8 @@ describe('semantic ingress', () => {
 			targetType: 'semantic_group',
 			targetId: 'body_shell',
 			targetLabel: 'Body Shell',
-			transport: 'rest_sse'
+			transport: 'rest_sse',
+			assignedBy: 'model'
 		});
 
 		readFileMock.mockResolvedValue(
@@ -168,7 +172,7 @@ describe('semantic ingress', () => {
 	});
 
 	it('lists persisted bindings without deriving vehicle capabilities', async () => {
-		const { listSemanticIngressBindings } = await import('./index');
+		const { listSemanticIngressBindings, removeSemanticIngressBinding } = await import('./index');
 
 		deriveVehicleInspectionCapabilitiesMock.mockReset();
 		readFileMock.mockResolvedValue(
@@ -180,6 +184,7 @@ describe('semantic ingress', () => {
 						ingressId: 'semantic_group-body-shell-rest_sse',
 						assetId: 'audi_r8',
 						structuralGeneratedAt: 'structural-1',
+						scope: 'global',
 						targetType: 'semantic_group',
 						targetId: 'body_shell',
 						targetLabel: 'Body Shell',
@@ -201,5 +206,110 @@ describe('semantic ingress', () => {
 
 		expect(deriveVehicleInspectionCapabilitiesMock).not.toHaveBeenCalled();
 		expect(store.bindings).toHaveLength(1);
+	});
+
+	it('filters user-scoped bindings to the active user and requested semantic group', async () => {
+		const { listSemanticIngressBindings, removeSemanticIngressBinding } = await import('./index');
+
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				assetId: 'audi_r8',
+				structuralGeneratedAt: 'structural-1',
+				bindings: [
+					{
+						ingressId: 'semantic_group-body-shell-rest_sse-user-aaaa1111aaaa',
+						assetId: 'audi_r8',
+						structuralGeneratedAt: 'structural-1',
+						scope: 'user',
+						scopeKey: 'aaaa1111aaaa',
+						targetType: 'semantic_group',
+						targetId: 'body_shell',
+						targetLabel: 'Body Shell',
+						transport: 'rest_sse',
+						assignedAt: '2026-04-08T12:00:00.000Z',
+						assignedBy: 'user',
+						restPath:
+							'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse-user-aaaa1111aaaa',
+						ssePath:
+							'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse-user-aaaa1111aaaa/events'
+					},
+					{
+						ingressId: 'semantic_group-wheels-rest_sse',
+						assetId: 'audi_r8',
+						structuralGeneratedAt: 'structural-1',
+						scope: 'global',
+						targetType: 'semantic_group',
+						targetId: 'wheels',
+						targetLabel: 'Wheels',
+						transport: 'rest_sse',
+						assignedAt: '2026-04-08T12:00:00.000Z',
+						assignedBy: 'model',
+						restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-wheels-rest_sse',
+						ssePath:
+							'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-wheels-rest_sse/events'
+					}
+				],
+				samplesByIngress: {}
+			})
+		);
+		readdirMock.mockResolvedValue(['structural-1.json']);
+		statMock.mockResolvedValue({ mtimeMs: 10 } as never);
+
+		const store = await listSemanticIngressBindings('audi_r8', {
+			userId: 'email:other@example.com',
+			targetType: 'semantic_group',
+			targetId: 'body_shell'
+		});
+
+		expect(store.bindings).toEqual([]);
+		await expect(
+			removeSemanticIngressBinding('audi_r8', 'semantic_group-body-shell-rest_sse-user-aaaa1111aaaa', 'email:other@example.com')
+		).resolves.toBe(false);
+	});
+
+	it('removes a visible binding and drops its retained samples', async () => {
+		const { removeSemanticIngressBinding } = await import('./index');
+
+		readFileMock.mockResolvedValue(
+			JSON.stringify({
+				assetId: 'audi_r8',
+				structuralGeneratedAt: 'structural-1',
+				bindings: [
+					{
+						ingressId: 'semantic_group-body-shell-rest_sse',
+						assetId: 'audi_r8',
+						structuralGeneratedAt: 'structural-1',
+						scope: 'global',
+						targetType: 'semantic_group',
+						targetId: 'body_shell',
+						targetLabel: 'Body Shell',
+						transport: 'rest_sse',
+						assignedAt: '2026-04-08T12:00:00.000Z',
+						assignedBy: 'model',
+						restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse',
+						ssePath:
+							'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse/events'
+					}
+				],
+				samplesByIngress: {
+					'semantic_group-body-shell-rest_sse': [
+						{
+							timestamp: '2026-04-08T12:00:00.000Z',
+							value: 12
+						}
+					]
+				}
+			})
+		);
+
+		await expect(
+			removeSemanticIngressBinding('audi_r8', 'semantic_group-body-shell-rest_sse')
+		).resolves.toBe(true);
+		const persistedStore = JSON.parse(writeFileMock.mock.calls.at(-1)?.[1] as string) as {
+			bindings: Array<{ ingressId: string }>;
+			samplesByIngress: Record<string, unknown>;
+		};
+		expect(persistedStore.bindings).toEqual([]);
+		expect(persistedStore.samplesByIngress).toEqual({});
 	});
 });

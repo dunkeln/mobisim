@@ -141,7 +141,9 @@ function mergePresentationOperations(
 		(operation) => operation.targetType === 'material' && !isHighlightOperation(operation)
 	);
 	const nextNodeVisibilityOperations = incoming.filter(
-		(operation) => operation.targetType === 'node' && operation.op === 'set_visibility'
+		(operation) =>
+			operation.targetType === 'node' &&
+			(operation.op === 'set_visibility' || operation.op === 'set_alpha')
 	);
 	const nextViewerOperations = incoming.filter((operation) => operation.targetType === 'viewer');
 
@@ -290,6 +292,10 @@ function getChangeSearchText(change: VehiclePresentationChangeEntry): string {
 				return ['visibility', operation.value === false ? 'hide' : 'show'];
 			}
 
+			if (operation.targetType === 'node' && operation.op === 'set_alpha') {
+				return ['remove', 'hide', 'visibility', 'alpha', 'isolate'];
+			}
+
 			if (operation.targetType === 'viewer') {
 				return ['view', String(operation.targetId)];
 			}
@@ -371,7 +377,10 @@ function inferChangeKinds(change: VehiclePresentationChangeEntry): Set<VehiclePr
 			kinds.add('material');
 			continue;
 		}
-		if (operation.targetType === 'node' && operation.op === 'set_visibility') {
+		if (
+			operation.targetType === 'node' &&
+			(operation.op === 'set_visibility' || operation.op === 'set_alpha')
+		) {
 			kinds.add('visibility');
 			continue;
 		}

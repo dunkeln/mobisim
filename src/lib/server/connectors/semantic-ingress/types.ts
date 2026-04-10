@@ -7,6 +7,8 @@ export type SemanticIngressBinding = {
 	ingressId: string;
 	assetId: VehicleAssetId;
 	structuralGeneratedAt: string;
+	scope: 'global' | 'user';
+	scopeKey?: string;
 	targetType: SemanticIngressTargetType;
 	targetId: string;
 	targetLabel?: string;
@@ -40,6 +42,7 @@ export type AssignSemanticIngressInput = {
 	targetLabel?: string;
 	transport: SemanticIngressTransport;
 	assignedBy?: 'model' | 'user';
+	userId?: string | null;
 };
 
 export type IngestSemanticIngressSamplesInput = {
@@ -51,4 +54,10 @@ export type IngestSemanticIngressSamplesInput = {
 export type SemanticIngressSnapshot = {
 	binding: SemanticIngressBinding;
 	samples: SemanticIngressNumericSample[];
+};
+
+export type ListSemanticIngressBindingsOptions = {
+	userId?: string | null;
+	targetType?: SemanticIngressTargetType;
+	targetId?: string;
 };

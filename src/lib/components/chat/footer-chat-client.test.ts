@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	approveBulkApplication,
+	approveSemanticIngressApplication,
 	applyChatResponse,
 	beginFooterResponseCycle,
 	prepareSemanticBootstrapForRequest
@@ -23,6 +24,8 @@ function buildResponse(overrides: Partial<FooterChatResponse> = {}): FooterChatR
 }
 
 describe('footer chat footer lifecycle', () => {
+	const assetId = 'audi_r8';
+
 	beforeEach(() => {
 		footerActiveTool.reset();
 		footerSupplementaryList.reset();
@@ -32,14 +35,14 @@ describe('footer chat footer lifecycle', () => {
 
 	it('tears down tool and supplementary footer UI at the start of a new model cycle', () => {
 		footerActiveTool.setFromToolCalls(['set_vehicle_view_mode']);
-		footerSupplementaryList.set({
+		footerSupplementaryList.set(assetId, {
 			active: true,
 			entries: {
 				Selection: 'selected body shell'
 			}
 		});
 
-		beginFooterResponseCycle();
+		beginFooterResponseCycle(assetId);
 
 		expect(footerActiveTool.getSnapshot()).toEqual({
 			active: false,
@@ -48,14 +51,14 @@ describe('footer chat footer lifecycle', () => {
 			toolLabels: [],
 			toolNames: []
 		});
-		expect(footerSupplementaryList.getContext()).toEqual({
+		expect(footerSupplementaryList.getContext(assetId)).toEqual({
 			active: false,
 			entries: {}
 		});
 	});
 
 	it('clears the supplementary list when the response does not provide one', () => {
-		footerSupplementaryList.set({
+		footerSupplementaryList.set(assetId, {
 			active: true,
 			entries: {
 				Selection: 'selected body shell'
@@ -71,10 +74,11 @@ describe('footer chat footer lifecycle', () => {
 					sidebarAction: 'unchanged',
 					supplementaryListAction: 'cleared'
 				}
-			})
+			}),
+			assetId
 		);
 
-		expect(footerSupplementaryList.getContext()).toEqual({
+		expect(footerSupplementaryList.getContext(assetId)).toEqual({
 			active: false,
 			entries: {}
 		});
@@ -97,6 +101,7 @@ describe('footer chat footer lifecycle', () => {
 						{
 							id: 'body_shell',
 							humanLabel: 'Body Shell',
+							author: 'agent',
 							aliases: [],
 							confidence: 1,
 							category: 'body_shell',
@@ -113,6 +118,7 @@ describe('footer chat footer lifecycle', () => {
 						ingressId: 'ingress-body-shell',
 						assetId: 'audi_r8',
 						structuralGeneratedAt: 'struct-1',
+						scope: 'global',
 						targetType: 'semantic_group',
 						targetId: 'body_shell',
 						targetLabel: 'Body Shell',
@@ -141,6 +147,7 @@ describe('footer chat footer lifecycle', () => {
 					{
 						id: 'body_shell',
 						humanLabel: 'Body Shell',
+						author: 'agent',
 						aliases: [],
 						confidence: 1,
 						category: 'body_shell',
@@ -159,6 +166,7 @@ describe('footer chat footer lifecycle', () => {
 					ingressId: 'ingress-body-shell',
 					assetId: 'audi_r8',
 					structuralGeneratedAt: 'struct-1',
+					scope: 'global',
 					targetType: 'semantic_group',
 					targetId: 'body_shell',
 					targetLabel: 'Body Shell',
@@ -168,7 +176,8 @@ describe('footer chat footer lifecycle', () => {
 					restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/ingress-body-shell',
 					ssePath: '/api/vehicle-assets/audi_r8/semantic-ingress/ingress-body-shell/events'
 				}
-			]
+			],
+			selectedGroupId: null
 		});
 	});
 
@@ -228,6 +237,50 @@ describe('footer chat footer lifecycle', () => {
 		await expect(decision).resolves.toEqual({
 			approved: false,
 			blockedMessage: 'Approval declined. No changes were applied.'
+		});
+	});
+
+	it('gates semantic ingress creation through the shared app-layer request gate', async () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			selectedGroupId: 'body_shell',
+			ingressBindings: []
+		});
+
+		const decision = approveSemanticIngressApplication(
+			buildResponse({
+				semanticIngressMutation: {
+					action: 'create',
+					targetType: 'semantic_group',
+					targetId: 'body_shell',
+					targetLabel: 'Body Shell',
+					transport: 'rest_sse',
+					ingressId: 'semantic_group-body-shell-rest_sse'
+				},
+				semanticIngressBindings: [
+					{
+						ingressId: 'semantic_group-body-shell-rest_sse',
+						assetId: 'audi_r8',
+						structuralGeneratedAt: 'struct-1',
+						scope: 'global',
+						targetType: 'semantic_group',
+						targetId: 'body_shell',
+						targetLabel: 'Body Shell',
+						transport: 'rest_sse',
+						assignedAt: '2026-04-08T00:00:00.000Z',
+						assignedBy: 'model',
+						restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse',
+						ssePath:
+							'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body-shell-rest_sse/events'
+					}
+				]
+			}),
+			'audi_r8'
+		);
+
+		requestGate.resolveRejected();
+		await expect(decision).resolves.toEqual({
+			approved: false,
+			blockedMessage: 'Ingress approval declined. No semantic ingress changes were applied.'
 		});
 	});
 });

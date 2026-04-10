@@ -61,7 +61,11 @@ function summarizeSelection(selection: ContextHistorySelectionSummary[]): string
 
 	return `selection ${selection
 		.slice(0, 3)
-		.map((item) => `${item.nodeName} [${item.nodeId}]`)
+		.map((item) =>
+			item.targetType === 'part'
+				? `${item.targetName} part [${item.targetId}]`
+				: `${item.nodeName} [${item.nodeId}]`
+		)
 		.join(', ')}${selection.length > 3 ? ` +${selection.length - 3}` : ''}`;
 }
 
@@ -196,6 +200,11 @@ export function compactResolvedHistoryContext(input: {
 
 function toSelectionSummary(selectedNodes: VehicleNodeSelection[]): ContextHistorySelectionSummary[] {
 	return selectedNodes.map((selection) => ({
+		targetType: selection.targetType ?? 'node',
+		targetId: selection.targetId ?? selection.nodeId,
+		targetName: selection.targetName ?? selection.nodeName,
+		nodeIds: [...(selection.nodeIds ?? [selection.nodeId])],
+		anchorNodeId: selection.anchorNodeId,
 		nodeId: selection.nodeId,
 		nodeName: selection.nodeName,
 		nodePath: selection.nodePath,
@@ -219,6 +228,7 @@ function extractAliases(input: {
 	}
 
 	for (const selection of input.selection) {
+		aliases.add(selection.targetName.toLowerCase());
 		aliases.add(selection.nodeName.toLowerCase());
 	}
 

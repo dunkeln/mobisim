@@ -2,6 +2,7 @@ import {
 	getSemanticIngressSnapshot,
 	subscribeSemanticIngressSamples
 } from '$lib/server/connectors/semantic-ingress';
+import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
 import { isVehicleAssetId } from '$lib/vehicles/catalog';
 import type { SemanticIngressNumericSample } from '$lib/server/connectors/semantic-ingress/types';
 
@@ -86,12 +87,17 @@ function createSseStream(input: {
 	});
 }
 
-export async function GET({ params }) {
+export async function GET({ params, locals }) {
 	if (!isVehicleAssetId(params.assetId)) {
 		return new Response('Unknown asset id.', { status: 404 });
 	}
 
-	const snapshot = await getSemanticIngressSnapshot(params.assetId, params.ingressId);
+	const session = await locals.auth();
+	const snapshot = await getSemanticIngressSnapshot(
+		params.assetId,
+		params.ingressId,
+		resolveAuthenticatedUserId(session)
+	);
 	if (!snapshot) {
 		return new Response('Semantic ingress binding not found.', { status: 404 });
 	}

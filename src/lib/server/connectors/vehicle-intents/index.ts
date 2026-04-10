@@ -25,7 +25,6 @@ import type {
 const HEADLIGHT_ON_EMISSIVE: [number, number, number] = [1, 0.95, 0.82];
 const TAILLIGHT_ON_EMISSIVE: [number, number, number] = [1, 0.14, 0.1];
 const ISOLATE_CONTEXT_ALPHA = 0.18;
-const ISOLATE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.64, 0.68, 0.9, 0.96];
 const REMOVE_PART_ALPHA = 0.08;
 const NAMED_PAINT_COLORS: Record<string, [number, number, number]> = {
 	black: [0.08, 0.08, 0.1],
@@ -525,7 +524,7 @@ export function parseWindowTint(
 }
 
 function shouldHighlightPart(request: string): boolean {
-	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(
+	return /\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|show just|just show|show me just|keep only|only keep|concentrate on|emphasize|point out|zoom to|zoom in on|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(
 		request
 	);
 }
@@ -565,10 +564,10 @@ export function isVehicleEditRequest(request: string): boolean {
 function extractHighlightQuery(request: string): string {
 	return request
 		.replace(
-			/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/gi,
+			/\b(highlight|call out|focus on|focus|mark|spotlight|isolate|show only|only show|show just|just show|show me just|keep only|only keep|concentrate on|emphasize|point out|zoom to|zoom in on|select|selected|pick out|pick|choose|remove|strip out|take out|pull out|bring out|expand out|separate out)\b/gi,
 			' '
 		)
-		.replace(/\b(the|a|an|please|car|vehicle|part|parts)\b/gi, ' ')
+		.replace(/\b(the|a|an|please|just|me|car|vehicle|part|parts)\b/gi, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
 }
@@ -727,15 +726,15 @@ function scoreSemanticEntityMatch(
 }
 
 function inferPartIntentMode(request: string): VehiclePartIntentMode {
-	if (/\b(remove|removed|strip out|take out|xray out|pull out|bring out|expand out|separate out)\b/i.test(request)) {
+	if (/\b(remove|removed|strip out|take out|pull out|bring out|expand out|separate out)\b/i.test(request)) {
 		return 'remove';
 	}
 
-	if (/\bisolate|show only|only show\b/i.test(request)) {
+	if (/\b(isolate|show only|only show|show just|just show|show me just|keep only|only keep|concentrate on)\b/i.test(request)) {
 		return 'isolate';
 	}
 
-	if (/\bfocus on|focus\b/i.test(request)) {
+	if (/\b(focus on|focus)\b/i.test(request)) {
 		return 'focus';
 	}
 
@@ -1165,8 +1164,27 @@ export async function planVehiclePartIntent(
 	}
 
 	if (mode === 'isolate') {
+		if (matchedNodeIds.length === 0) {
+			// No nodes resolved — do not fade out the entire scene. Return early with
+			// an honest summary so the model can report the failure rather than silently
+			// nuking the viewport.
+			return {
+				assetId,
+				mode,
+				partQuery: normalizedQuery,
+				matchedPartIds: [],
+				matchedPartLabels: [],
+				matchedNodeIds: [],
+				matchedMaterialIds: [],
+				matchedPaths: [],
+				matchedMaterialNames: [],
+				operations: [],
+				summary: `Could not isolate "${normalizedQuery}" — no matching nodes were found.`
+			};
+		}
+
 		const matchedNodeIdSet = new Set(matchedNodeIds);
-		const contextNodeOperations = capabilities.controlCandidates
+		operations = capabilities.controlCandidates
 			.filter((candidate) => !matchedNodeIdSet.has(candidate.nodeId) && candidate.meshId !== null)
 			.map((candidate) => ({
 				targetType: 'node' as const,
@@ -1175,14 +1193,6 @@ export async function planVehiclePartIntent(
 				op: 'set_alpha' as const,
 				value: ISOLATE_CONTEXT_ALPHA
 			}));
-		const highlightNodeOperations = matchedNodeIds.map((nodeId) => ({
-			targetType: 'node' as const,
-			targetId: nodeId,
-			targetName: matchedPartLabels.join(', '),
-			op: 'set_overlay_highlight' as const,
-			value: ISOLATE_HIGHLIGHT_FACTOR
-		}));
-		operations = [...contextNodeOperations, ...highlightNodeOperations];
 	}
 
 	if (mode === 'remove') {
@@ -1208,14 +1218,13 @@ export async function planVehiclePartIntent(
 		matchedPaths: collectEntityMatchedPaths(capabilities, matchedEntities),
 		matchedMaterialNames,
 		operations,
-		summary:
-			mode === 'highlight'
-				? `Highlighted ${matchedPartLabels.join(', ')}.`
-				: mode === 'isolate'
-					? `Isolated ${matchedPartLabels.join(', ')}.`
-					: mode === 'remove'
-						? `Removed ${matchedPartLabels.join(', ')} by reducing matched-part alpha.`
-						: `Matched ${matchedPartLabels.join(', ')} for ${mode}.`
+		summary: (() => {
+			const label = matchedPartLabels.length > 0 ? matchedPartLabels.join(', ') : `"${normalizedQuery}"`;
+			if (mode === 'highlight') return `Highlighted ${label}.`;
+			if (mode === 'isolate') return `Isolated ${label}.`;
+			if (mode === 'remove') return `Removed ${label}.`;
+			return `Matched ${label} for ${mode}.`;
+		})()
 	};
 }
 

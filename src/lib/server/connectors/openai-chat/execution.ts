@@ -103,10 +103,19 @@ async function restrictOperationsToSelection(
 	const structure = await deriveStructuralAssetSnapshot(activeAssetId);
 	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
 	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
-	const selectedNodeIds = new Set(scopedSelections.map((selection) => selection.nodeId));
+	const overlay = await readVehicleSemanticOverlay(activeAssetId);
+	const partById = new Map((overlay?.acceptedParts ?? []).map((part) => [part.id, part]));
+	const selectedNodeIds = new Set(
+		scopedSelections.flatMap((selection) => selection.nodeIds ?? [selection.nodeId])
+	);
 	const selectedMaterialIds = new Set<string>();
 
 	for (const selection of scopedSelections) {
+		if (selection.targetType === 'part' && selection.targetId) {
+			const part = partById.get(selection.targetId);
+			part?.materialIds.forEach((materialId) => selectedMaterialIds.add(materialId));
+		}
+
 		const node = nodeById.get(selection.nodeId);
 		if (!node?.meshId) {
 			continue;
@@ -337,6 +346,7 @@ export async function attemptDirectSemanticEdit(
 									? `Removed the highlighted node-backed member from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
 									: `Removed the highlighted target from ${humanizeSemanticGroupLabel(groupReference.humanLabel ?? groupReference.semanticGroup)}.`
 		},
+		presentationRestore: toolResult.presentationRestore,
 		semanticOverlay: toolResult.semanticOverlay,
 		semanticOverlayStatus: 'fresh' as const
 	};
@@ -438,15 +448,37 @@ async function expandVehicleSelection(
 	const structure = await deriveStructuralAssetSnapshot(activeAssetId);
 	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
 	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
+	const toNodeSelection = (nodeId: string): VehicleNodeSelection | null => {
+		const node = nodeById.get(nodeId);
+		if (!node) {
+			return null;
+		}
+
+		return {
+			assetId: activeAssetId,
+			targetType: 'node',
+			targetId: nodeId,
+			targetName: node.name.trim() || nodeId,
+			nodeIds: [nodeId],
+			nodeId,
+			nodeName: node.name.trim() || nodeId,
+			nodePath: node.path
+		};
+	};
 
 	if (args.target === 'node') {
+		const expandedNodeSelections = Array.from(
+			new Map(
+				scopedSelections
+					.flatMap((selection) => selection.nodeIds ?? [selection.nodeId])
+					.map((nodeId) => toNodeSelection(nodeId))
+					.filter((selection): selection is VehicleNodeSelection => selection !== null)
+					.map((selection) => [selection.targetId ?? selection.nodeId, selection] as [string, VehicleNodeSelection])
+			).values()
+		);
+
 		return {
-			selectedNodes: scopedSelections.map((selection) => ({
-				assetId: activeAssetId,
-				nodeId: selection.nodeId,
-				nodeName: selection.nodeName,
-				nodePath: selection.nodePath
-			})),
+			selectedNodes: expandedNodeSelections,
 			label: 'Expanded selection to whole node.'
 		};
 	}
@@ -456,9 +488,16 @@ async function expandVehicleSelection(
 		throw new OpenAIChatInputError('No semantic overlay is available to expand this selection.');
 	}
 
-	const selectedNodeIds = new Set(scopedSelections.map((selection) => selection.nodeId));
+	const selectedNodeIds = new Set(
+		scopedSelections.flatMap((selection) => selection.nodeIds ?? [selection.nodeId])
+	);
 	const selectedMaterialIds = new Set<string>();
 	for (const selection of scopedSelections) {
+		if (selection.targetType === 'part' && selection.targetId) {
+			const selectedPart = overlay.acceptedParts.find((part) => part.id === selection.targetId);
+			selectedPart?.materialIds.forEach((materialId) => selectedMaterialIds.add(materialId));
+		}
+
 		const node = nodeById.get(selection.nodeId);
 		if (!node?.meshId) {
 			continue;
@@ -485,69 +524,99 @@ async function expandVehicleSelection(
 	}
 
 	const query = args.query?.toLowerCase();
-	const candidateEntities =
-		args.target === 'part'
-			? overlay.acceptedParts.filter((part) => {
-					const matchesSelection =
-						part.nodeIds.some((nodeId) => selectedNodeIds.has(nodeId)) ||
-						part.materialIds.some((materialId) => selectedMaterialIds.has(materialId));
-					if (!matchesSelection) return false;
-					if (!query) return true;
-					return `${part.id} ${part.humanLabel} ${part.aliases.join(' ')}`
-						.toLowerCase()
-						.includes(query);
-			  })
-			: overlay.acceptedGroups.filter((group) => {
-					const matchesSelection =
-						group.nodeIds.some((nodeId) => selectedNodeIds.has(nodeId)) ||
-						group.materialIds.some((materialId) => selectedMaterialIds.has(materialId));
-					if (!matchesSelection) return false;
-					if (!query) return true;
-					return `${group.id} ${group.humanLabel} ${group.aliases.join(' ')}`
-						.toLowerCase()
-						.includes(query);
-			  });
+	if (args.target === 'part') {
+		const bestPart = overlay.acceptedParts
+			.filter((part) => {
+				const matchesSelection =
+					part.nodeIds.some((nodeId) => selectedNodeIds.has(nodeId)) ||
+					part.materialIds.some((materialId) => selectedMaterialIds.has(materialId));
+				if (!matchesSelection) {
+					return false;
+				}
 
-	const bestEntity = candidateEntities.sort((left, right) => {
-		const leftCoverage = left.nodeIds.length * 10 + left.materialIds.length;
-		const rightCoverage = right.nodeIds.length * 10 + right.materialIds.length;
-		if (leftCoverage !== rightCoverage) {
-			return rightCoverage - leftCoverage;
+				if (!query) {
+					return true;
+				}
+
+				return `${part.id} ${part.humanLabel} ${part.aliases.join(' ')}`.toLowerCase().includes(query);
+			})
+			.sort((left, right) => {
+				const leftCoverage = left.nodeIds.length * 10 + left.materialIds.length;
+				const rightCoverage = right.nodeIds.length * 10 + right.materialIds.length;
+				if (leftCoverage !== rightCoverage) {
+					return rightCoverage - leftCoverage;
+				}
+				return right.confidence - left.confidence;
+			})[0];
+
+		if (!bestPart) {
+			throw new OpenAIChatInputError('No semantic part matched the current selection.');
 		}
-		return right.confidence - left.confidence;
-	})[0];
 
-	if (!bestEntity) {
-		throw new OpenAIChatInputError(
-			args.target === 'part'
-				? 'No semantic part matched the current selection.'
-				: 'No semantic group matched the current selection.'
-		);
+		const anchorNodeId = bestPart.anchorNodeId ?? bestPart.nodeIds[0] ?? bestPart.id;
+		const anchorNode = nodeById.get(anchorNodeId);
+		return {
+			selectedNodes: [
+				{
+					assetId: activeAssetId,
+					targetType: 'part',
+					targetId: bestPart.id,
+					targetName: bestPart.humanLabel,
+					nodeIds: [...bestPart.nodeIds],
+					anchorNodeId: bestPart.anchorNodeId,
+					nodeId: anchorNodeId,
+					nodeName: anchorNode?.name.trim() || bestPart.humanLabel,
+					nodePath: anchorNode?.path ?? scopedSelections[0]!.nodePath
+				}
+			],
+			label: `Expanded selection to part ${bestPart.humanLabel}.`
+		};
 	}
 
-	const expandedNodeIds = Array.from(
-		new Set([
-			...bestEntity.nodeIds,
-			...bestEntity.materialIds.flatMap(
-				(materialId) => structure.materials.find((material) => material.id === materialId)?.nodeIds ?? []
-			)
-		])
-	);
-
-	const expandedSelections = expandedNodeIds
-		.map((nodeId) => {
-			const node = nodeById.get(nodeId);
-			if (!node) {
-				return null;
+	const bestGroup = overlay.acceptedGroups
+		.filter((group) => {
+			const matchesSelection =
+				group.nodeIds.some((nodeId) => selectedNodeIds.has(nodeId)) ||
+				group.materialIds.some((materialId) => selectedMaterialIds.has(materialId));
+			if (!matchesSelection) {
+				return false;
 			}
-			return {
-				assetId: activeAssetId,
-				nodeId,
-				nodeName: node.name.trim() || nodeId,
-				nodePath: node.path
-			};
+
+			if (!query) {
+				return true;
+			}
+
+			return `${group.id} ${group.humanLabel} ${group.aliases.join(' ')}`.toLowerCase().includes(query);
 		})
-		.filter((entry): entry is VehicleNodeSelection => entry !== null);
+		.sort((left, right) => {
+			const leftCoverage = left.nodeIds.length * 10 + left.materialIds.length;
+			const rightCoverage = right.nodeIds.length * 10 + right.materialIds.length;
+			if (leftCoverage !== rightCoverage) {
+				return rightCoverage - leftCoverage;
+			}
+			return right.confidence - left.confidence;
+		})[0];
+
+	if (!bestGroup) {
+		throw new OpenAIChatInputError('No semantic group matched the current selection.');
+	}
+
+	const expandedSelections = Array.from(
+		new Map(
+			Array.from(
+				new Set([
+					...bestGroup.nodeIds,
+					...bestGroup.materialIds.flatMap(
+						(materialId) =>
+							structure.materials.find((material) => material.id === materialId)?.nodeIds ?? []
+					)
+				])
+			)
+				.map((nodeId) => toNodeSelection(nodeId))
+				.filter((selection): selection is VehicleNodeSelection => selection !== null)
+				.map((selection) => [selection.targetId ?? selection.nodeId, selection] as [string, VehicleNodeSelection])
+		).values()
+	);
 
 	if (expandedSelections.length === 0) {
 		throw new OpenAIChatInputError('Expanded semantic selection did not resolve any runtime nodes.');
@@ -555,10 +624,7 @@ async function expandVehicleSelection(
 
 	return {
 		selectedNodes: expandedSelections,
-		label:
-			args.target === 'part'
-				? `Expanded selection to part ${bestEntity.humanLabel}.`
-				: `Expanded selection to semantic group ${bestEntity.humanLabel}.`
+		label: `Expanded selection to semantic group ${bestGroup.humanLabel}.`
 	};
 }
 

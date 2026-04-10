@@ -123,31 +123,14 @@ export function buildPresentationRestoreFromContext(
 	const highlightedMatches = highlightRestoreRequested
 		? getMatchedTargetIdsForRestore(message, presentation.highlightedTargets)
 		: [];
+	// When highlight restore is explicitly requested, prefer specific matches if
+	// found. If no specific targets matched (e.g. the highlight was applied by node
+	// click so targetName is empty, or the user's phrasing doesn't align with stored
+	// names), fall back to clearing ALL highlights — the intent is unambiguous.
 	const highlightedTargetIds = highlightRestoreRequested
-		? highlightedMatches.length > 0 ||
-			!hasSpecificRestoreTargetTerms(message, [
-				'highlight',
-				'highlights',
-				'highlighted',
-				'glow',
-				'glowing',
-				'unhighlight',
-				'dehighlight',
-				'clear',
-				'remove',
-				'the',
-				'current',
-				'active',
-				'region',
-				'regions',
-				'overlay',
-				'overlays',
-				'view'
-			])
-			? highlightedMatches.length > 0
-				? highlightedMatches
-				: getAllTargetIds(presentation.highlightedTargets)
-			: []
+		? highlightedMatches.length > 0
+			? highlightedMatches
+			: getAllTargetIds(presentation.highlightedTargets)
 		: [];
 
 	const hiddenRestoreRequested =
@@ -157,8 +140,13 @@ export function buildPresentationRestoreFromContext(
 	const hiddenMatches = hiddenRestoreRequested
 		? getMatchedTargetIdsForRestore(message, presentation.hiddenTargets)
 		: [];
+	// Same fallback-to-all logic as highlights: if restore is requested but no
+	// specific target names matched, restore everything hidden rather than silently
+	// doing nothing.
 	const hiddenTargetIds = hiddenRestoreRequested
-		? hiddenMatches.length > 0 ? hiddenMatches : []
+		? hiddenMatches.length > 0
+			? hiddenMatches
+			: getAllTargetIds(presentation.hiddenTargets)
 		: [];
 
 	const viewerRestoreRequested =

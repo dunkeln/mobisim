@@ -9,7 +9,6 @@ import {
 	findSemanticGroupDefinition,
 	patchSemanticGroupDefinition
 } from '$lib/server/connectors/semantic-groups';
-import { removeReviewedAssetSemanticAssignments } from '$lib/server/connectors/asset-semantic-assignments';
 import {
 	generateVehicleSemanticOverlay,
 	mutateVehicleSemanticAssignment,
@@ -161,11 +160,19 @@ async function deriveSelectedMaterialIds(
 	}
 
 	const structure = await deriveStructuralAssetSnapshot(activeAssetId);
+	const overlay = await readVehicleSemanticOverlay(activeAssetId);
+	const partById = new Map((overlay?.acceptedParts ?? []).map((part) => [part.id, part]));
 	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
 	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
 	const selectedMaterialIds = new Set<string>();
 
 	for (const selection of selections) {
+		if (selection.targetType === 'part' && selection.targetId) {
+			partById.get(selection.targetId)?.materialIds.forEach((materialId) => {
+				selectedMaterialIds.add(materialId);
+			});
+		}
+
 		const node = nodeById.get(selection.nodeId);
 		if (!node?.meshId) {
 			continue;
@@ -240,15 +247,13 @@ function resolveScopedSemanticTargets(input: {
 		input.query && input.query.trim().length > 0
 			? scopedSelections.filter((selection) =>
 					normalizeSemanticLookupToken(
-						`${selection.nodeName} ${selection.nodePath} ${selection.materialName ?? ''} ${selection.nodeId}`
+						`${selection.targetName ?? selection.nodeName} ${selection.targetId ?? selection.nodeId} ${selection.nodeName} ${selection.nodePath} ${selection.materialName ?? ''} ${selection.nodeId}`
 					).includes(normalizeSemanticLookupToken(input.query ?? ''))
 				)
 			: scopedSelections;
 
 	return {
-		nodeIds: Array.from(new Set(filteredSelections.map((selection) => selection.nodeId))).sort((left, right) =>
-			left.localeCompare(right)
-		),
+		nodeIds: dedupeSorted(filteredSelections.flatMap((selection) => selection.nodeIds ?? [selection.nodeId])),
 		materialIds: [],
 		materialSelections: filteredSelections.map((selection) => ({
 			nodeId: selection.nodeId,
@@ -285,7 +290,11 @@ async function resolveTypedSemanticMutationTargets(input: {
 			materialSelections:
 				scopedSelections.length > 0
 					? scopedSelections
-							.filter((selection) => explicitNodeIds.includes(selection.nodeId))
+							.filter((selection) =>
+								(selection.nodeIds ?? [selection.nodeId]).some((nodeId) =>
+									explicitNodeIds.includes(nodeId)
+								)
+							)
 							.map(toSelectionMaterialRef)
 					: undefined,
 			scope: explicitTargetScope === 'material' ? 'material' : 'node'
@@ -307,7 +316,11 @@ async function resolveTypedSemanticMutationTargets(input: {
 			materialSelections:
 				explicitTargetScope !== 'material' && scopedSelections.length > 0
 					? scopedSelections
-							.filter((selection) => explicitNodeIds.includes(selection.nodeId))
+							.filter((selection) =>
+								(selection.nodeIds ?? [selection.nodeId]).some((nodeId) =>
+									explicitNodeIds.includes(nodeId)
+								)
+							)
 							.map(toSelectionMaterialRef)
 					: undefined,
 			scope: explicitTargetScope ?? 'mixed'
@@ -377,12 +390,12 @@ async function resolveTypedSemanticMutationTargets(input: {
 		input.args.query && input.args.query.trim().length > 0
 			? scopedSelections.filter((selection) =>
 					normalizeSemanticLookupToken(
-						`${selection.nodeName} ${selection.nodePath} ${selection.materialName ?? ''} ${selection.nodeId}`
+						`${selection.targetName ?? selection.nodeName} ${selection.targetId ?? selection.nodeId} ${selection.nodeName} ${selection.nodePath} ${selection.materialName ?? ''} ${selection.nodeId}`
 					).includes(normalizeSemanticLookupToken(input.args.query ?? ''))
 				)
 			: scopedSelections;
 	const hasMaterialSpecificSelection = filteredSelections.some(isMaterialSpecificSelection);
-	const selectedNodeIds = dedupeSorted(filteredSelections.map((selection) => selection.nodeId));
+	const selectedNodeIds = dedupeSorted(filteredSelections.flatMap((selection) => selection.nodeIds ?? [selection.nodeId]));
 
 	if (explicitTargetScope === 'node') {
 		return {
@@ -433,14 +446,8 @@ async function persistMaterializedSemanticOverlay(
 	activeAssetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
 	const overlay = await readVehicleSemanticOverlay(activeAssetId);
-	if (!overlay) {
-		return null;
-	}
-
-	return writeVehicleSemanticOverlay({
-		...overlay,
-		generatedAt: new Date().toISOString()
-	});
+	if (!overlay) return null;
+	return writeVehicleSemanticOverlay({ ...overlay, generatedAt: new Date().toISOString() });
 }
 
 async function applySemanticAssignmentCommand(
@@ -517,17 +524,16 @@ async function executeSemanticAssignmentMutation(
 				acceptedGroupCount: overlay.acceptedGroups.length
 			})
 		},
-			semanticOverlay: overlay,
-			presentationRestore:
-				args.action === 'unassign' &&
-				effectiveScope === 'highlighted' &&
-				resolvedTargets.materialIds.length > 0
-					? {
-							highlightedTargetIds: resolvedTargets.materialIds,
-							label: 'restore original view'
-						}
-					: undefined
-		};
+		semanticOverlay: overlay,
+		presentationRestore:
+			effectiveScope === 'highlighted' &&
+			(resolvedTargets.nodeIds.length > 0 || resolvedTargets.materialIds.length > 0)
+				? {
+						highlightedTargetIds: [...resolvedTargets.nodeIds, ...resolvedTargets.materialIds],
+						label: 'restore original view'
+					}
+				: undefined
+	};
 }
 
 async function executeSemanticGroupManagement(
@@ -693,17 +699,14 @@ async function executeSemanticGroupManagement(
 			throw new OpenAIChatInputError('No semantic group matched the current delete request.');
 		}
 
-		for (const group of matchedGroups) {
-			await removeReviewedAssetSemanticAssignments({
-				assetId: activeAssetId,
-				structuralGeneratedAt: overlay.structuralGeneratedAt,
-				nodeIds: group.nodeIds,
-				materialIds: group.materialIds,
-				semanticGroupId: group.id
-			});
-		}
+		// Remove matched groups from the overlay
+		const matchedGroupIds = new Set(matchedGroups.map((g) => g.id));
+		const updatedOverlay: VehicleSemanticOverlay = {
+			...overlay,
+			acceptedGroups: overlay.acceptedGroups.filter((g) => !matchedGroupIds.has(g.id))
+		};
 
-		const nextOverlay = await persistMaterializedSemanticOverlay(activeAssetId);
+		const nextOverlay = await writeVehicleSemanticOverlay(updatedOverlay);
 
 		return {
 			message: {
@@ -830,6 +833,14 @@ async function executeSemanticIngressAssignment(
 	}
 
 	const args = parseAssignSemanticIngressToolArgs(toolCall.function.arguments);
+	const currentBindings = (await listSemanticIngressBindings(activeAssetId)).bindings;
+	const replacedBinding =
+		currentBindings.find(
+			(entry) =>
+				entry.targetType === args.targetType &&
+				entry.targetId === args.targetId &&
+				entry.transport === args.transport
+		) ?? null;
 	const binding = await assignSemanticIngress({
 		assetId: activeAssetId,
 		targetType: args.targetType,
@@ -845,7 +856,16 @@ async function executeSemanticIngressAssignment(
 			tool_call_id: toolCall.id,
 			content: JSON.stringify(binding)
 		},
-		semanticIngressBindings: (await listSemanticIngressBindings(activeAssetId)).bindings
+		semanticIngressBindings: (await listSemanticIngressBindings(activeAssetId)).bindings,
+		semanticIngressMutation: {
+			action: replacedBinding ? 'replace' : 'create',
+			targetType: args.targetType,
+			targetId: args.targetId,
+			targetLabel: args.targetLabel,
+			transport: args.transport,
+			ingressId: binding.ingressId,
+			replacedIngressId: replacedBinding?.ingressId
+		}
 	};
 }
 

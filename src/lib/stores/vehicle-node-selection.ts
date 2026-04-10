@@ -1,8 +1,13 @@
 import { writable } from 'svelte/store';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
-export type VehicleNodeSelection = {
+export type VehicleSelectionTarget = {
 	assetId: VehicleAssetId;
+	targetType?: 'part' | 'node';
+	targetId?: string;
+	targetName?: string;
+	nodeIds?: string[];
+	anchorNodeId?: string;
 	nodeId: string;
 	nodeName: string;
 	nodePath: string;
@@ -10,25 +15,38 @@ export type VehicleNodeSelection = {
 	materialName?: string;
 };
 
-function getSelectionKey(selection: VehicleNodeSelection): string {
+export type VehicleNodeSelection = VehicleSelectionTarget;
+
+export function getSelectionKey(selection: VehicleSelectionTarget): string {
 	return [
 		selection.assetId,
-		selection.nodeId,
-		typeof selection.materialIndex === 'number' ? `slot:${selection.materialIndex}` : 'slot:none',
-		selection.materialName?.trim() ? `material:${selection.materialName.trim()}` : 'material:none'
+		selection.targetType ?? 'node',
+		selection.targetId ?? selection.nodeId
 	].join('|');
 }
 
-function getNodeSelectionKey(selection: VehicleNodeSelection): string {
-	return [selection.assetId, selection.nodeId].join('|');
+export function getSelectionPrimaryNodeId(selection: VehicleSelectionTarget): string {
+	return (
+		selection.anchorNodeId ??
+		selection.nodeId ??
+		selection.nodeIds?.[0] ??
+		selection.targetId
+	);
+}
+
+export function selectionContainsNodeId(
+	selection: VehicleSelectionTarget,
+	nodeId: string
+): boolean {
+	return (selection.nodeIds ?? [selection.nodeId]).includes(nodeId);
 }
 
 function createVehicleNodeSelectionStore() {
-	const { subscribe, update } = writable<VehicleNodeSelection[]>([]);
+	const { subscribe, update } = writable<VehicleSelectionTarget[]>([]);
 
 	return {
 		subscribe,
-		select(selection: VehicleNodeSelection, additive = false): void {
+		select(selection: VehicleSelectionTarget, additive = false): void {
 			update((current) => {
 				const scoped = current.filter((entry) => entry.assetId === selection.assetId);
 				const otherAssets = current.filter((entry) => entry.assetId !== selection.assetId);
@@ -36,11 +54,11 @@ function createVehicleNodeSelectionStore() {
 				const existing = scoped.find((entry) => getSelectionKey(entry) === selectionKey);
 
 				if (additive) {
-					const nodeSelectionKey = getNodeSelectionKey(selection);
-					const scopedWithoutNode = scoped.filter(
-						(entry) => getNodeSelectionKey(entry) !== nodeSelectionKey
-					);
-					return [...otherAssets, ...scopedWithoutNode, selection];
+					return [
+						...otherAssets,
+						...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey),
+						selection
+					];
 				}
 
 				if (existing) {
