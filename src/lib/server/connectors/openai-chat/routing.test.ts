@@ -104,6 +104,33 @@ describe('resolveIntentDraft', () => {
 		expect(draft.confidence).toBeGreaterThan(0.5);
 	});
 
+	it('derives a semantic assign draft from selection-backed put-in-category phrasing', () => {
+		const draft = resolveIntentDraft({
+			assetId: 'audi_r8',
+			message: 'put two selections in front lighting category',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-101',
+					nodeName: 'Headlight Left',
+					nodePath: 'Scene/Front/HeadlightLeft'
+				},
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-102',
+					nodeName: 'Headlight Right',
+					nodePath: 'Scene/Front/HeadlightRight'
+				}
+			]
+		});
+
+		expect(draft.domain).toBe('semantics');
+		expect(draft.operation).toBe('assign');
+		expect(draft.referent).toBe('selected');
+		expect(draft.targetScope).toBe('node');
+		expect(draft.confidence).toBeGreaterThan(0.5);
+	});
+
 	it('treats pronoun-based semantic mutation as highlighted-target intent when highlights exist', () => {
 		const draft = resolveIntentDraft({
 			assetId: 'audi_r8',
@@ -165,5 +192,16 @@ describe('resolveIntentDraft', () => {
 				selectedNodes: []
 			})
 		).toBe('direct_edit');
+	});
+
+	it('classifies generic light on-off requests as direct vehicle edits', () => {
+		const input = {
+			assetId: 'audi_r8' as const,
+			message: 'turn on the lights',
+			selectedNodes: []
+		};
+
+		expect(shouldAttemptDirectVehicleEdit(input)).toBe(true);
+		expect(classifyExecutionRoute(input)).toBe('direct_edit');
 	});
 });

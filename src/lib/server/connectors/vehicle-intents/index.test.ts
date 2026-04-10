@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
+import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import {
 	parsePaintRequest,
 	resolveNormalizedVehiclePaintIntent,
@@ -298,7 +299,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
-					materialIds: wheelMaterials.map((material) => material.id)
+					materialIds: wheelMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -358,7 +360,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
-					materialIds: wheelMaterials.map((material) => material.id)
+					materialIds: wheelMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -404,7 +407,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
-					materialIds: wheelMaterials.map((material) => material.id)
+					materialIds: wheelMaterials.map((material) => material.id),
+					author: 'user'
 				},
 				{
 					id: 'glasshouse',
@@ -415,7 +419,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate', 'tint'],
 					nodeIds: [],
 					meshIds: glassMaterials.flatMap((material) => material.meshIds),
-					materialIds: glassMaterials.map((material) => material.id)
+					materialIds: glassMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -478,7 +483,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
-					materialIds: wheelMaterials.map((material) => material.id)
+					materialIds: wheelMaterials.map((material) => material.id),
+					author: 'user'
 				},
 				{
 					id: 'glasshouse',
@@ -489,7 +495,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate', 'tint'],
 					nodeIds: [],
 					meshIds: glassMaterials.flatMap((material) => material.meshIds),
-					materialIds: glassMaterials.map((material) => material.id)
+					materialIds: glassMaterials.map((material) => material.id),
+					author: 'user'
 				},
 				{
 					id: 'front_face',
@@ -500,7 +507,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: grilleMaterials.flatMap((material) => material.meshIds),
-					materialIds: grilleMaterials.map((material) => material.id)
+					materialIds: grilleMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -564,7 +572,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: headlightMaterials.flatMap((material) => material.meshIds),
-					materialIds: headlightMaterials.map((material) => material.id)
+					materialIds: headlightMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -624,7 +633,8 @@ describe('vehicle part intent planner', () => {
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
 					meshIds: wheelMaterials.flatMap((material) => material.meshIds),
-					materialIds: wheelMaterials.map((material) => material.id)
+					materialIds: wheelMaterials.map((material) => material.id),
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -706,7 +716,7 @@ describe('vehicle part intent planner', () => {
 		expect(plan.operations[0]?.value).toBe(true);
 	});
 
-	it('prefers semantic headlight material tags for glow before metadata heuristics', async () => {
+	it('uses only semantic headlight material tags for glow', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
 		const semanticHeadlightMaterial = capabilities.materials[0];
@@ -733,8 +743,34 @@ describe('vehicle part intent planner', () => {
 					confidence: 0.98
 				}
 			],
-			acceptedParts: [],
-			acceptedGroups: [],
+			acceptedParts: [
+				{
+					id: 'left_headlight_cluster',
+					humanLabel: 'left headlight cluster',
+					aliases: ['headlight'],
+					confidence: 0.95,
+					category: 'light',
+					nodeIds: [],
+					meshIds: semanticHeadlightMaterial!.meshIds.slice(0, 1),
+					materialIds: [semanticHeadlightMaterial!.id],
+					region: 'front',
+					side: 'left'
+				}
+			],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'front lighting',
+					aliases: ['headlights', 'front lights'],
+					confidence: 1,
+					category: 'front_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: semanticHeadlightMaterial!.meshIds.slice(0, 1),
+					materialIds: [semanticHeadlightMaterial!.id],
+					author: 'user'
+				}
+			],
 			discardedSuggestions: []
 		});
 
@@ -744,7 +780,241 @@ describe('vehicle part intent planner', () => {
 		expect(plan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
 	});
 
-	it('uses semantic rear lighting parts for taillight glow before metadata heuristics', async () => {
+	it('fails closed for headlights when no semantic lighting targets exist', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn on the headlights');
+
+		expect(plan.operations).toHaveLength(0);
+		expect(plan.summary).toBe(
+			'No accepted executable semantic lighting targets were found for front_lighting.'
+		);
+	});
+
+	it('executes front lighting from user-authored node-backed groups', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const nodeBackedMaterial = capabilities.materials.find((material) => material.meshIds.length > 0);
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		expect(nodeBackedMaterial).toBeDefined();
+
+		const structure = await deriveStructuralAssetSnapshot('audi_r8');
+		const targetMeshId = nodeBackedMaterial!.meshIds[0];
+		const targetNodeIds = structure.nodes
+			.filter((node) => node.meshId === targetMeshId)
+			.map((node) => node.id);
+
+		expect(targetNodeIds.length).toBeGreaterThan(0);
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'front lighting',
+					aliases: ['headlights', 'front lights'],
+					confidence: 1,
+					category: 'front_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: targetNodeIds,
+					meshIds: [targetMeshId!],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn on the front lights');
+
+		expect(plan.operations).toHaveLength(1);
+		expect(plan.operations[0]?.targetId).toBe(nodeBackedMaterial!.id);
+		expect(plan.operations[0]?.op).toBe('set_emissive_factor');
+		expect(plan.operations[0]?.targetType).toBe('material');
+	});
+
+	it('uses only eligible materials inside front lighting groups for headlight glow', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const eligibleMaterial = capabilities.materials[0];
+		const contaminantMaterial = capabilities.materials[1];
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [
+				{
+					targetType: 'material',
+					targetId: eligibleMaterial!.id,
+					targetName: eligibleMaterial!.name,
+					humanLabel: 'left headlight lens',
+					aliases: ['headlight'],
+					semanticTags: ['left_headlight'],
+					confidence: 0.96
+				}
+			],
+			acceptedParts: [
+				{
+					id: 'left_headlight_cluster',
+					humanLabel: 'left headlight cluster',
+					aliases: ['left headlight'],
+					confidence: 0.95,
+					category: 'light',
+					nodeIds: [],
+					meshIds: eligibleMaterial!.meshIds.slice(0, 1),
+					materialIds: [eligibleMaterial!.id],
+					region: 'front',
+					side: 'left'
+				}
+			],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'front lighting',
+					aliases: ['headlights', 'front lights'],
+					confidence: 1,
+					category: 'front_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: [
+						...eligibleMaterial!.meshIds.slice(0, 1),
+						...contaminantMaterial!.meshIds.slice(0, 1)
+					],
+					materialIds: [eligibleMaterial!.id, contaminantMaterial!.id],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn on the headlights');
+
+		expect(plan.operations).toHaveLength(1);
+		expect(plan.operations[0]?.targetId).toBe(eligibleMaterial!.id);
+		expect(plan.operations[0]?.op).toBe('set_emissive_factor');
+		expect(plan.operations[0]?.value?.toString()).toBe('1,0.95,0.82');
+	});
+
+	it('respects explicit rear-light exclusions for generic light requests', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const frontMaterial = capabilities.materials[0];
+		const rearMaterial = capabilities.materials[1];
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [
+				{
+					targetType: 'material',
+					targetId: frontMaterial!.id,
+					targetName: frontMaterial!.name,
+					humanLabel: 'right headlight lens',
+					aliases: ['headlight'],
+					semanticTags: ['right_headlight'],
+					confidence: 0.96
+				}
+			],
+			acceptedParts: [
+				{
+					id: 'right_headlight_cluster',
+					humanLabel: 'right headlight cluster',
+					aliases: ['front lights'],
+					confidence: 0.95,
+					category: 'light',
+					nodeIds: [],
+					meshIds: frontMaterial!.meshIds.slice(0, 1),
+					materialIds: [frontMaterial!.id],
+					region: 'front',
+					side: 'right'
+				},
+				{
+					id: 'rear_lamp_cluster',
+					humanLabel: 'rear lamp cluster',
+					aliases: ['rear lights'],
+					confidence: 0.95,
+					category: 'light',
+					nodeIds: [],
+					meshIds: rearMaterial!.meshIds.slice(0, 1),
+					materialIds: [rearMaterial!.id],
+					region: 'rear',
+					side: 'center'
+				}
+			],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'front lighting',
+					aliases: ['headlights', 'front lights'],
+					confidence: 1,
+					category: 'front_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: frontMaterial!.meshIds.slice(0, 1),
+					materialIds: [frontMaterial!.id],
+					author: 'user'
+				},
+				{
+					id: 'rear_lighting',
+					humanLabel: 'rear lighting',
+					aliases: ['rear lights', 'taillights'],
+					confidence: 1,
+					category: 'rear_lighting',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: [],
+					meshIds: rearMaterial!.meshIds.slice(0, 1),
+					materialIds: [rearMaterial!.id],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await resolveVehicleIntent('audi_r8', 'turn off the lights except the rear lights');
+
+		expect(plan.operations).toHaveLength(1);
+		expect(plan.operations[0]?.targetId).toBe(frontMaterial!.id);
+		expect(plan.operations[0]?.value?.toString()).toBe('0,0,0');
+	});
+
+	it('uses semantic rear lighting parts for taillight glow', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
 		const semanticTaillightMaterial = capabilities.materials[0];
@@ -784,9 +1054,9 @@ describe('vehicle part intent planner', () => {
 					category: 'rear_lighting',
 					supports: ['highlight', 'focus', 'isolate'],
 					nodeIds: [],
-					meshIds: [],
-					materialIds: [],
-					derivedFrom: ['user']
+					meshIds: semanticTaillightMaterial!.meshIds.slice(0, 1),
+					materialIds: [semanticTaillightMaterial!.id],
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []
@@ -844,7 +1114,7 @@ describe('vehicle part intent planner', () => {
 			],
 			acceptedGroups: [
 				{
-					id: 'group_wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel', 'rims', 'tires'],
 					confidence: 0.94,
@@ -853,10 +1123,10 @@ describe('vehicle part intent planner', () => {
 					nodeIds: [],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: [wheelMaterial!.id],
-					derivedFrom: ['synthetic']
+					author: 'agent'
 				},
 				{
-					id: 'group-wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel', 'rims'],
 					confidence: 0.98,
@@ -865,7 +1135,7 @@ describe('vehicle part intent planner', () => {
 					nodeIds: ['node-1'],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: [wheelMaterial!.id, 'material-contaminated'],
-					derivedFrom: ['llm']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -873,7 +1143,7 @@ describe('vehicle part intent planner', () => {
 
 		const plan = await planVehiclePartIntent('audi_r8', 'isolate the wheels', 'isolate');
 
-		expect(plan.matchedPartIds).toEqual(['group_wheels']);
+		expect(plan.matchedPartIds).toEqual(['wheels']);
 		expect(plan.matchedPartLabels).toEqual(['wheels']);
 		expect(plan.matchedMaterialIds).toEqual([wheelMaterial!.id]);
 		expect(

@@ -145,7 +145,7 @@ export function classifyExecutionRoute(
 	input: NormalizedFooterChatRequest
 ): FooterChatExecutionRoute {
 	if (
-		/\b(unhighlight|clear highlights|restore|reset view|return .* normal|disable .*?(wireframe|xray|uv|postprocess))\b/i.test(
+		/\b(unhighlight|clear\b.*\bhighlights?|restore|reset view|return .* normal|disable .*?(wireframe|xray|uv|postprocess)|remove\b.*\bhighlights?)\b/i.test(
 			input.message
 		)
 	) {

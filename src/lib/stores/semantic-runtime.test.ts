@@ -46,7 +46,6 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
-			overlayRevision: 2,
 			overlayStatus: 'fresh',
 			overlay: {
 				generatedAt: 'overlay-2',
@@ -95,10 +94,83 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
-			overlayRevision: 3,
 			overlay: {
 				generatedAt: 'overlay-3',
 				revision: 3
+			}
+		});
+	});
+
+	it('applies a newer overlay snapshot even when its revision is lower', () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 4,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: '2026-04-10T20:00:00.000Z',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'front_face',
+							humanLabel: 'front face',
+							author: 'agent',
+							aliases: [],
+							confidence: 0.9,
+							category: 'front_face',
+							supports: ['highlight'],
+							nodeIds: ['node-1'],
+							materialIds: [],
+							meshIds: []
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 4,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 3,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: '2026-04-10T20:17:35.241Z',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'body_shell',
+							humanLabel: 'body shell',
+							author: 'user',
+							aliases: [],
+							confidence: 1,
+							category: 'body_shell',
+							supports: ['highlight', 'paint'],
+							nodeIds: [],
+							materialIds: ['material-0'],
+							meshIds: []
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 3,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
+			overlay: {
+				generatedAt: '2026-04-10T20:17:35.241Z',
+				revision: 3,
+				acceptedGroups: [{ id: 'body_shell' }]
 			}
 		});
 	});
@@ -114,7 +186,6 @@ describe('semanticRuntimeState', () => {
 
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toEqual({
 			overlay: null,
-			overlayRevision: null,
 			overlayStatus: 'stale',
 			ingressBindings: [],
 			selectedGroupId: null
@@ -160,7 +231,6 @@ describe('semanticRuntimeState', () => {
 
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
 			overlayStatus: 'stale',
-			overlayRevision: 2,
 			overlay: {
 				revision: 2,
 				acceptedGroups: [{ id: 'body_shell' }]
@@ -197,5 +267,45 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8').selectedGroupId).toBe('body_shell');
+	});
+
+	it('drops selected group ids that are not present in the active overlay', () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			selectedGroupId: 'stale_doors'
+		});
+
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 1,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: 'overlay-1',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'doors',
+							humanLabel: 'doors',
+							author: 'user',
+							aliases: ['door'],
+							confidence: 1,
+							category: 'doors',
+							supports: ['highlight', 'focus', 'isolate'],
+							nodeIds: ['node-12'],
+							materialIds: [],
+							meshIds: []
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 1,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		expect(semanticRuntimeState.getAssetState('audi_r8').selectedGroupId).toBeNull();
 	});
 });

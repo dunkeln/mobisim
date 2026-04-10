@@ -159,7 +159,6 @@ describe('footer chat footer lifecycle', () => {
 				],
 				discardedSuggestions: []
 			},
-			overlayRevision: 2,
 			overlayStatus: 'fresh',
 			ingressBindings: [
 				{

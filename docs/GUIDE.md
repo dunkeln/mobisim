@@ -310,10 +310,11 @@ These are good places to look before introducing “small” changes.
 - avoid adding more write paths casually
 - if you touch persistence, inspect for last-write-wins behavior first
 
-### 3. Selection-vs-material ambiguity is real
+### 3. Selection and semantic overlays are node-backed only
 
-- semantic actions may need to preserve node-backed versus material-backed meaning
-- do not flatten that distinction unless the request explicitly broadens scope
+- all semantic groups, parts, highlights, and mutations must target and preserve `nodeIds`
+- do not preserve or fallback to material-backed granularities since it diverges from structural reality
+- if a request ambiguously references a material, flatten it to the structurally affected nodes
 
 ### 4. The viewport should remain the proof surface
 

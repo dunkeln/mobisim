@@ -125,3 +125,24 @@ The context layer resolves memory in this order:
 - user-global summary
 
 See [docs/GUIDE.md](/Users/prateek/code/robotics/mobisim/docs/GUIDE.md) for project conventions and [docs/STATE.md](/Users/prateek/code/robotics/mobisim/docs/STATE.md) for open work.
+
+
+### Intended Control Flow
+
+
+
+- A semantic group is a container for nodes belongign in the group.
+- Semantic Overlay is the ultimate source of truth and if and only if matches dont exist, we fall back to gltf-transform based node+texture+mesh summaries.
+  - Case I: if i ask `turn on front lights`, the model checks semantic groups and adds the existing luminescence of the node(s) contained in the closest match for the semantic group and that is it.
+- FRIDAY and UI panel showing semantic overlay reflect it clearly and real time so anything the user sees is what the model sees and acts on too.
+- Layer views like xray view, uv debug, wireframe etc are deterministic and can be set on the whole asset or list of nodes.
+- All executions should be deterministic relative to the semantic group, variations of highlights and nodes. The model should accommodate for all as context for executions.
+- Whole control flow is scoped to asset. The model knows which asset. All model capabilities are scoped to the asset at hand and there should be a clear airgap between assets. Remove bridges between assets, including context poisoning.
+- Remove possible side effcts. dont fix them with more guards. Guards are now to remove side effects not control them.
+
+
+#### Non-negotiables
+
+- current user selection is fed into the context for the audio model, MAKE HIGHLY SURE it is real-time. Secondary to it is the UI highlight highlights and finally the model is fed into the context the tool highlights. These shoudl be actively added as reference as semantic group and node data.
+- Both UI and model highlight categories should deterministically reflcted hte highlight updates.
+  - CASE I: Wheels are highlighted, user highlights some asset(s) and asks the model to add it to the wheels family. Since wheels group is highlighted currently the UI highlights should updated the additions into those presentaion level highlights as well.

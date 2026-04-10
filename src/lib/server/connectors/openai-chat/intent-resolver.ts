@@ -93,7 +93,7 @@ function mentionsVisualEditVerb(message: string): boolean {
 }
 
 function mentionsSelectionReferent(message: string): boolean {
-	return /\b(this|these|it|that|them|selected(?:\s+nodes?)?|selection|current selection|selected node|selected material)\b/i.test(
+	return /\b(this|these|it|that|them|selected(?:\s+nodes?)?|selection|selections|current selection|selected node|selected material)\b/i.test(
 		message
 	);
 }
@@ -126,7 +126,10 @@ function inferOperation(message: string): FooterChatIntentOperation {
 
 	if (
 		/\b(assign|classify|mark|add)\b/i.test(message) ||
+		/\b(put|place)\b/i.test(message) ||
+		/\b(move)\b(?=.*\b(into|in)\b)/i.test(message) ||
 		/\bbelongs to\b/i.test(message) ||
+		/\b(in|into)\s+(the\s+)?(group|category)\b/i.test(message) ||
 		/\bshould be\b/i.test(message)
 	) {
 		return 'assign';

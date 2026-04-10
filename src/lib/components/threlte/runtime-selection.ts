@@ -42,7 +42,7 @@ type ResolveRuntimeSelectionParams = {
 	anchorToCenterSample?: boolean;
 };
 
-const SELECTION_PASSTHROUGH_ALPHA_THRESHOLD = 0.12;
+const SELECTION_PASSTHROUGH_ALPHA_THRESHOLD = 0.2;
 const SELECTION_APERTURE_SAMPLES: SelectionRaySample[] = [
 	{ dx: 0, dy: 0, weight: 1.85 },
 	{ dx: -6, dy: 0, weight: 0.9 },
@@ -56,7 +56,8 @@ const SELECTION_APERTURE_SAMPLES: SelectionRaySample[] = [
 ];
 const SELECTION_OVERLAY_NAMES = new Set([
 	'__mobisim-highlight-overlay__',
-	'__mobisim-selection-overlay__'
+	'__mobisim-selection-overlay__',
+	'__mobisim-emissive-glow-overlay__'
 ]);
 
 function createNodeId(index: number): string {
@@ -69,6 +70,14 @@ function hasOpacityProperty(material: THREE.Material): material is THREE.Materia
 	side: THREE.Side;
 } {
 	return 'opacity' in material && 'transparent' in material && 'side' in material;
+}
+
+function hasRaycastSuppressionFlags(material: THREE.Material): material is THREE.Material & {
+	depthTest: boolean;
+	colorWrite: boolean;
+	visible: boolean;
+} {
+	return 'depthTest' in material && 'colorWrite' in material && 'visible' in material;
 }
 
 function resolveIntersectionMaterial(
@@ -102,12 +111,26 @@ function shouldPassThroughSelectionHit(
 	object: THREE.Object3D,
 	materialIndex: number | undefined
 ): boolean {
+	if (!object.visible) {
+		return true;
+	}
+
 	const material = resolveIntersectionMaterial(object, materialIndex);
 	if (!material || !hasOpacityProperty(material)) {
 		return false;
 	}
 
-	return material.opacity <= SELECTION_PASSTHROUGH_ALPHA_THRESHOLD;
+	if (material.opacity <= SELECTION_PASSTHROUGH_ALPHA_THRESHOLD) {
+		return true;
+	}
+
+	if (hasRaycastSuppressionFlags(material)) {
+		if (!material.visible || !material.depthTest || !material.colorWrite) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 function buildRuntimeSelectionKey(

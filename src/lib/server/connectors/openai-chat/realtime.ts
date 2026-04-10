@@ -10,6 +10,8 @@ import { resolveContextHistory } from '$lib/server/connectors/context-history';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import { getVehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay';
 import type { VehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import { diffSelectionAgainstSemanticGroup } from '$lib/semantic-overlay/runtime';
+import { readVehicleSemanticOverlay } from '$lib/server/connectors/vehicle-semantic-overlay';
 
 const DEFAULT_REALTIME_MODEL = 'gpt-realtime-mini';
 const DEFAULT_REALTIME_VOICE = 'alloy';
@@ -18,6 +20,7 @@ const REALTIME_CLIENT_SECRETS_URL = 'https://api.openai.com/v1/realtime/client_s
 type RealtimeSessionContext = {
 	userId?: string | null;
 	assetId?: VehicleAssetId;
+	selectedGroupId?: string;
 	selectedNodeId?: string;
 	selectedNodeName?: string;
 	selectedNodePath?: string;
@@ -51,11 +54,11 @@ function getRealtimeVoice(): string {
 function summarizeSelection(context: RealtimeSessionContext): string {
 	if ((context.selectedNodes?.length ?? 0) > 0) {
 		return context.selectedNodes!
-			.slice(0, 3)
+			.slice(0, 4)
 			.map((selection) =>
 				selection.targetType === 'part'
-					? `${selection.targetName ?? selection.nodeName} part [${selection.targetId ?? selection.nodeId}]`
-					: `${selection.nodeName} [${selection.nodeId}]`
+					? `${selection.targetName ?? selection.nodeName} part [${selection.targetId ?? selection.nodeId}] at ${selection.nodePath}`
+					: `${selection.nodeName} [${selection.nodeId}] at ${selection.nodePath}`
 			)
 			.join(', ');
 	}
@@ -65,6 +68,46 @@ function summarizeSelection(context: RealtimeSessionContext): string {
 	}
 
 	return 'none';
+}
+
+function summarizeSemanticEditContext(
+	context: RealtimeSessionContext,
+	overlay: Awaited<ReturnType<typeof readVehicleSemanticOverlay>>
+): string {
+	// selectedNodes in the session context doesn't carry assetId, so we inject it here so the
+	// type satisfies VehicleSelectionTarget (required by diffSelectionAgainstSemanticGroup).
+	const selections = (context.selectedNodes ?? []).map((n) => ({
+		...n,
+		assetId: context.assetId!
+	}));
+	const diff = diffSelectionAgainstSemanticGroup(
+		overlay,
+		context.selectedGroupId,
+		selections
+	);
+	if (!diff) {
+		return 'Semantic edit context: unavailable.';
+	}
+
+	const formatSelection = (selection: NonNullable<RealtimeSessionContext['selectedNodes']>[number]): string =>
+		selection.targetType === 'part'
+			? `${selection.targetName ?? selection.nodeName} [${selection.targetId ?? selection.nodeId}]`
+			: `${selection.nodeName} [${selection.nodeId}]`;
+	const details: string[] = [];
+	if (diff.coveredSelections.length > 0) {
+		details.push(
+			`already accepted in the active group: ${diff.coveredSelections.map(formatSelection).join(', ')}`
+		);
+	}
+	if (diff.candidateSelections.length > 0) {
+		details.push(
+			`candidate additions relative to the active group: ${diff.candidateSelections.map(formatSelection).join(', ')}`
+		);
+	}
+
+	return details.length > 0
+		? `Semantic edit context: ${details.join('; ')}.`
+		: `Semantic edit context: the current selection is already fully accepted by ${diff.groupLabel} [${diff.groupId}].`;
 }
 
 function summarizePresentation(context: RealtimeSessionContext): string {
@@ -84,6 +127,18 @@ function summarizePresentation(context: RealtimeSessionContext): string {
 	].filter((value): value is string => !!value);
 
 	return parts.length > 0 ? parts.join('; ') : 'none';
+}
+
+function summarizeHighlightedTargets(context: RealtimeSessionContext): string {
+	const highlightedTargets = context.presentation?.highlightedTargets ?? [];
+	if (highlightedTargets.length === 0) {
+		return 'none';
+	}
+
+	return highlightedTargets
+		.slice(0, 4)
+		.map((target) => target.targetName ?? target.targetId)
+		.join(', ');
 }
 
 function summarizeSidebar(context: RealtimeSessionContext): string {
@@ -109,6 +164,7 @@ export async function buildRealtimeInstructions(context: RealtimeSessionContext)
 		assetId: context.assetId
 	});
 	const semanticOverlayStatus = await resolveRealtimeSemanticOverlayStatus(context.assetId);
+	const semanticOverlay = context.assetId ? await readVehicleSemanticOverlay(context.assetId) : null;
 
 	return [
 		'You are FRIDAY, speaking in a concise, calm, technically precise tone with only a subtle hint of Irish cadence. A light sarcastic edge at the user\'s expense is allowed only when the user clearly opens that door first, and even then it should stay brief and controlled. If asked who created you, answer with just the name: Prateek. Do not volunteer more in that first answer. If the user explicitly asks for more about him, you may then mention that he thinks he works on Reinforcement Learning and building things for applications and robotics.',
@@ -116,8 +172,17 @@ export async function buildRealtimeInstructions(context: RealtimeSessionContext)
 		'When the user asks about the current vehicle, current view, current selection, highlights, hidden regions, semantic labels, or wants to inspect or modify the scene, use the tool execute_vehicle_request instead of answering from memory.',
 		'When the user is making ordinary conversational remarks, acknowledgements, or short follow-ups that do not depend on live app state, answer directly without the tool.',
 		'Do not narrate tool use. Do not invent applied edits. Only treat an edit as applied after the tool returns a result.',
+		'Current runtime selection is first-class grounding. When selection exists, treat it as the primary live referent ahead of highlight summaries unless the user clearly redirects.',
+		'If the Selected runtime nodes line below is not none, there is an active selection. Do not say there is no active selection, and do not ask the user to select something first.',
+		'When a request can operate on the current selection, act on that selection directly or use the execute_vehicle_request tool. Do not verbally deny live selection state.',
+		'Named highlighted targets are secondary presentation context. Use them when the user refers to the current highlight or highlighted set, but do not let them outrank the current selection.',
 		`Active asset: ${context.assetId ?? 'none'}.`,
-		`Current selection: ${summarizeSelection(context)}.`,
+		context.selectedGroupId
+			? `Active semantic group: ${context.selectedGroupId}. Treat this as the current semantic focus unless the user clearly redirects.`
+			: 'Active semantic group: none.',
+		summarizeSemanticEditContext(context, semanticOverlay),
+		`Selected runtime nodes: ${summarizeSelection(context)}.`,
+		`Highlighted targets: ${summarizeHighlightedTargets(context)}.`,
 		`Current presentation: ${summarizePresentation(context)}.`,
 		`Active sidebar cards: ${summarizeSidebar(context)}.`,
 		`Supplementary list entries: ${summarizeSupplementary(context)}.`,
@@ -137,11 +202,14 @@ export async function buildRealtimeInstructions(context: RealtimeSessionContext)
 	].join('\n');
 }
 
-export async function buildRealtimeSessionPayload(context: RealtimeSessionContext) {
+export async function buildRealtimeSessionPayload(
+	context: RealtimeSessionContext,
+	prebuiltInstructions?: string
+) {
 	return {
 		type: 'realtime',
 		model: getRealtimeModel(),
-		instructions: await buildRealtimeInstructions(context),
+		instructions: prebuiltInstructions ?? await buildRealtimeInstructions(context),
 		output_modalities: ['audio'],
 		audio: {
 			output: {
@@ -195,13 +263,15 @@ async function resolveRealtimeSemanticOverlayStatus(
 export async function createRealtimeClientSecret(context: RealtimeSessionContext): Promise<{
 	clientSecret: string;
 	semanticOverlayStatus: RealtimeSemanticOverlayStatus;
+	instructions: string;
 }> {
 	if (!env.OPENAI_API_KEY) {
 		throw new OpenAIChatConfigError('OPENAI_API_KEY is not configured.');
 	}
 
 	const semanticOverlayStatus = await resolveRealtimeSemanticOverlayStatus(context.assetId);
-	const session = await buildRealtimeSessionPayload(context);
+	const instructions = await buildRealtimeInstructions(context);
+	const session = await buildRealtimeSessionPayload(context, instructions);
 
 	const response = await fetch(REALTIME_CLIENT_SECRETS_URL, {
 		method: 'POST',
@@ -234,6 +304,7 @@ export async function createRealtimeClientSecret(context: RealtimeSessionContext
 
 	return {
 		clientSecret: secret,
-		semanticOverlayStatus
+		semanticOverlayStatus,
+		instructions
 	};
 }

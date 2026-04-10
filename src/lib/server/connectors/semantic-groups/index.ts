@@ -33,7 +33,7 @@ const DEFAULT_DEFINITIONS: SemanticGroupDefinition[] = [
 	{
 		id: 'front_lighting',
 		humanLabel: 'front lighting',
-		aliases: ['headlights', 'headlight'],
+		aliases: ['headlights', 'headlight', 'front lights', 'front light', 'frontlights', 'frontlight'],
 		category: 'front_lighting',
 		supports: ['focus', 'highlight', 'isolate'],
 		assignmentMode: 'exclusive',
@@ -42,7 +42,16 @@ const DEFAULT_DEFINITIONS: SemanticGroupDefinition[] = [
 	{
 		id: 'rear_lighting',
 		humanLabel: 'rear lighting',
-		aliases: ['taillights', 'taillight', 'rear lights'],
+		aliases: [
+			'taillights',
+			'taillight',
+			'rear lights',
+			'rear light',
+			'backlights',
+			'backlight',
+			'brake lights',
+			'brake light'
+		],
 		category: 'rear_lighting',
 		supports: ['focus', 'highlight', 'isolate'],
 		assignmentMode: 'exclusive',
@@ -193,6 +202,43 @@ function normalizeLookupKey(value: string): string {
 	return slugify(value);
 }
 
+function inferCanonicalCategoryFromReference(
+	value: string | undefined
+): VehicleSemanticGroup['category'] | null {
+	const lookupKey = normalizeLookupKey(value ?? '');
+	if (!lookupKey) {
+		return null;
+	}
+
+	if (
+		lookupKey === 'front_lighting' ||
+		lookupKey === 'front_lights' ||
+		lookupKey === 'front_light' ||
+		lookupKey === 'frontlights' ||
+		lookupKey === 'frontlight' ||
+		lookupKey === 'headlights' ||
+		lookupKey === 'headlight'
+	) {
+		return 'front_lighting';
+	}
+
+	if (
+		lookupKey === 'rear_lighting' ||
+		lookupKey === 'rear_lights' ||
+		lookupKey === 'rear_light' ||
+		lookupKey === 'backlights' ||
+		lookupKey === 'backlight' ||
+		lookupKey === 'taillights' ||
+		lookupKey === 'taillight' ||
+		lookupKey === 'brake_lights' ||
+		lookupKey === 'brake_light'
+	) {
+		return 'rear_lighting';
+	}
+
+	return null;
+}
+
 function defaultSupportsForCategory(
 	category: VehicleSemanticGroup['category']
 ): VehicleSemanticActionSupport[] {
@@ -226,6 +272,11 @@ function resolveDefinitionReference(
 	const semanticGroup = input.semanticGroup?.trim();
 	if (!semanticGroup) {
 		return null;
+	}
+
+	const canonicalCategory = inferCanonicalCategoryFromReference(semanticGroup);
+	if (canonicalCategory) {
+		return store.definitions.find((definition) => definition.category === canonicalCategory) ?? null;
 	}
 
 	const lookupKey = normalizeLookupKey(semanticGroup);
@@ -326,6 +377,15 @@ export async function resolveSemanticGroupDefinition(input: {
 	const semanticGroup = input.semanticGroup?.trim();
 	if (!semanticGroup) {
 		throw new Error('A semantic group name or category is required.');
+	}
+
+	const canonicalCategory = inferCanonicalCategoryFromReference(semanticGroup);
+	if (canonicalCategory) {
+		return ensureSemanticGroupDefinition({
+			category: canonicalCategory,
+			humanLabel: input.humanLabel,
+			aliases: input.aliases
+		});
 	}
 
 	const lookupKey = normalizeLookupKey(semanticGroup);

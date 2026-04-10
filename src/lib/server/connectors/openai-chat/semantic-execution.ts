@@ -19,6 +19,7 @@ import type {
 	VehicleSemanticGroup,
 	VehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import { buildVehicleSemanticOverlayRuntimeIndex } from '$lib/semantic-overlay/runtime';
 import { selectMatchingPresentationTargetIds } from '$lib/contracts/footer-chat-restore';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -230,10 +231,28 @@ function resolveScopedSemanticTargets(input: {
 				: 'selected');
 
 	if (effectiveScope === 'highlighted') {
-		const materialIds = input.query
-			? selectMatchingPresentationTargetIds(input.query, input.presentation?.highlightedTargets)
-			: (input.presentation?.highlightedTargets ?? []).map((target) => target.targetId);
-		return { nodeIds: [], materialIds };
+		const candidateTargets = input.query
+			? (() => {
+					const matchedIds = new Set(
+						selectMatchingPresentationTargetIds(
+							input.query,
+							input.presentation?.highlightedTargets
+						)
+					);
+					return (input.presentation?.highlightedTargets ?? []).filter((t) =>
+						matchedIds.has(t.targetId)
+					);
+				})()
+			: (input.presentation?.highlightedTargets ?? []);
+		const nodeIds = dedupeSorted(
+			candidateTargets.filter((t) => t.targetType === 'node').map((t) => t.targetId)
+		);
+		const materialIds = dedupeSorted(
+			candidateTargets
+				.filter((t) => !t.targetType || t.targetType === 'material')
+				.map((t) => t.targetId)
+		);
+		return { nodeIds, materialIds };
 	}
 
 	if (effectiveScope === 'hidden') {
@@ -394,7 +413,6 @@ async function resolveTypedSemanticMutationTargets(input: {
 					).includes(normalizeSemanticLookupToken(input.args.query ?? ''))
 				)
 			: scopedSelections;
-	const hasMaterialSpecificSelection = filteredSelections.some(isMaterialSpecificSelection);
 	const selectedNodeIds = dedupeSorted(filteredSelections.flatMap((selection) => selection.nodeIds ?? [selection.nodeId]));
 
 	if (explicitTargetScope === 'node') {
@@ -407,7 +425,7 @@ async function resolveTypedSemanticMutationTargets(input: {
 	}
 
 	const selectedMaterialIds =
-		explicitTargetScope === 'material' || explicitTargetScope === 'mixed' || hasMaterialSpecificSelection
+		explicitTargetScope === 'material' || explicitTargetScope === 'mixed'
 			? dedupeSorted(await deriveSelectedMaterialIds(input.activeAssetId, filteredSelections))
 			: [];
 
@@ -426,12 +444,6 @@ async function resolveTypedSemanticMutationTargets(input: {
 			materialSelections: filteredSelections.map(toSelectionMaterialRef),
 			scope: 'mixed'
 		};
-	}
-
-	if (hasMaterialSpecificSelection && selectedNodeIds.length > 0 && selectedMaterialIds.length > 0) {
-		throw new OpenAIChatInputError(
-			'The current selection could mean either the node-backed member or the material-backed member. Ask whether the user wants the node, the material region, or the whole mixed group.'
-		);
 	}
 
 	return {
@@ -767,19 +779,8 @@ async function executeSemanticGroupManagement(
 		throw new OpenAIChatInputError('No semantic group matched the current request.');
 	}
 
-	const groupMaterialIds = Array.from(
-		new Set(
-			group.materialIds.length > 0
-				? group.materialIds
-				: group.nodeIds.flatMap((nodeId) => {
-						const node = structure.nodes.find((entry) => entry.id === nodeId);
-						const mesh = node?.meshId
-							? structure.meshes.find((entry) => entry.id === node.meshId)
-							: undefined;
-						return mesh?.materialIds ?? [];
-					})
-		)
-	);
+	const runtimeIndex = buildVehicleSemanticOverlayRuntimeIndex(overlay);
+	const partCount = (runtimeIndex.partsByGroupId.get(group.id) ?? []).length;
 
 	return {
 		message: {
@@ -790,8 +791,9 @@ async function executeSemanticGroupManagement(
 				targetType: args.targetType,
 				groupId: group.id,
 				humanLabel: group.humanLabel,
-				materialCount: groupMaterialIds.length,
-				nodeCount: group.nodeIds.length
+				materialCount: group.materialIds.length,
+				nodeCount: group.nodeIds.length,
+				partCount
 			})
 		}
 	};

@@ -31,6 +31,7 @@ export function parseFooterAudioChatFormData(formData: FormData): {
 			audio,
 			payload: {
 				assetId: readStringField(formData.get('assetId')) as FooterChatRequest['assetId'],
+				selectedGroupId: readStringField(formData.get('selectedGroupId')),
 				selectedNodeId: readStringField(formData.get('selectedNodeId')),
 				selectedNodeName: readStringField(formData.get('selectedNodeName')),
 				selectedNodePath: readStringField(formData.get('selectedNodePath')),

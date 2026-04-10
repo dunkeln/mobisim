@@ -75,6 +75,7 @@ export type FooterChatTrace = {
 export type FooterChatRequest = {
 	message: string;
 	assetId?: VehicleAssetId;
+	selectedGroupId?: string;
 	selectedNodeId?: string;
 	selectedNodeName?: string;
 	selectedNodePath?: string;

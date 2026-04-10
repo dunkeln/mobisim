@@ -173,6 +173,10 @@ export function normalizeRequest(input: FooterChatRequest): NormalizedFooterChat
 	return {
 		message,
 		assetId: input.assetId && isVehicleAssetId(input.assetId) ? input.assetId : undefined,
+		selectedGroupId:
+			typeof input.selectedGroupId === 'string'
+				? input.selectedGroupId.trim() || undefined
+				: undefined,
 		selectedNodeId:
 			typeof input.selectedNodeId === 'string'
 				? input.selectedNodeId.trim() || undefined

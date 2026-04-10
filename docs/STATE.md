@@ -99,6 +99,9 @@ In `Done`:
 - [x] T-039 | Split semantic lookup from presentation side effects | completed: 2026-04-08
 - [x] T-040 | Delete dead orchestration contracts | completed: 2026-04-08
 - [x] T-041 | Add reusable request gate intercept store | completed: 2026-04-09
+- [x] T-042 | Push real-time selection/presentation context into live realtime session | completed: 2026-04-09
+- [x] T-043 | Extend sidebar highlights when a semantic group grows after mutation | completed: 2026-04-09
+- [x] T-044 | Fix resolveScopedSemanticTargets dropping node-typed highlighted targets | completed: 2026-04-09
 
 ## Updates
 
@@ -153,3 +156,6 @@ In `Done`:
 - 2026-04-09 17:01 PT | Marked `T-041` done after adding a reusable request-gate approval UI, extracting its interaction state into a shared `requestGate` store, and making the overlay block underlying canvas interaction when visible
 - 2026-04-09 17:01 PT | Removed the request-gate debug default by hiding it at store reset and leaving the mounted component dormant until app-layer intercept code calls `requestGate.open(...)`
 - 2026-04-09 17:01 PT | Recorded that duplex chat handling remains in place and the new request-gate store is ready to serve as an ALI intercept surface for tool-usage approval flows
+- 2026-04-09 PT | Marked T-042 done after having createRealtimeClientSecret return the built instructions string, returning it through the API route, storing it in the orb on session open, and pushing session.update via a store-reactive $effect whenever vehicleNodeSelection or vehiclePatchState changes during a live session
+- 2026-04-09 PT | Marked T-043 done after adding label to HighlightScopeDescriptor and detecting in the sidebar $effect when all current highlight targets are a strict subset of the updated group targets, then re-applying set_highlights to include the new members
+- 2026-04-09 PT | Marked T-044 done after fixing resolveScopedSemanticTargets highlighted scope to split candidateTargets by targetType rather than assigning all to materialIds, matching the behaviour already in resolveTypedSemanticMutationTargets

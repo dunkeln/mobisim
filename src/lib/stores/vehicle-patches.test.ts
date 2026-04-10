@@ -145,49 +145,6 @@ describe('vehiclePatchState highlight behavior', () => {
 		expect(state.intentLabel).toBe('highlight wheels');
 	});
 
-	it('clears only matching highlight targets without affecting other highlight targets or material edits', () => {
-		vehiclePatchState.reset();
-
-		vehiclePatchState.apply('audi_r8', { kind: 'set_highlights', intentLabel: null, operations: [
-			{
-				targetType: 'material',
-				targetId: 'material-wheel-left',
-				targetName: 'Left Wheel',
-				op: 'set_overlay_highlight',
-				value: [0.75, 0.34, 0.27, 1]
-			},
-			{
-				targetType: 'material',
-				targetId: 'material-wheel-right',
-				targetName: 'Right Wheel',
-				op: 'set_overlay_highlight',
-				value: [0.75, 0.34, 0.27, 1]
-			}
-		] });
-		vehiclePatchState.apply('audi_r8', { kind: 'operations', intentLabel: null, operations: [
-			{
-				targetType: 'material',
-				targetId: 'material-body',
-				targetName: 'Body',
-				op: 'set_base_color_factor',
-				value: [0.2, 0.1, 0.4, 1]
-			}
-		] });
-
-		const didClear = vehiclePatchState.apply('audi_r8', {
-			kind: 'clear_highlight_targets',
-			intentLabel: 'clear highlight',
-			targetIds: ['material-wheel-left']
-		});
-		const state = get(vehiclePatchState);
-
-		expect(didClear).toBe(true);
-		expect(state.presentation.highlightOperations).toHaveLength(1);
-		expect(state.presentation.highlightOperations[0]?.targetId).toBe('material-wheel-right');
-		expect(state.presentation.materialOperations).toHaveLength(1);
-		expect(state.intentLabel).toBe('clear highlight');
-	});
-
 	it('restores labeled intent history across undo and redo', () => {
 		vehiclePatchState.reset();
 

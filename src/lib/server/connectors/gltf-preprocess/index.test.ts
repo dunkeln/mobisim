@@ -153,7 +153,7 @@ describe('deriveVehicleInspectionCapabilities', () => {
 			acceptedParts: [],
 			acceptedGroups: [
 				{
-					id: 'group_body_shell',
+					id: 'body_shell',
 					humanLabel: 'body shell',
 					aliases: ['body', 'paint'],
 					confidence: 1,
@@ -162,7 +162,7 @@ describe('deriveVehicleInspectionCapabilities', () => {
 					nodeIds: [],
 					meshIds: bodyMaterial!.meshIds.slice(0, 1),
 					materialIds: [bodyMaterial!.id],
-					derivedFrom: ['user']
+					author: 'user'
 				}
 			],
 			discardedSuggestions: []

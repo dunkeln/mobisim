@@ -187,14 +187,21 @@
 			$semanticRuntimeState.byAsset[assetId] ?? {
 				overlay: null,
 				overlayStatus: 'unknown' as VehicleSemanticOverlayStatus,
-				ingressBindings: []
+				ingressBindings: [],
+				selectedGroupId: null
 			}
 	);
 	const semanticOverlayStatus = $derived(semanticRuntimeAsset.overlayStatus);
+	const hasAcceptedSemanticGroups = $derived(
+		(semanticRuntimeAsset.overlay?.acceptedGroups?.length ?? 0) > 0
+	);
 	const semanticOverlayLabel = $derived.by(() => {
+		if (hasAcceptedSemanticGroups) {
+			return 'Semantic overlay ready';
+		}
 		switch (semanticOverlayStatus) {
 			case 'fresh':
-				return 'Semantic overlay ready';
+				return 'No accepted semantic groups';
 			case 'stale':
 				return 'Semantic overlay stale';
 			case 'missing':
@@ -204,9 +211,12 @@
 		}
 	});
 	const semanticDotClasses = $derived.by(() => {
+		if (hasAcceptedSemanticGroups) {
+			return 'bg-[#62f2a2] shadow-[0_0_0_1px_rgba(98,242,162,0.18),0_0_16px_rgba(98,242,162,0.88),0_0_28px_rgba(98,242,162,0.42)]';
+		}
 		switch (semanticOverlayStatus) {
 			case 'fresh':
-				return 'bg-[#62f2a2] shadow-[0_0_0_1px_rgba(98,242,162,0.18),0_0_16px_rgba(98,242,162,0.88),0_0_28px_rgba(98,242,162,0.42)]';
+				return 'bg-boundary-text/28 shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-text)_12%,transparent)]';
 			case 'stale':
 				return 'bg-boundary-secondary shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-boundary-secondary)_24%,transparent),0_0_12px_color-mix(in_oklab,var(--color-boundary-secondary)_46%,transparent)]';
 			case 'missing':
@@ -690,10 +700,10 @@
 		});
 	}
 
-	function clearHighlightOverlays(scene: THREE.Object3D): void {
+	function clearOverlayMeshes(scene: THREE.Object3D, overlayName: string): void {
 		scene.traverse((node) => {
 			const overlays = node.children.filter(
-				(child) => child.name === HIGHLIGHT_OVERLAY_NAME && child instanceof THREE.Mesh
+				(child) => child.name === overlayName && child instanceof THREE.Mesh
 			);
 
 			for (const overlay of overlays) {
@@ -710,22 +720,7 @@
 	}
 
 	function clearEmissiveGlowOverlays(scene: THREE.Object3D): void {
-		scene.traverse((node) => {
-			const overlays = node.children.filter(
-				(child) => child.name === EMISSIVE_GLOW_OVERLAY_NAME && child instanceof THREE.Mesh
-			);
-
-			for (const overlay of overlays) {
-				node.remove(overlay);
-				if (overlay instanceof THREE.Mesh && overlay.material instanceof THREE.Material) {
-					overlay.material.dispose();
-				} else if (overlay instanceof THREE.Mesh && Array.isArray(overlay.material)) {
-					for (const material of overlay.material) {
-						material.dispose();
-					}
-				}
-			}
-		});
+		clearOverlayMeshes(scene, EMISSIVE_GLOW_OVERLAY_NAME);
 	}
 
 	function createInvisibleOverlayMaterial(): THREE.MeshBasicMaterial {
@@ -744,7 +739,8 @@
 		node: THREE.Object3D,
 		colorFactor: [number, number, number, number],
 		overlayName: string = HIGHLIGHT_OVERLAY_NAME,
-		selectedMaterialIndex?: number
+		selectedMaterialIndex?: number,
+		renderOrderBase = 16
 	): void {
 		if (!(node instanceof THREE.Mesh)) {
 			return;
@@ -773,7 +769,7 @@
 				: baseOverlayMaterial;
 		const overlayMesh = new THREE.Mesh(node.geometry, overlayMaterial);
 		overlayMesh.name = overlayName;
-		overlayMesh.renderOrder = 16;
+		overlayMesh.renderOrder = renderOrderBase;
 		overlayMesh.frustumCulled = false;
 
 		const createWireframeMaterial = (
@@ -795,7 +791,7 @@
 			: createWireframeMaterial(overlayMaterial);
 		const wireframeOverlay = new THREE.Mesh(node.geometry, wireframeMaterial);
 		wireframeOverlay.name = overlayName;
-		wireframeOverlay.renderOrder = 17;
+		wireframeOverlay.renderOrder = renderOrderBase + 1;
 		wireframeOverlay.frustumCulled = false;
 
 		node.add(overlayMesh);
@@ -842,22 +838,7 @@
 	}
 
 	function clearSelectionOverlays(scene: THREE.Object3D): void {
-		scene.traverse((node) => {
-			const overlays = node.children.filter(
-				(child) => child.name === SELECTION_OVERLAY_NAME && child instanceof THREE.Mesh
-			);
-
-			for (const overlay of overlays) {
-				node.remove(overlay);
-				if (overlay instanceof THREE.Mesh && overlay.material instanceof THREE.Material) {
-					overlay.material.dispose();
-				} else if (overlay instanceof THREE.Mesh && Array.isArray(overlay.material)) {
-					for (const material of overlay.material) {
-						material.dispose();
-					}
-				}
-			}
-		});
+		clearOverlayMeshes(scene, SELECTION_OVERLAY_NAME);
 	}
 
 	function handleViewportPointerDown(event: PointerEvent): void {
@@ -1303,7 +1284,7 @@
 	): void {
 		snapshotSceneState(scene);
 		restoreSceneState(scene);
-		clearHighlightOverlays(scene);
+		clearOverlayMeshes(scene, HIGHLIGHT_OVERLAY_NAME);
 		clearEmissiveGlowOverlays(scene);
 		const nodeLookup = buildRuntimeNodeLookup(scene).nodeById;
 
@@ -1390,7 +1371,8 @@
 					runtimeNode,
 					SELECTION_HIGHLIGHT_FACTOR,
 					SELECTION_OVERLAY_NAME,
-					selection.targetType === 'node' ? selection.materialIndex : undefined
+					selection.targetType === 'node' ? selection.materialIndex : undefined,
+					20
 				);
 			}
 		}
@@ -1417,9 +1399,6 @@
 					return;
 				}
 
-				semanticRuntimeState.applyAssetState(assetId, {
-					overlayStatus: payload.semanticOverlayStatus ?? 'unknown'
-				});
 				materialSummaryById = new Map(
 					(payload.item?.materials ?? []).map((material) => [material.id, material])
 				);
@@ -1431,9 +1410,6 @@
 					return;
 				}
 
-				semanticRuntimeState.applyAssetState(assetId, {
-					overlayStatus: 'unknown'
-				});
 				materialSummaryById = new Map();
 				nextPoll = setTimeout(() => {
 					void loadSemanticOverlayStatus();

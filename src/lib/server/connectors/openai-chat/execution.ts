@@ -9,6 +9,7 @@ import {
 	readVehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay';
 import type { VehicleSemanticGroupAnnotation } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import { buildVehicleSemanticOverlayRuntimeIndex } from '$lib/semantic-overlay/runtime';
 import {
 	planNormalizedVehiclePaintIntent,
 	resolveVehicleIntent
@@ -199,11 +200,11 @@ const DIRECT_SEMANTIC_GROUP_PATTERNS: Array<{
 	humanLabel?: string;
 }> = [
 	{ match: /\bbody(?:\s+shell)?\b/i, semanticGroup: 'body_shell' },
-	{ match: /\bfront(?:\s+face)?\b/i, semanticGroup: 'front_face' },
+	{ match: /\bfront\s+face\b|\bfront\s+end\b|\bnose\b|\bgrille\b/i, semanticGroup: 'front_face' },
 	{ match: /\bglasshouse\b|\bwindows?\b|\bglass\b/i, semanticGroup: 'glasshouse' },
 	{ match: /\bheadlights?\b/i, semanticGroup: 'headlights' },
-	{ match: /\bfront\s+lighting\b/i, semanticGroup: 'front_lighting' },
-	{ match: /\btaillights?\b|\brear\s+lighting\b/i, semanticGroup: 'rear_lighting' },
+	{ match: /\bfront\s+lights?\b|\bfront\s+lighting\b/i, semanticGroup: 'front_lighting' },
+	{ match: /\btaillights?\b|\brear\s+lights?\b|\brear\s+lighting\b|\bbacklights?\b|\bbrake\s+lights?\b/i, semanticGroup: 'rear_lighting' },
 	{ match: /\bwheels?\b/i, semanticGroup: 'wheels', category: 'wheels', humanLabel: 'wheels' },
 	{ match: /\bdoors?\b/i, semanticGroup: 'doors', category: 'doors', humanLabel: 'doors' },
 	{ match: /\btrim\b/i, semanticGroup: 'trim' },
@@ -601,15 +602,14 @@ async function expandVehicleSelection(
 		throw new OpenAIChatInputError('No semantic group matched the current selection.');
 	}
 
+	const runtimeIndex = buildVehicleSemanticOverlayRuntimeIndex(overlay);
 	const expandedSelections = Array.from(
 		new Map(
 			Array.from(
 				new Set([
 					...bestGroup.nodeIds,
-					...bestGroup.materialIds.flatMap(
-						(materialId) =>
-							structure.materials.find((material) => material.id === materialId)?.nodeIds ?? []
-					)
+					...(runtimeIndex.partsByGroupId.get(bestGroup.id) ?? []).flatMap((part) => part.nodeIds),
+					...(runtimeIndex.uncoveredNodeIdsByGroupId.get(bestGroup.id) ?? [])
 				])
 			)
 				.map((nodeId) => toNodeSelection(nodeId))

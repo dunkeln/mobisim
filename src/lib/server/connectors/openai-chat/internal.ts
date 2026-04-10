@@ -45,6 +45,7 @@ export const SET_ASSISTANT_UI_TOOL_NAME = 'set_assistant_ui';
 export type NormalizedFooterChatRequest = {
 	message: string;
 	assetId?: VehicleAssetId;
+	selectedGroupId?: string;
 	selectedNodeId?: string;
 	selectedNodeName?: string;
 	selectedNodePath?: string;

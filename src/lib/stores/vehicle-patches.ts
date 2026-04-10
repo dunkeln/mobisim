@@ -26,11 +26,6 @@ type VehiclePresentationChangeEntry =
 			intentLabel: string | null;
 	  }
 	| {
-			kind: 'clear_highlight_targets';
-			intentLabel: string | null;
-			targetIds: string[];
-	  }
-	| {
 			kind: 'restore';
 			intentLabel: string | null;
 			restore: FooterChatPresentationRestore;
@@ -77,23 +72,6 @@ function stripHighlightOperations(presentation: VehiclePresentationState): Vehic
 	return {
 		...presentation,
 		highlightOperations: []
-	};
-}
-
-function stripHighlightTargets(
-	presentation: VehiclePresentationState,
-	targetIds: string[]
-): VehiclePresentationState {
-	if (targetIds.length === 0) {
-		return presentation;
-	}
-
-	const removedTargets = new Set(targetIds);
-	return {
-		...presentation,
-		highlightOperations: presentation.highlightOperations.filter(
-			(operation) => !removedTargets.has(operation.targetId)
-		)
 	};
 }
 
@@ -211,10 +189,6 @@ function applyChange(
 		return stripHighlightOperations(presentation);
 	}
 
-	if (change.kind === 'clear_highlight_targets') {
-		return stripHighlightTargets(presentation, change.targetIds);
-	}
-
 	return applyRestore(presentation, change.restore);
 }
 
@@ -321,10 +295,6 @@ function getChangeSearchText(change: VehiclePresentationChangeEntry): string {
 		return [label, ...opTerms].join(' ').toLowerCase();
 	}
 
-	if (change.kind === 'clear_highlight_targets') {
-		return `${label} clear highlight highlight glow focus ${change.targetIds.join(' ')}`.toLowerCase();
-	}
-
 	return `${label} restore revert reset original normal`.toLowerCase();
 }
 
@@ -354,7 +324,7 @@ type VehiclePresentationChangeKind =
 function inferChangeKinds(change: VehiclePresentationChangeEntry): Set<VehiclePresentationChangeKind> {
 	const kinds = new Set<VehiclePresentationChangeKind>();
 
-	if (change.kind === 'set_highlights' || change.kind === 'clear_highlights' || change.kind === 'clear_highlight_targets') {
+	if (change.kind === 'set_highlights' || change.kind === 'clear_highlights') {
 		kinds.add('highlight');
 		return kinds;
 	}
@@ -455,7 +425,6 @@ function createVehiclePatchStore() {
 		update((state) => {
 			if (
 				(mutation.kind === 'clear_highlights' ||
-					mutation.kind === 'clear_highlight_targets' ||
 					mutation.kind === 'restore') &&
 				state.assetId !== assetId
 			) {
@@ -483,26 +452,6 @@ function createVehiclePatchStore() {
 
 			if (mutation.kind === 'clear_highlights' && state.presentation.highlightOperations.length === 0) {
 				return state;
-			}
-
-			if (mutation.kind === 'clear_highlight_targets') {
-				if (mutation.targetIds.length === 0) {
-					return state;
-				}
-
-				const activeTargetIds = new Set(
-					state.presentation.highlightOperations.map((operation) => operation.targetId)
-				);
-				if (!mutation.targetIds.some((targetId) => activeTargetIds.has(targetId))) {
-					return state;
-				}
-
-				normalizedMutation = {
-					...mutation,
-					targetIds: Array.from(new Set(mutation.targetIds)).sort((left, right) =>
-						left.localeCompare(right)
-					)
-				};
 			}
 
 			const nextPast =

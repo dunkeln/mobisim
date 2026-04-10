@@ -9,7 +9,6 @@ import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 export type SemanticRuntimeAssetState = {
 	overlay: VehicleSemanticOverlay | null;
-	overlayRevision: number | null;
 	overlayStatus: VehicleSemanticOverlayStatus;
 	ingressBindings: SemanticIngressBinding[];
 	selectedGroupId: string | null;
@@ -35,8 +34,6 @@ function cloneAssetState(
 ): SemanticRuntimeAssetState {
 	return {
 		overlay: state?.overlay ?? null,
-		overlayRevision:
-			typeof state?.overlayRevision === 'number' ? state.overlayRevision : state?.overlay?.revision ?? null,
 		overlayStatus: state?.overlayStatus ?? 'unknown',
 		ingressBindings: [...(state?.ingressBindings ?? [])],
 		selectedGroupId: state?.selectedGroupId ?? null
@@ -51,8 +48,25 @@ function shouldApplyOverlaySnapshot(
 		return true;
 	}
 
+	const currentOverlay = current.overlay;
+	if (!currentOverlay) {
+		return true;
+	}
+
+	const incomingGeneratedAt = Date.parse(incoming.overlay.generatedAt);
+	const currentGeneratedAt = Date.parse(currentOverlay.generatedAt);
+	if (Number.isFinite(incomingGeneratedAt) && Number.isFinite(currentGeneratedAt)) {
+		if (incomingGeneratedAt > currentGeneratedAt) {
+			return true;
+		}
+
+		if (incomingGeneratedAt < currentGeneratedAt) {
+			return false;
+		}
+	}
+
 	const incomingRevision = incoming.overlayRevision ?? incoming.overlay.revision;
-	const currentRevision = current.overlayRevision ?? current.overlay?.revision ?? null;
+	const currentRevision = currentOverlay.revision ?? null;
 	if (currentRevision === null) {
 		return true;
 	}
@@ -62,6 +76,19 @@ function shouldApplyOverlaySnapshot(
 	}
 
 	return incomingRevision >= currentRevision;
+}
+
+function normalizeSelectedGroupId(
+	selectedGroupId: string | null,
+	overlay: VehicleSemanticOverlay | null
+): string | null {
+	if (!selectedGroupId || !overlay) {
+		return selectedGroupId;
+	}
+
+	return overlay.acceptedGroups.some((group) => group.id === selectedGroupId)
+		? selectedGroupId
+		: null;
 }
 
 function createSemanticRuntimeStore() {
@@ -89,9 +116,6 @@ function createSemanticRuntimeStore() {
 				const nextAssetState: SemanticRuntimeAssetState = {
 					...currentAssetState,
 					overlay: overlaySnapshot ? overlaySnapshot.overlay : currentAssetState.overlay,
-					overlayRevision: overlaySnapshot
-						? overlaySnapshot.overlayRevision ?? overlaySnapshot.overlay?.revision ?? null
-						: currentAssetState.overlayRevision,
 					overlayStatus:
 						patch.overlayStatus ??
 						(overlaySnapshot ? overlaySnapshot.overlayStatus : currentAssetState.overlayStatus),
@@ -104,6 +128,10 @@ function createSemanticRuntimeStore() {
 							? patch.selectedGroupId
 							: currentAssetState.selectedGroupId
 				};
+				nextAssetState.selectedGroupId = normalizeSelectedGroupId(
+					nextAssetState.selectedGroupId,
+					nextAssetState.overlay
+				);
 
 				return apply({
 					byAsset: {

@@ -1,6 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { PromptBuilderInput } from './internal';
-import { partMatchesGroup } from '$lib/semantic-overlay/runtime';
+import { diffSelectionAgainstSemanticGroup, partMatchesGroup } from '$lib/semantic-overlay/runtime';
+import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 
 function summarizeSemanticOverlayGroups(overlay: PromptBuilderInput['semanticOverlay']['overlay']): string {
 	if (!overlay || overlay.acceptedGroups.length === 0) {
@@ -67,6 +68,39 @@ function summarizeSemanticPanelInventory(
 		.join(' | ');
 }
 
+function summarizeSelection(selection: VehicleNodeSelection): string {
+	return selection.targetType === 'part'
+		? `${selection.targetName ?? selection.nodeName} [${selection.targetId ?? selection.nodeId}]`
+		: `${selection.nodeName} [${selection.nodeId}]`;
+}
+
+function summarizeSemanticEditContext(
+	overlay: PromptBuilderInput['semanticOverlay']['overlay'],
+	selectedGroupId: string | undefined,
+	selectedNodes: VehicleNodeSelection[]
+): string | null {
+	const diff = diffSelectionAgainstSemanticGroup(overlay, selectedGroupId, selectedNodes);
+	if (!diff) {
+		return null;
+	}
+
+	const details: string[] = [];
+	if (diff.coveredSelections.length > 0) {
+		details.push(
+			`already accepted in the active group: ${diff.coveredSelections.map(summarizeSelection).join(', ')}`
+		);
+	}
+	if (diff.candidateSelections.length > 0) {
+		details.push(
+			`candidate additions relative to the active group: ${diff.candidateSelections.map(summarizeSelection).join(', ')}`
+		);
+	}
+
+	return details.length > 0
+		? `Semantic edit context: ${details.join('; ')}.`
+		: `Semantic edit context: the current selection is already fully accepted by ${diff.groupLabel} [${diff.groupId}].`;
+}
+
 export function toOpenAIMessages({
 	input,
 	semanticOverlay,
@@ -97,7 +131,16 @@ export function toOpenAIMessages({
 			: semanticOverlay.sidebarCadence === 'summary'
 				? 'Semantic sidebar cadence: semantic grounding is central right now and a single concise Semantics summary card may help if it reduces ambiguity.'
 				: 'Semantic sidebar cadence: keep the sidebar stable unless the current turn materially changes semantic understanding or needs a compact semantic summary.';
+	const selectedSemanticGroupLine =
+		input.assetId && input.selectedGroupId
+			? `Active semantic group in the UI: ${input.selectedGroupId}. Treat this as the current semantic focus unless the user clearly redirects.`
+			: 'No semantic group is currently active in the UI.';
 	const scopedSelectedNodes = input.selectedNodes.filter((entry) => entry.assetId === input.assetId);
+	const semanticEditContextLine = summarizeSemanticEditContext(
+		semanticOverlay.overlay,
+		input.selectedGroupId,
+		scopedSelectedNodes
+	);
 	const selectedNodeLine =
 		input.assetId && scopedSelectedNodes.length > 0
 			? `Selected runtime nodes: ${scopedSelectedNodes
@@ -210,6 +253,11 @@ If the user asks for both a vehicle change and a concise structured summary, app
 Prefer semantic interpretation over phrase matching. Users can express the same goal many different ways. Choose tools from meaning, current selection, active presentation state, and semantic inventory rather than rigid templates.
 For simple core paint colors, normalized paint fields are helpful. For nuanced or uncommon color language like off white, ivory, cream, eggshell, champagne, aubergine, bone, or sand, prefer the freeform appearance request instead of forcing the color into the normalized palette.
 When selected runtime nodes exist and the user clearly refers to this, these, selected, or the current selection, use selection scope so the resulting operations apply only to the selected nodes or selected material regions.
+Treat selected runtime nodes below as first-class grounding. Prefer them over highlight summaries when both are present unless the user clearly redirects to the highlighted set.
+If the Selected runtime nodes line below is not none, there is an active selection. Do not say there is no active selection, and do not ask the user to select something first.
+When a request can operate on the current selection, act on that selection directly or choose the relevant tool with selection scope instead of verbally denying selection state.
+Treat named highlighted targets below as secondary presentation context. They are explicit and valid, but they should not outrank the current selection.
+When an active semantic group and runtime selection coexist, use the semantic edit context below as the explicit accepted-versus-candidate diff. Do not infer semantic membership from highlight colors alone.
 When the user says select, selected, pick, choose, call out, or mark while referring to a visible region or the current selection, prefer the presentation domain tool with focus action unless they are explicitly asking for semantic grouping, selection expansion, or a viewer mode.
 When the user refers to highlighted, glowing, hidden, visible, xray, wireframe, uv debug, postprocess, the current view, or what is currently being shown, use the active presentation context below as grounding even if the region is not explicitly selected.
 When the user asks to unhighlight, clear highlights, remove highlight overlays, restore hidden regions, clear current material drift, disable active viewer modes, or return the current presentation to normal, prefer the presentation domain tool with restore action. If the request is global and no narrower target is specified, clear the whole active set of that presentation kind rather than claiming that no deterministic action exists. For restore and revert requests, always default to scope=all unless the user explicitly names a specific region to keep or restore individually — do not attempt scope=matching when the intent is clearly a full clear. When undoing or clearing highlights, use kind=highlights with scope=all. When restoring hidden or removed nodes, use kind=hidden with scope=all. When reverting material changes, use kind=materials with scope=all. Only narrow the scope when the user clearly intends a partial restore, such as "bring back just the hood" or "only remove the headlight highlight".
@@ -230,6 +278,8 @@ ${semanticOverlayLine}
 ${semanticOverlayDetailLine}
 ${semanticPanelInventoryLine}
 ${semanticOverlayCadenceLine}
+${selectedSemanticGroupLine}
+${semanticEditContextLine ?? 'Semantic edit context: unavailable.'}
 ${selectedNodeLine}
 ${presentationContextLine}
 ${sidebarContextLine}

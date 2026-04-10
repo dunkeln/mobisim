@@ -352,6 +352,17 @@ function normalizeActionSupportArray(value: unknown): VehicleSemanticActionSuppo
 	).sort((left, right) => left.localeCompare(right));
 }
 
+function getCanonicalSemanticGroupId(input: {
+	id: string;
+	category: VehicleSemanticGroup['category'];
+	humanLabel: string;
+}): string {
+	if (input.category !== 'other') {
+		return input.category;
+	}
+
+	return input.id || slugifyPartId(input.humanLabel) || 'semantic_group';
+}
 
 function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 	if (!value || typeof value !== 'object') {
@@ -371,43 +382,39 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 		: 'other';
 	const supports = normalizeActionSupportArray(candidate.supports);
 	const nodeIds = normalizeStringArray(candidate.nodeIds);
-	const meshIds = normalizeStringArray(candidate.meshIds);
 	const materialIds = normalizeStringArray(candidate.materialIds);
 
 	if (
 		humanLabel.length === 0 ||
 		supports.length === 0 ||
-		(nodeIds.length === 0 && meshIds.length === 0 && materialIds.length === 0) ||
+		(nodeIds.length === 0 && materialIds.length === 0) ||
 		!Number.isFinite(confidence)
 	) {
 		return null;
 	}
 
-	// Parse author field. For backward-compat with old overlay files that have
-	// derivedFrom but no author, infer from derivedFrom: if it includes 'user' → 'user',
-	// otherwise → 'agent'.
-	let author: 'agent' | 'user' = 'agent';
-	if (typeof candidate.author === 'string' && (candidate.author === 'user' || candidate.author === 'agent')) {
-		author = candidate.author;
-	} else {
-		// Backward-compat: infer from old derivedFrom field
-		const derivedFromArray = Array.isArray(candidate.derivedFrom) ? candidate.derivedFrom : [];
-		if (derivedFromArray.includes('user')) {
-			author = 'user';
-		}
+	if (
+		typeof candidate.author !== 'string' ||
+		(candidate.author !== 'user' && candidate.author !== 'agent')
+	) {
+		return null;
 	}
 
 	return {
-		id: idCandidate || slugifyPartId(humanLabel) || 'semantic_group',
+		id: getCanonicalSemanticGroupId({
+			id: idCandidate,
+			category,
+			humanLabel
+		}),
 		humanLabel,
 		aliases,
 		confidence: Math.min(1, Math.max(0, confidence)),
 		category,
 		supports,
 		nodeIds,
-		meshIds,
+		meshIds: [],
 		materialIds,
-		author
+		author: candidate.author
 	};
 }
 
@@ -632,14 +639,10 @@ async function requestSemanticSuggestions(
 												}
 											},
 											nodeIds: { type: 'array', items: { type: 'string' } },
-											meshIds: { type: 'array', items: { type: 'string' } },
 											materialIds: { type: 'array', items: { type: 'string' } },
-											derivedFrom: {
-												type: 'array',
-												items: {
-													type: 'string',
-													enum: ['llm', 'synthetic', 'materials', 'parts']
-												}
+											author: {
+												type: 'string',
+												enum: ['agent']
 											}
 										},
 										required: [
@@ -650,8 +653,8 @@ async function requestSemanticSuggestions(
 											'category',
 											'supports',
 											'nodeIds',
-											'meshIds',
-											'materialIds'
+											'materialIds',
+											'author'
 										]
 									}
 								}
@@ -669,7 +672,7 @@ Do not invent missing IDs, nodes, meshes, materials, or vehicle parts.
 Prefer precision over recall. Skip uncertain labels instead of guessing.
 Return only material-level suggestions for these stable semantic tags: ${VEHICLE_SEMANTIC_TAGS.join(', ')}.
 Return part assemblies only when they can be grounded to real nodeIds, meshIds, or materialIds from the input.
-Return semantic operational groups only when they can be grounded to real nodeIds, meshIds, or materialIds and align with the shared semantic group definitions in the input.
+Return semantic operational groups only when they can be grounded to real nodeIds or materialIds and align with the shared semantic group definitions in the input.
 Use reviewed semantic examples as reusable hints for how existing group definitions map onto node names, paths, meshes, and materials across assets.
 Prefer proposing assignments to existing definitions over inventing new abstractions.
 Good examples: wheels, doors, front lighting, rear lighting, glasshouse, body shell, front face, trim, interior, and inferred units like propeller or number plate when the definition exists or must be justified.
@@ -790,7 +793,6 @@ function validateParts(
 	discardedSuggestions: VehicleSemanticOverlayDiscard[];
 } {
 	const validNodeIds = new Set(structure.nodes.map((node) => node.id));
-	const validMeshIds = new Set(structure.meshes.map((mesh) => mesh.id));
 	const validMaterialIds = new Set(structure.materials.map((material) => material.id));
 	const accepted = new Map<string, VehicleSemanticPartUnit>();
 	const discardedSuggestions: VehicleSemanticOverlayDiscard[] = [];
@@ -870,6 +872,7 @@ function validateGroups(
 	groups: VehicleSemanticGroup[],
 	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
 	acceptedMaterials: VehicleSemanticMaterialSuggestion[],
+	acceptedParts: VehicleSemanticPartUnit[],
 	minAcceptedConfidence: number
 ): {
 	acceptedGroups: VehicleSemanticGroup[];
@@ -884,11 +887,71 @@ function validateGroups(
 	const semanticMaterialsById = new Map(
 		acceptedMaterials.map((material) => [material.targetId, material])
 	);
+
+	const groupIntersectsPart = (
+		group: VehicleSemanticGroup,
+		part: VehicleSemanticPartUnit
+	): boolean =>
+		group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId)) ||
+		group.materialIds.some((materialId) => part.materialIds.includes(materialId));
+
+	const hasStructuralGroupCoverage = (
+		group: VehicleSemanticGroup,
+		materialIds: string[]
+	): boolean => {
+		const supportingParts = acceptedParts.filter((part) => groupIntersectsPart(group, part));
+		return group.nodeIds.length > 0 || materialIds.length > 0 || supportingParts.length > 0;
+	};
+
+	const hasExecutableGroupCoverage = (
+		group: VehicleSemanticGroup,
+		compatibleMaterialIds: string[]
+	): boolean => {
+		const supportingParts = acceptedParts.filter((part) => groupIntersectsPart(group, part));
+		switch (group.category) {
+			case 'front_lighting':
+				return compatibleMaterialIds.some((materialId) => {
+					const material = semanticMaterialsById.get(materialId);
+					return (
+						material?.semanticTags.includes('left_headlight') === true ||
+						material?.semanticTags.includes('right_headlight') === true
+					);
+				});
+			case 'rear_lighting':
+				return (
+					compatibleMaterialIds.length > 0 &&
+					supportingParts.some(
+						(part) =>
+							part.category === 'light' &&
+							part.region === 'rear' &&
+							part.materialIds.some((materialId) => compatibleMaterialIds.includes(materialId))
+					)
+				);
+			case 'wheels':
+				return supportingParts.some(
+					(part) =>
+						part.category === 'wheel' &&
+						part.materialIds.some((materialId) => compatibleMaterialIds.includes(materialId))
+				);
+			case 'doors':
+				return supportingParts.some((part) => part.category === 'door');
+			default:
+				return (
+					group.nodeIds.length > 0 ||
+					compatibleMaterialIds.length > 0 ||
+					supportingParts.length > 0
+				);
+		}
+	};
+
 	const accepted: VehicleSemanticGroup[] = [];
 	const discardedSuggestions: VehicleSemanticOverlayDiscard[] = [];
 
 	for (const group of groups) {
-		const compatibleMaterialIds = group.materialIds.filter((materialId) => {
+		const structurallyValidMaterialIds = group.materialIds.filter((materialId) =>
+			validMaterialIds.has(materialId)
+		);
+		const compatibleMaterialIds = structurallyValidMaterialIds.filter((materialId) => {
 			const structuralMaterial = structuralMaterialsById.get(materialId);
 			if (!structuralMaterial) {
 				return false;
@@ -900,12 +963,14 @@ function validateGroups(
 				semanticMaterialsById.get(materialId)
 			);
 		});
+		const retainedMaterialIds =
+			group.author === 'user' ? structurallyValidMaterialIds : compatibleMaterialIds;
 		const normalizedGroup =
-			compatibleMaterialIds.length === group.materialIds.length
+			retainedMaterialIds.length === group.materialIds.length
 				? group
 				: {
 						...group,
-						materialIds: compatibleMaterialIds
+						materialIds: retainedMaterialIds
 					};
 
 		if (group.confidence < minAcceptedConfidence) {
@@ -919,7 +984,6 @@ function validateGroups(
 
 		if (
 			normalizedGroup.nodeIds.some((nodeId) => !validNodeIds.has(nodeId)) ||
-			normalizedGroup.meshIds.some((meshId) => !validMeshIds.has(meshId)) ||
 			normalizedGroup.materialIds.some((materialId) => !validMaterialIds.has(materialId))
 		) {
 			discardedSuggestions.push({
@@ -930,15 +994,15 @@ function validateGroups(
 			continue;
 		}
 
-		if (
-			normalizedGroup.nodeIds.length === 0 &&
-			normalizedGroup.meshIds.length === 0 &&
-			normalizedGroup.materialIds.length === 0
-		) {
+		const hasCoverage =
+			group.author === 'user'
+				? hasStructuralGroupCoverage(normalizedGroup, retainedMaterialIds)
+				: hasExecutableGroupCoverage(normalizedGroup, compatibleMaterialIds);
+		if (!hasCoverage) {
 			discardedSuggestions.push({
 				kind: 'group',
 				payload: normalizedGroup,
-				reason: 'Group has no compatible structural targets after semantic filtering'
+				reason: 'Group has no executable semantic coverage after validation'
 			});
 			continue;
 		}
@@ -1080,9 +1144,7 @@ function synthesizeSemanticGroups(
 			nodeIds: Array.from(new Set(matched.flatMap((entry) => entry.nodeIds))).sort((left, right) =>
 				left.localeCompare(right)
 			),
-			meshIds: Array.from(new Set(matched.flatMap((entry) => entry.meshIds))).sort((left, right) =>
-				left.localeCompare(right)
-			),
+			meshIds: [],
 			materialIds: Array.from(new Set(matched.flatMap((entry) => entry.materialIds))).sort(
 				(left, right) => left.localeCompare(right)
 			),
@@ -1092,7 +1154,7 @@ function synthesizeSemanticGroups(
 
 	pushGroup(
 		synthFromMaterials(
-			'group_wheels',
+			'wheels',
 			'wheels',
 			'wheels',
 			['highlight', 'focus', 'isolate'],
@@ -1102,7 +1164,7 @@ function synthesizeSemanticGroups(
 	);
 	pushGroup(
 		synthFromMaterials(
-			'group_glasshouse',
+			'glasshouse',
 			'glasshouse',
 			'glasshouse',
 			['highlight', 'focus', 'isolate', 'tint'],
@@ -1112,7 +1174,7 @@ function synthesizeSemanticGroups(
 	);
 	pushGroup(
 		synthFromMaterials(
-			'group_body_shell',
+			'body_shell',
 			'body shell',
 			'body_shell',
 			['highlight', 'focus', 'isolate', 'paint'],
@@ -1122,7 +1184,7 @@ function synthesizeSemanticGroups(
 	);
 	pushGroup(
 		synthFromMaterials(
-			'group_front_face',
+			'front_face',
 			'front face',
 			'front_face',
 			['highlight', 'focus', 'isolate'],
@@ -1135,7 +1197,7 @@ function synthesizeSemanticGroups(
 	);
 	pushGroup(
 		synthFromParts(
-			'group_doors',
+			'doors',
 			'doors',
 			'doors',
 			['highlight', 'focus', 'isolate'],
@@ -1281,7 +1343,6 @@ async function deriveReviewedSemanticGroups(
 	]);
 	const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
 	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
-	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
 	const materialById = new Map(structure.materials.map((material) => [material.id, material]));
 	const groupedAssignments = new Map<string, { nodeIds: string[]; materialIds: string[] }>();
 
@@ -1322,30 +1383,17 @@ async function deriveReviewedSemanticGroups(
 			continue;
 		}
 
-		const meshIds = Array.from(
-			new Set(
-				nodeIds.flatMap((nodeId) => {
-					const meshId = nodeById.get(nodeId)?.meshId;
-					return meshId ? [meshId] : [];
-				})
-			)
-		).sort((left, right) => left.localeCompare(right));
-		const materialIds = Array.from(
-			new Set([
-				...directMaterialIds,
-				...meshIds.flatMap((meshId) => meshById.get(meshId)?.materialIds ?? [])
-			])
-		).sort((left, right) => left.localeCompare(right));
+		const materialIds = directMaterialIds;
 
 		groups.push({
-			id: definition.category === 'other' ? definition.id : `group_${definition.id}`,
+			id: definition.id,
 			humanLabel: definition.humanLabel,
 			aliases: definition.aliases,
 			confidence: 1,
 			category: definition.category,
 			supports: definition.supports,
 			nodeIds,
-			meshIds,
+			meshIds: [],
 			materialIds,
 			author: 'user' as const
 		});
@@ -1361,28 +1409,43 @@ function mergeAgentAndUserGroups(
 	return reduceVisibleSemanticGroups(reduceSemanticGroups([...agentGroups, ...userGroups]));
 }
 
+function haveGroupsChanged(
+	current: VehicleSemanticGroup[],
+	next: VehicleSemanticGroup[]
+): boolean {
+	return JSON.stringify(current) !== JSON.stringify(next);
+}
+
+async function sanitizeOverlayGroups(
+	overlay: Omit<VehicleSemanticOverlay, 'revision'> & { revision?: number }
+): Promise<{
+	acceptedGroups: VehicleSemanticGroup[];
+	discardedSuggestions: VehicleSemanticOverlayDiscard[];
+}> {
+	const structure = await deriveStructuralAssetSnapshot(overlay.assetId);
+	const validation = validateGroups(
+		overlay.acceptedGroups,
+		structure,
+		overlay.acceptedMaterials,
+		overlay.acceptedParts,
+		overlay.minAcceptedConfidence
+	);
+
+	return {
+		acceptedGroups: validation.acceptedGroups,
+		discardedSuggestions: [...overlay.discardedSuggestions, ...validation.discardedSuggestions]
+	};
+}
+
 function resolveGroupNodeIds(
 	group: VehicleSemanticGroup,
 	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>
 ): string[] {
-	const nodeByMeshId = new Map<string, string[]>();
-
-	for (const node of structure.nodes) {
-		if (!node.meshId) {
-			continue;
-		}
-
-		const current = nodeByMeshId.get(node.meshId) ?? [];
-		current.push(node.id);
-		nodeByMeshId.set(node.meshId, current);
-	}
-
 	const materialById = new Map(structure.materials.map((material) => [material.id, material]));
 
 	return Array.from(
 		new Set([
 			...group.nodeIds,
-			...group.meshIds.flatMap((meshId) => nodeByMeshId.get(meshId) ?? []),
 			...group.materialIds.flatMap((materialId) => materialById.get(materialId)?.nodeIds ?? [])
 		])
 	).sort((left, right) => left.localeCompare(right));
@@ -1430,39 +1493,42 @@ export async function readVehicleSemanticOverlay(
 ): Promise<VehicleSemanticOverlay | null> {
 	const overlay = await readStoredVehicleSemanticOverlay(assetId);
 	if (!overlay) return null;
-	// One-time migration: if no user groups are present, attempt to import
-	// any existing assignments from the legacy two-store architecture.
-	if (!overlay.acceptedGroups.some((g) => g.author === 'user')) {
-		return migrateLegacyAssignments(assetId, overlay);
+	const canonicalGroups = reduceSemanticGroups(
+		overlay.acceptedGroups.map((group) => ({
+			...group,
+			meshIds: [],
+			id: getCanonicalSemanticGroupId({
+				id: group.id,
+				category: group.category,
+				humanLabel: group.humanLabel
+			})
+		})).filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
+	);
+	const requiresCanonicalRewrite = haveGroupsChanged(overlay.acceptedGroups, canonicalGroups);
+	if (requiresCanonicalRewrite) {
+		return writeVehicleSemanticOverlay({ ...overlay, acceptedGroups: canonicalGroups });
 	}
 	return overlay;
-}
-
-async function migrateLegacyAssignments(
-	assetId: VehicleAssetId,
-	overlay: VehicleSemanticOverlay
-): Promise<VehicleSemanticOverlay> {
-	try {
-		const structure = await deriveStructuralAssetSnapshot(assetId);
-		const reviewedGroups = await deriveReviewedSemanticGroups(
-			assetId,
-			overlay.structuralGeneratedAt,
-			structure
-		);
-		if (reviewedGroups.length === 0) return overlay;
-		const mergedGroups = mergeAgentAndUserGroups(overlay.acceptedGroups, reviewedGroups);
-		return writeVehicleSemanticOverlay({ ...overlay, acceptedGroups: mergedGroups });
-	} catch {
-		return overlay;
-	}
 }
 
 export async function writeVehicleSemanticOverlay(
 	overlay: Omit<VehicleSemanticOverlay, 'revision'> & { revision?: number }
 ): Promise<VehicleSemanticOverlay> {
 	const current = await readStoredVehicleSemanticOverlay(overlay.assetId);
+	const canonicalGroups = reduceSemanticGroups(
+		overlay.acceptedGroups.map((group) => ({
+			...group,
+			meshIds: [],
+			id: getCanonicalSemanticGroupId({
+				id: group.id,
+				category: group.category,
+				humanLabel: group.humanLabel
+			})
+		})).filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
+	);
 	const nextOverlay: VehicleSemanticOverlay = {
 		...overlay,
+		acceptedGroups: canonicalGroups,
 		revision: (current?.revision ?? 0) + 1
 	};
 	await mkdir(resolveSemanticOverlayDirectory(), { recursive: true });
@@ -1504,6 +1570,18 @@ export async function generateVehicleSemanticOverlay(
 		existing.structuralGeneratedAt === capabilities.generatedAt &&
 		existing.minAcceptedConfidence === minAcceptedConfidence
 	) {
+		const sanitizedExisting = await sanitizeOverlayGroups(existing);
+		if (
+			haveGroupsChanged(existing.acceptedGroups, sanitizedExisting.acceptedGroups) ||
+			sanitizedExisting.discardedSuggestions.length !== existing.discardedSuggestions.length
+		) {
+			return writeVehicleSemanticOverlay({
+				...existing,
+				acceptedGroups: sanitizedExisting.acceptedGroups,
+				discardedSuggestions: sanitizedExisting.discardedSuggestions
+			});
+		}
+
 		return existing;
 	}
 
@@ -1533,6 +1611,7 @@ export async function generateVehicleSemanticOverlay(
 		synthesizeSemanticGroups(validatedMaterials.acceptedMaterials, validatedParts.acceptedParts),
 		structure,
 		validatedMaterials.acceptedMaterials,
+		validatedParts.acceptedParts,
 		minAcceptedConfidence
 	);
 
@@ -1540,9 +1619,17 @@ export async function generateVehicleSemanticOverlay(
 	const existingOverlay = await readStoredVehicleSemanticOverlay(assetId);
 	const preservedUserGroups = existingOverlay?.acceptedGroups.filter((g) => g.author === 'user') ?? [];
 
-	// Merge new agent groups with preserved user groups
+	// Merge new agent groups with preserved user groups, then revalidate the merged result against
+	// the current executable semantic contract before persisting.
 	const newAgentGroups = validatedGroups.acceptedGroups;
-	const mergedGroups = mergeAgentAndUserGroups(newAgentGroups, preservedUserGroups);
+	const mergedGroupValidation = validateGroups(
+		mergeAgentAndUserGroups(newAgentGroups, preservedUserGroups),
+		structure,
+		validatedMaterials.acceptedMaterials,
+		validatedParts.acceptedParts,
+		minAcceptedConfidence
+	);
+	const mergedGroups = mergedGroupValidation.acceptedGroups;
 
 	return writeVehicleSemanticOverlay({
 		assetId,
@@ -1557,6 +1644,7 @@ export async function generateVehicleSemanticOverlay(
 			...validatedMaterials.discardedSuggestions,
 			...validatedParts.discardedSuggestions,
 			...validatedGroups.discardedSuggestions,
+			...mergedGroupValidation.discardedSuggestions,
 			...proposalDiscards
 		]
 	});
@@ -1670,7 +1758,7 @@ export async function mutateVehicleSemanticAssignment(
 	}
 
 	// Compute the group ID using the same scheme as deriveReviewedSemanticGroups
-	const groupId = definition.category === 'other' ? definition.id : `group_${definition.id}`;
+	const groupId = definition.id;
 
 	// For REASSIGN: remove the nodeIds/materialIds from any other group in the same exclusive family
 	if (mutation.action === 'reassign') {
@@ -1678,9 +1766,7 @@ export async function mutateVehicleSemanticAssignment(
 		const definitionById = new Map(definitions.map((d) => [d.id, d]));
 
 		for (const group of baseOverlay.acceptedGroups) {
-			// Extract the definition ID from the group ID
-			const groupDefId = group.id.startsWith('group_') ? group.id.slice(6) : group.id;
-			const groupDef = definitionById.get(groupDefId);
+			const groupDef = definitionById.get(group.id);
 			if (
 				groupDef &&
 				groupDef.exclusiveFamily &&
@@ -1723,16 +1809,7 @@ export async function mutateVehicleSemanticAssignment(
 			(a, b) => a.localeCompare(b)
 		);
 
-		// Compute meshIds from nodeIds
-		const meshById = new Map(structure.meshes.map((m) => [m.id, m]));
-		const nodeById = new Map(structure.nodes.map((n) => [n.id, n]));
-		targetGroup.meshIds = Array.from(
-			new Set(
-				targetGroup.nodeIds
-					.map((nodeId) => nodeById.get(nodeId)?.meshId)
-					.filter((meshId): meshId is string => meshId !== undefined)
-			)
-		).sort((a, b) => a.localeCompare(b));
+		targetGroup.meshIds = [];
 	} else if (mutation.action === 'unassign') {
 		// For UNASSIGN: find the group and remove the nodeIds/materialIds
 		const targetGroup = baseOverlay.acceptedGroups.find((g) => g.id === groupId);
@@ -1744,20 +1821,11 @@ export async function mutateVehicleSemanticAssignment(
 			if (
 				targetGroup.author === 'user' &&
 				targetGroup.nodeIds.length === 0 &&
-				targetGroup.meshIds.length === 0 &&
 				targetGroup.materialIds.length === 0
 			) {
 				baseOverlay.acceptedGroups = baseOverlay.acceptedGroups.filter((g) => g.id !== groupId);
 			} else {
-				// Recompute meshIds
-				const nodeById = new Map(structure.nodes.map((n) => [n.id, n]));
-				targetGroup.meshIds = Array.from(
-					new Set(
-						targetGroup.nodeIds
-							.map((nodeId) => nodeById.get(nodeId)?.meshId)
-							.filter((meshId): meshId is string => meshId !== undefined)
-					)
-				).sort((a, b) => a.localeCompare(b));
+				targetGroup.meshIds = [];
 			}
 		}
 	}
@@ -1804,17 +1872,6 @@ export function refreshVehicleSemanticOverlayInBackground(
 
 	inflightRefreshes.set(refreshKey, refreshPromise);
 	return refreshPromise;
-}
-
-async function readBestAvailableOverlay(
-	assetId: VehicleAssetId
-): Promise<VehicleSemanticOverlay | null> {
-	// Return the overlay regardless of structural freshness, consistent with how
-	// the sidebar API and prompt context already treat stale overlays as actionable.
-	// A stale overlay is still the best available semantic data — previously this
-	// function returned null when structuralGeneratedAt didn't match, which caused
-	// the model to deny that groups exist that the sidebar panel clearly shows.
-	return readVehicleSemanticOverlay(assetId);
 }
 
 export async function getVehicleSemanticOverlayStatus(
@@ -1909,7 +1966,7 @@ export async function listSemanticMaterialsByTags(
 	structuralGeneratedAt: string,
 	tags: VehicleSemanticTag[]
 ): Promise<VehicleSemanticMaterialSuggestion[]> {
-	const overlay = await readBestAvailableOverlay(assetId);
+	const overlay = await readVehicleSemanticOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1924,7 +1981,7 @@ export async function listSemanticMaterialsByQuery(
 	structuralGeneratedAt: string,
 	query: string
 ): Promise<VehicleSemanticMaterialSuggestion[]> {
-	const overlay = await readBestAvailableOverlay(assetId);
+	const overlay = await readVehicleSemanticOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1937,7 +1994,7 @@ export async function listSemanticPartsByQuery(
 	structuralGeneratedAt: string,
 	query: string
 ): Promise<VehicleSemanticPartUnit[]> {
-	const overlay = await readBestAvailableOverlay(assetId);
+	const overlay = await readVehicleSemanticOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
@@ -1951,42 +2008,24 @@ export async function listSemanticGroupsByQuery(
 	query: string,
 	support?: VehicleSemanticActionSupport
 ): Promise<VehicleSemanticGroup[]> {
-	const overlay = await readBestAvailableOverlay(assetId);
+	const overlay = await readVehicleSemanticOverlay(assetId);
 	if (!overlay) {
 		return [];
 	}
 
 	const structure = await deriveStructuralAssetSnapshot(assetId);
-	const structuralMaterialsById = new Map(
-		structure.materials.map((material) => [material.id, material])
-	);
-	const semanticMaterialsById = new Map(
-		overlay.acceptedMaterials.map((material) => [material.targetId, material])
-	);
-	const sanitizedGroups = overlay.acceptedGroups
+	const validMaterialIds = new Set(structure.materials.map((material) => material.id));
+	const validNodeIds = new Set(structure.nodes.map((node) => node.id));
+	const matchedGroups = overlay.acceptedGroups
 		.map((group) => ({
 			...group,
-			materialIds: group.materialIds.filter((materialId) => {
-				const structuralMaterial = structuralMaterialsById.get(materialId);
-				if (!structuralMaterial) {
-					return false;
-				}
-
-				return isMaterialCompatibleWithGroupCategory(
-					group.category,
-					structuralMaterial,
-					semanticMaterialsById.get(materialId)
-				);
-			})
+			nodeIds: group.nodeIds.filter((nodeId) => validNodeIds.has(nodeId)),
+			materialIds: group.materialIds.filter((materialId) => validMaterialIds.has(materialId))
 		}))
+		.filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
 		.filter(
-			(group) =>
-				group.nodeIds.length > 0 || group.meshIds.length > 0 || group.materialIds.length > 0
-		);
-
-	const matchedGroups = sanitizedGroups.filter(
 		(group) => groupMatchesQuery(group, query) && (!support || group.supports.includes(support))
-	);
+		);
 	return reduceVisibleSemanticGroups(matchedGroups, support);
 }
 
@@ -2010,9 +2049,7 @@ function mergeSemanticGroup(
 		nodeIds: Array.from(new Set([...existing.nodeIds, ...incoming.nodeIds])).sort((left, right) =>
 			left.localeCompare(right)
 		),
-		meshIds: Array.from(new Set([...existing.meshIds, ...incoming.meshIds])).sort((left, right) =>
-			left.localeCompare(right)
-		),
+		meshIds: [],
 		materialIds: Array.from(new Set([...existing.materialIds, ...incoming.materialIds])).sort(
 			(left, right) => left.localeCompare(right)
 		),
@@ -2042,14 +2079,9 @@ function reduceVisibleSemanticGroups(
 	support?: VehicleSemanticActionSupport
 ): VehicleSemanticGroup[] {
 	const rankedGroups = [...groups].sort((left, right) => {
-		const leftCoverageScore =
-			(left.nodeIds.length > 0 ? 1000 : 0) +
-			(left.meshIds.length > 0 ? 100 : 0) +
-			left.materialIds.length;
+		const leftCoverageScore = (left.nodeIds.length > 0 ? 1000 : 0) + left.materialIds.length;
 		const rightCoverageScore =
-			(right.nodeIds.length > 0 ? 1000 : 0) +
-			(right.meshIds.length > 0 ? 100 : 0) +
-			right.materialIds.length;
+			(right.nodeIds.length > 0 ? 1000 : 0) + right.materialIds.length;
 		const preferStructuralCoverage = support === 'focus' || support === 'isolate';
 
 		if (preferStructuralCoverage && leftCoverageScore !== rightCoverageScore) {

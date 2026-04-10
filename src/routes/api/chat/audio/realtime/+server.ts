@@ -6,6 +6,7 @@ import type { FooterChatRequest } from '$lib/server/connectors/openai-chat/types
 
 type RealtimeSessionRequest = {
 	assetId?: FooterChatRequest['assetId'];
+	selectedGroupId?: FooterChatRequest['selectedGroupId'];
 	selectedNodeId?: string;
 	selectedNodeName?: string;
 	selectedNodePath?: string;
@@ -29,6 +30,7 @@ export async function POST({ request, locals }) {
 		const realtimeSession = await createRealtimeClientSecret({
 			userId: resolveAuthenticatedUserId(session),
 			assetId: payload.assetId,
+			selectedGroupId: payload.selectedGroupId,
 			selectedNodeId: payload.selectedNodeId,
 			selectedNodeName: payload.selectedNodeName,
 			selectedNodePath: payload.selectedNodePath,
@@ -38,7 +40,11 @@ export async function POST({ request, locals }) {
 			supplementaryList: payload.supplementaryList
 		});
 
-		return json(realtimeSession);
+		return json({
+			clientSecret: realtimeSession.clientSecret,
+			semanticOverlayStatus: realtimeSession.semanticOverlayStatus,
+			instructions: realtimeSession.instructions
+		});
 	} catch (error) {
 		if (error instanceof OpenAIChatConfigError) {
 			return json({ error: error.message }, { status: 500 });

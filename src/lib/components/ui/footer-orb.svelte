@@ -22,8 +22,13 @@
 		prepareSemanticBootstrapForRequest,
 		getSidebarContext,
 		getSupplementaryListContext,
-		getSelectedNodeContext
+		getSelectedNodeContext,
+		getSelectedSemanticGroupContext
 	} from '$lib/components/chat/footer-chat-client';
+	import { diffSelectionAgainstSemanticGroup } from '$lib/semantic-overlay/runtime';
+	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
+	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 	import type {
 		FooterChatAudioResponse,
 		FooterChatAudioStreamEvent,
@@ -63,6 +68,7 @@
 	let realtimeSessionAssetId = $state<VehicleAssetId | undefined>();
 	let realtimeSemanticOverlayStatus = $state<'missing' | 'stale' | 'fresh' | 'unknown'>('unknown');
 	let realtimeConnecting = $state(false);
+	let realtimeInstructions = $state('');
 	let recorderChunks: BlobPart[] = [];
 	let activeMode = $state<OrbMode>('idle');
 	let activeAmplitude = $state(0);
@@ -92,6 +98,18 @@
 	$effect(() => {
 		if (realtimeSessionActive && realtimeSessionAssetId && realtimeSessionAssetId !== assetId) {
 			closeRealtimeSession();
+		}
+	});
+
+	// Push fresh selection, semantic focus, and presentation context into the live realtime
+	// session whenever the relevant stores change so the model never narrates from stale state.
+	$effect(() => {
+		// Establish reactive subscriptions to the relevant stores.
+		void $semanticRuntimeState;
+		void $vehicleNodeSelection;
+		void $vehiclePatchState;
+		if (realtimeSessionActive) {
+			pushRealtimeContextUpdate();
 		}
 	});
 
@@ -279,8 +297,10 @@
 
 	function buildRealtimeContextPayload() {
 		const selectedNodeContext = getSelectedNodeContext(assetId);
+		const selectedSemanticGroupContext = getSelectedSemanticGroupContext(assetId);
 		return {
 			assetId,
+			selectedGroupId: selectedSemanticGroupContext.selectedGroupId,
 			selectedNodeId: selectedNodeContext.selectedNodeId,
 			selectedNodeName: selectedNodeContext.selectedNodeName,
 			selectedNodePath: selectedNodeContext.selectedNodePath,
@@ -289,6 +309,119 @@
 			sidebar: getSidebarContext(assetId),
 			supplementaryList: getSupplementaryListContext(assetId)
 		};
+	}
+
+	function buildRealtimeSelectionLine(): string {
+		const ctx = getSelectedNodeContext(assetId);
+		if (ctx.selectedNodes.length > 0) {
+			const summary = ctx.selectedNodes
+				.slice(0, 3)
+				.map((s) =>
+					s.targetType === 'part'
+						? `${s.targetName ?? s.nodeName} part [${s.targetId ?? s.nodeId}]`
+						: `${s.nodeName} [${s.nodeId}]`
+				)
+				.join(', ');
+			return `Selected runtime nodes: ${summary}.`;
+		}
+		if (ctx.selectedNodeId) {
+			return `Selected runtime nodes: ${ctx.selectedNodeName ?? ctx.selectedNodeId}${ctx.selectedNodePath ? ` at ${ctx.selectedNodePath}` : ''}.`;
+		}
+		return 'Selected runtime nodes: none.';
+	}
+
+	function buildRealtimeHighlightedTargetsLine(): string {
+		const presentation = getPresentationContext(assetId);
+		const highlightedTargets = presentation?.highlightedTargets ?? [];
+		if (highlightedTargets.length === 0) {
+			return 'Highlighted targets: none.';
+		}
+
+		const summary = highlightedTargets
+			.slice(0, 4)
+			.map((target) => target.targetName ?? target.targetId)
+			.join(', ');
+		return `Highlighted targets: ${summary}.`;
+	}
+
+	function buildRealtimeSemanticEditContextLine(): string {
+		if (!assetId) {
+			return 'Semantic edit context: unavailable.';
+		}
+
+		const { overlay } = semanticRuntimeState.getAssetState(assetId);
+		const { selectedGroupId } = getSelectedSemanticGroupContext(assetId);
+		const { selectedNodes } = getSelectedNodeContext(assetId);
+		const diff = diffSelectionAgainstSemanticGroup(overlay, selectedGroupId, selectedNodes);
+		if (!diff) {
+			return 'Semantic edit context: unavailable.';
+		}
+
+		const summarize = (selection: (typeof selectedNodes)[number]): string =>
+			selection.targetType === 'part'
+				? `${selection.targetName ?? selection.nodeName} [${selection.targetId ?? selection.nodeId}]`
+				: `${selection.nodeName} [${selection.nodeId}]`;
+		const details: string[] = [];
+		if (diff.coveredSelections.length > 0) {
+			details.push(
+				`already accepted in the active group: ${diff.coveredSelections.map(summarize).join(', ')}`
+			);
+		}
+		if (diff.candidateSelections.length > 0) {
+			details.push(
+				`candidate additions relative to the active group: ${diff.candidateSelections.map(summarize).join(', ')}`
+			);
+		}
+
+		return details.length > 0
+			? `Semantic edit context: ${details.join('; ')}.`
+			: `Semantic edit context: the current selection is already fully accepted by ${diff.groupLabel} [${diff.groupId}].`;
+	}
+
+	function buildRealtimePresentationLine(): string {
+		const presentation = getPresentationContext(assetId);
+		if (!presentation) {
+			return 'Current presentation: none.';
+		}
+		const parts = [
+			presentation.activeIntentLabel ? `intent ${presentation.activeIntentLabel}` : null,
+			presentation.highlightedTargets?.length
+				? `highlights ${presentation.highlightedTargets.length}`
+				: null,
+			presentation.materialTargets?.length
+				? `materials ${presentation.materialTargets.length}`
+				: null,
+			presentation.hiddenTargets?.length ? `hidden ${presentation.hiddenTargets.length}` : null,
+			presentation.viewerModes?.length ? `viewer ${presentation.viewerModes.join(', ')}` : null
+		]
+			.filter((v): v is string => v !== null)
+			.join('; ');
+		return `Current presentation: ${parts || 'none'}.`;
+	}
+
+	function buildRealtimeSelectedGroupLine(): string {
+		const { selectedGroupId } = getSelectedSemanticGroupContext(assetId);
+		return selectedGroupId
+			? `Active semantic group: ${selectedGroupId}. Treat this as the current semantic focus unless the user clearly redirects.`
+			: 'Active semantic group: none.';
+	}
+
+	function pushRealtimeContextUpdate(): void {
+		if (
+			!realtimeSessionActive ||
+			!realtimeInstructions ||
+			realtimeDataChannel?.readyState !== 'open'
+		) {
+			return;
+		}
+		const updated = realtimeInstructions
+			.replace(/^Active semantic group: .*$/m, buildRealtimeSelectedGroupLine())
+			.replace(/^Semantic edit context: .*$/m, buildRealtimeSemanticEditContextLine())
+			.replace(/^Selected runtime nodes: .*$/m, buildRealtimeSelectionLine())
+			.replace(/^Highlighted targets: .*$/m, buildRealtimeHighlightedTargetsLine())
+			.replace(/^Current presentation: .*$/m, buildRealtimePresentationLine());
+		realtimeInstructions = updated;
+		sendRealtimeEvent({ type: 'session.update', session: { instructions: updated } });
 	}
 
 	function sendRealtimeEvent(event: Record<string, unknown>): void {
@@ -310,6 +443,7 @@
 		realtimeConnecting = false;
 		realtimeSessionAssetId = undefined;
 		realtimeSemanticOverlayStatus = 'unknown';
+		realtimeInstructions = '';
 		busy = false;
 		resetOrbState();
 	}
@@ -594,12 +728,14 @@
 			const sessionPayload = (await sessionResponse.json()) as {
 				clientSecret?: string;
 				semanticOverlayStatus?: 'missing' | 'stale' | 'fresh' | 'unknown';
+				instructions?: string;
 				error?: string;
 			};
 			if (!sessionPayload.clientSecret) {
 				throw new Error(sessionPayload.error ?? 'Realtime session secret was missing.');
 			}
 			realtimeSemanticOverlayStatus = sessionPayload.semanticOverlayStatus ?? 'unknown';
+			realtimeInstructions = sessionPayload.instructions ?? '';
 
 			const offer = await peerConnection.createOffer();
 			await peerConnection.setLocalDescription(offer);
@@ -635,6 +771,7 @@
 	async function sendAudioMessage(audioBlob: Blob): Promise<void> {
 		const file = await blobToFile(audioBlob);
 		const selectedNodeContext = getSelectedNodeContext(assetId);
+		const selectedSemanticGroupContext = getSelectedSemanticGroupContext(assetId);
 		const presentation = getPresentationContext(assetId);
 		const sidebarContext = getSidebarContext(assetId);
 		const supplementaryListContext = getSupplementaryListContext(assetId);
@@ -643,6 +780,9 @@
 		formData.set('audio', file);
 		if (assetId) {
 			formData.set('assetId', assetId);
+		}
+		if (selectedSemanticGroupContext.selectedGroupId) {
+			formData.set('selectedGroupId', selectedSemanticGroupContext.selectedGroupId);
 		}
 		if (selectedNodeContext.selectedNodeId) {
 			formData.set('selectedNodeId', selectedNodeContext.selectedNodeId);

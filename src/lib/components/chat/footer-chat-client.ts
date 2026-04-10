@@ -138,6 +138,17 @@ export function getSelectedNodeContext(assetId?: VehicleAssetId) {
 	};
 }
 
+export function getSelectedSemanticGroupContext(assetId?: VehicleAssetId): {
+	selectedGroupId?: string;
+} {
+	if (!assetId) {
+		return {};
+	}
+
+	const runtimeState = semanticRuntimeState.getAssetState(assetId);
+	return runtimeState.selectedGroupId ? { selectedGroupId: runtimeState.selectedGroupId } : {};
+}
+
 export function getSidebarContext(assetId?: VehicleAssetId): FooterChatSidebarState {
 	return inspectorSidebarState.getContext(assetId);
 }

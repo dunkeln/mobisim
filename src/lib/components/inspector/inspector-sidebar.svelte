@@ -49,18 +49,10 @@
 		targetType: 'node';
 	};
 
-	type HighlightScopeDescriptor = {
-		targets: HighlightTargetRef[];
-		scope: 'group' | 'node';
-		groupId: string;
-	};
-
 	let { assetId, class: className = '' }: Props = $props();
 
 	const NODE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.502, 0.808, 0.843, 1];
 	let expandedGroupIds = $state<string[]>([]);
-	let activeHighlightKey = $state<string | null>(null);
-	let missingPromptedAssetIds = $state<VehicleAssetId[]>([]);
 	const runtimeAsset = $derived.by(
 		() =>
 			$semanticRuntimeState.byAsset[assetId] ?? {
@@ -71,7 +63,6 @@
 			}
 	);
 	const overlay = $derived(runtimeAsset.overlay);
-	const overlayStatus = $derived(runtimeAsset.overlayStatus);
 	const selectedGroupId = $derived(runtimeAsset.selectedGroupId);
 
 	function buildNodeView(
@@ -118,7 +109,6 @@
 						part.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const }))
 					)
 				];
-
 				return {
 					id: group.id,
 					label: group.humanLabel,
@@ -153,51 +143,50 @@
 			  )
 			: new Set<string>()
 	);
-	const highlightDescriptorsByKey = $derived.by(() => {
-		const descriptors = new Map<string, HighlightScopeDescriptor>();
 
-		for (const group of semanticGroups) {
-			descriptors.set(getGroupHighlightKey(group.id), {
-				targets: group.highlightTargets,
-				scope: 'group',
-				groupId: group.id
+	function applySidebarSelection(
+		groupId: string,
+		targets: HighlightTargetRef[],
+		label: string
+	): void {
+		if (isHighlighted(targets) && selectedGroupId === groupId) {
+			const didRestore = vehiclePatchState.apply(assetId, {
+				kind: 'clear_highlights',
+				intentLabel: `clear ${label} selection`
 			});
 
-			for (const part of group.parts) {
-				descriptors.set(getNodeHighlightKey(group.id, part.id), {
-					targets: part.highlightTargets,
-					scope: 'node',
-					groupId: group.id
+			if (!didRestore) {
+				toast.error('Selection failed', {
+					description: 'No matching semantic highlight was active.'
 				});
+				return;
 			}
 
-			for (const node of group.uncoveredNodes) {
-				descriptors.set(getNodeHighlightKey(group.id, node.id), {
-					targets: node.highlightTargets,
-					scope: 'node',
-					groupId: group.id
-				});
-			}
+			semanticRuntimeState.applyAssetState(assetId, {
+				selectedGroupId: null
+			});
+			return;
 		}
 
-		return descriptors;
-	});
-
-	function getGroupHighlightKey(groupId: string): string {
-		return `group:${groupId}`;
-	}
-
-	function getNodeHighlightKey(groupId: string, nodeId: string): string {
-		return `node:${groupId}:${nodeId}`;
-	}
-
-	function toggleGroup(groupId: string): void {
 		semanticRuntimeState.applyAssetState(assetId, {
 			selectedGroupId: groupId
 		});
-		expandedGroupIds = expandedGroupIds.includes(groupId)
-			? expandedGroupIds.filter((id) => id !== groupId)
-			: [...expandedGroupIds, groupId];
+		vehiclePatchState.apply(assetId, {
+			kind: 'set_highlights',
+			intentLabel: `select ${label}`,
+			operations: buildSemanticPanelHighlightOperations(targets, label)
+		});
+	}
+
+	function toggleGroup(group: SemanticGroupView): void {
+		applySidebarSelection(
+			group.id,
+			group.highlightTargets,
+			group.label
+		);
+		expandedGroupIds = expandedGroupIds.includes(group.id)
+			? expandedGroupIds.filter((id) => id !== group.id)
+			: [...expandedGroupIds, group.id];
 	}
 
 	function isExpanded(groupId: string): boolean {
@@ -216,7 +205,7 @@
 		return targets.every((target) => activeHighlightTargetKeys.has(getTargetKey(target)));
 	}
 
-	function matchesExactActiveHighlight(targets: HighlightTargetRef[]): boolean {
+	function isDirectlyHighlighted(targets: HighlightTargetRef[]): boolean {
 		if (targets.length === 0 || activeHighlightTargetKeys.size === 0) {
 			return false;
 		}
@@ -229,21 +218,20 @@
 		return uniqueTargetKeys.every((targetKey) => activeHighlightTargetKeys.has(targetKey));
 	}
 
-	function isDirectlyHighlighted(highlightKey: string): boolean {
-		const descriptor = highlightDescriptorsByKey.get(highlightKey);
-		if (!descriptor || activeHighlightKey !== highlightKey) {
-			return false;
-		}
-
-		return matchesExactActiveHighlight(descriptor.targets);
-	}
-
 	function isGroupDirectlyHighlighted(groupId: string): boolean {
-		return isDirectlyHighlighted(getGroupHighlightKey(groupId));
+		const group = semanticGroups.find((entry) => entry.id === groupId);
+		return group ? isDirectlyHighlighted(group.highlightTargets) : false;
 	}
 
 	function isNodeDirectlyHighlighted(groupId: string, nodeId: string): boolean {
-		return isDirectlyHighlighted(getNodeHighlightKey(groupId, nodeId));
+		const group = semanticGroups.find((entry) => entry.id === groupId);
+		const part = group?.parts.find((entry) => entry.id === nodeId);
+		if (part) {
+			return isDirectlyHighlighted(part.highlightTargets);
+		}
+
+		const node = group?.uncoveredNodes.find((entry) => entry.id === nodeId);
+		return node ? isDirectlyHighlighted(node.highlightTargets) : false;
 	}
 
 	function isNodeDownstreamHighlighted(groupId: string): boolean {
@@ -252,11 +240,10 @@
 
 	function getHighlightLabel(
 		label: string,
-		highlightKey: string,
 		targets: HighlightTargetRef[],
 		downstream = false
 	): string {
-		if (isDirectlyHighlighted(highlightKey)) {
+		if (isDirectlyHighlighted(targets)) {
 			return `Clear highlight for ${label}`;
 		}
 
@@ -268,9 +255,9 @@
 	}
 
 	function toggleHighlight(
-		highlightKey: string,
 		targets: HighlightTargetRef[],
-		label: string
+		label: string,
+		groupId: string
 	): void {
 		if ($chatRequestState.pending) {
 			toast.error('Highlight paused', {
@@ -286,59 +273,12 @@
 			return;
 		}
 
-		if (isDirectlyHighlighted(highlightKey)) {
-			const didRestore = vehiclePatchState.apply(assetId, {
-				kind: 'clear_highlight_targets',
-				intentLabel: `clear ${label} highlight`,
-				targetIds: targets.map((target) => target.targetId)
-			});
-
-			if (!didRestore) {
-				toast.error('Highlight failed', {
-					description: 'No matching highlight was active.'
-				});
-			}
-			activeHighlightKey = null;
-			return;
-		}
-
-		activeHighlightKey = highlightKey;
-		vehiclePatchState.apply(assetId, {
-			kind: 'set_highlights',
-			intentLabel: `highlight ${label}`,
-			operations: buildSemanticPanelHighlightOperations(targets, label)
-		});
+		applySidebarSelection(groupId, targets, label);
 	}
 
 	$effect(() => {
 		assetId;
-		activeHighlightKey = null;
-	});
-
-	$effect(() => {
-		const descriptors = highlightDescriptorsByKey;
-		const activeTargetCount = activeHighlightTargetKeys.size;
-		const currentHighlightKey = activeHighlightKey;
-
-		if (activeTargetCount === 0) {
-			if (currentHighlightKey !== null) {
-				activeHighlightKey = null;
-			}
-			return;
-		}
-
-		if (currentHighlightKey && isDirectlyHighlighted(currentHighlightKey)) {
-			return;
-		}
-
-		const inferredHighlightKey =
-			Array.from(descriptors.entries()).find(([, descriptor]) =>
-				matchesExactActiveHighlight(descriptor.targets)
-			)?.[0] ?? null;
-
-		if (inferredHighlightKey !== currentHighlightKey) {
-			activeHighlightKey = inferredHighlightKey;
-		}
+		expandedGroupIds = [];
 	});
 
 	function buildSemanticPanelHighlightOperations(
@@ -388,16 +328,6 @@
 					(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === groupId)
 				);
 
-				if (
-					payload.overlayStatus === 'missing' &&
-					!missingPromptedAssetIds.includes(assetId)
-				) {
-					missingPromptedAssetIds = [...missingPromptedAssetIds, assetId];
-					toast.success('Create semantic grouping?', {
-						description:
-							'This asset does not have semantic groups yet. Use the inspector prompt to generate them when you are ready.'
-					});
-				}
 			} catch {
 				if (cancelled) {
 					return;
@@ -431,39 +361,34 @@
 	<aside class={['sidebar', className]} aria-label="Semantic groups">
 		<div class="group-stack">
 			{#each semanticGroups as group, groupIndex (group.id)}
-				<section
-					class={['group-row', selectedGroupId === group.id ? 'group-row--selected' : '']}
-					style={`--waterfall-delay:${groupIndex * 50}ms`}
-				>
+				<section class="group-row" style={`--waterfall-delay:${groupIndex * 50}ms`}>
 					<div class="group-header">
 						<button
 							type="button"
-							class={['group-trigger', selectedGroupId === group.id ? 'group-trigger--selected' : '']}
+							class="group-trigger"
 							aria-expanded={isExpanded(group.id)}
 							aria-pressed={selectedGroupId === group.id}
-							onclick={() => toggleGroup(group.id)}
+							onclick={() => toggleGroup(group)}
 						>
 							<span class="group-label">{group.label}</span>
 						</button>
 						<div class="group-actions">
-							<span class="group-meta">{group.parts.length + group.uncoveredNodes.length}</span>
 								{#if !isExpanded(group.id)}
-									{@const groupHighlightKey = getGroupHighlightKey(group.id)}
 									{@const groupIsHighlighted = isGroupDirectlyHighlighted(group.id)}
 								<button
 										type="button"
 										class="highlight-button"
 										class:is-active={groupIsHighlighted}
-										aria-label={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
+										aria-label={getHighlightLabel(group.label, group.highlightTargets)}
 										aria-pressed={groupIsHighlighted}
-										title={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
+										title={getHighlightLabel(group.label, group.highlightTargets)}
 										disabled={$chatRequestState.pending}
 										onclick={(event) => {
 											event.stopPropagation();
 											toggleHighlight(
-												groupHighlightKey,
 												group.highlightTargets,
-												group.label
+												group.label,
+												group.id
 											);
 										}}
 									>
@@ -475,7 +400,6 @@
 					{#if isExpanded(group.id)}
 						<div class="node-stack">
 								{#each group.parts as part, partIndex (`${group.id}-${part.id}`)}
-									{@const partHighlightKey = getNodeHighlightKey(group.id, part.id)}
 									{@const partIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, part.id)}
 									{@const partIsDownstreamHighlighted = !partIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(part.highlightTargets)}
 									<div
@@ -491,15 +415,15 @@
 											class="highlight-button"
 											class:is-active={partIsDirectlyHighlighted}
 											class:is-downstream={partIsDownstreamHighlighted}
-											aria-label={getHighlightLabel(part.label, partHighlightKey, part.highlightTargets, partIsDownstreamHighlighted)}
+											aria-label={getHighlightLabel(part.label, part.highlightTargets, partIsDownstreamHighlighted)}
 											aria-pressed={partIsDirectlyHighlighted}
-											title={getHighlightLabel(part.label, partHighlightKey, part.highlightTargets, partIsDownstreamHighlighted)}
+											title={getHighlightLabel(part.label, part.highlightTargets, partIsDownstreamHighlighted)}
 											disabled={$chatRequestState.pending}
 											onclick={() =>
 												toggleHighlight(
-													partHighlightKey,
 													part.highlightTargets,
-													part.label
+													part.label,
+													group.id
 												)}
 										>
 										<Highlighter class="h-3.5 w-3.5" />
@@ -507,7 +431,6 @@
 								</div>
 							{/each}
 								{#each group.uncoveredNodes as node, nodeIndex (`${group.id}-${node.id}`)}
-									{@const nodeHighlightKey = getNodeHighlightKey(group.id, node.id)}
 									{@const nodeIsDirectlyHighlighted = isNodeDirectlyHighlighted(group.id, node.id)}
 									{@const nodeIsDownstreamHighlighted = !nodeIsDirectlyHighlighted && isNodeDownstreamHighlighted(group.id) && isHighlighted(node.highlightTargets)}
 									<div
@@ -523,15 +446,15 @@
 											class="highlight-button"
 											class:is-active={nodeIsDirectlyHighlighted}
 											class:is-downstream={nodeIsDownstreamHighlighted}
-											aria-label={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}
+											aria-label={getHighlightLabel(node.label, node.highlightTargets, nodeIsDownstreamHighlighted)}
 											aria-pressed={nodeIsDirectlyHighlighted}
-											title={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}
+											title={getHighlightLabel(node.label, node.highlightTargets, nodeIsDownstreamHighlighted)}
 											disabled={$chatRequestState.pending}
 											onclick={() =>
 												toggleHighlight(
-													nodeHighlightKey,
 													node.highlightTargets,
-													node.label
+													node.label,
+													group.id
 												)}
 										>
 										<Highlighter class="h-3.5 w-3.5" />
@@ -577,13 +500,6 @@
 		animation-delay: var(--waterfall-delay, 0ms);
 	}
 
-	.group-row--selected {
-		padding: 0.4rem 0.5rem 0.45rem;
-		border-radius: 0.85rem;
-		background: color-mix(in oklab, var(--boundary-primary) 12%, transparent);
-		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--boundary-primary) 22%, transparent);
-	}
-
 	.group-trigger {
 		display: block;
 		width: 100%;
@@ -593,10 +509,6 @@
 		color: inherit;
 		text-align: left;
 		cursor: pointer;
-	}
-
-	.group-trigger--selected .group-label {
-		color: color-mix(in oklab, var(--boundary-text) 88%, var(--boundary-tertiary));
 	}
 
 	.group-trigger:disabled,
@@ -622,13 +534,6 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.75rem;
-	}
-
-	.group-meta {
-		font-family: var(--font-mono);
-		font-size: 0.62rem;
-		letter-spacing: 0.14em;
-		color: color-mix(in oklab, var(--boundary-secondary) 72%, var(--boundary-text));
 	}
 
 	.node-stack {

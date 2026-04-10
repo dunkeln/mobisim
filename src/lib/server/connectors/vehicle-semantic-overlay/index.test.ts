@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,18 +8,22 @@ import {
 	planVehicleWindowTint
 } from '$lib/server/connectors/gltf-preprocess';
 import {
+	generateVehicleSemanticOverlay,
 	listSemanticGroupsByQuery,
 	mutateVehicleSemanticAssignment,
 	readVehicleSemanticOverlay,
 	writeVehicleSemanticOverlay
 } from './index';
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
-import { readAssetSemanticAssignments } from '$lib/server/connectors/asset-semantic-assignments';
 import {
 	readAssetSemanticProposals,
 	upsertPendingAssetSemanticProposals
 } from '$lib/server/connectors/asset-semantic-proposals';
-import { readSemanticGroupDefinitions } from '$lib/server/connectors/semantic-groups';
+import {
+	readSemanticGroupDefinitions,
+	resolveSemanticGroupDefinition
+} from '$lib/server/connectors/semantic-groups';
+import { resolveSemanticOverlayPath } from '$lib/server/connectors/vehicle-registry/storage';
 
 const semanticDirs: string[] = [];
 
@@ -39,6 +43,15 @@ describe('vehicle semantic overlays', () => {
 		expect(Array.isArray(firstMaterial!.meshIds)).toBe(true);
 		expect(Array.isArray(firstMaterial!.meshNames)).toBe(true);
 		expect(Array.isArray(firstMaterial!.nodePaths)).toBe(true);
+	});
+
+	it('canonicalizes front-light references to the built-in lighting group instead of inventing a new front group', async () => {
+		const definition = await resolveSemanticGroupDefinition({
+			semanticGroup: 'frontlights'
+		});
+
+		expect(definition.id).toBe('front_lighting');
+		expect(definition.category).toBe('front_lighting');
 	});
 
 	it('prefers stored semantic candidates over raw naming heuristics', async () => {
@@ -92,7 +105,7 @@ describe('vehicle semantic overlays', () => {
 			],
 			acceptedGroups: [
 				{
-					id: 'group_front_face',
+					id: 'front_face',
 					humanLabel: 'front face',
 					aliases: ['front end', 'nose'],
 					confidence: 0.9,
@@ -101,7 +114,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: bodyMaterial!.meshIds.slice(0, 1),
 					materialIds: [bodyMaterial!.id],
-					derivedFrom: ['llm']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -153,7 +166,7 @@ describe('vehicle semantic overlays', () => {
 			],
 			acceptedGroups: [
 				{
-					id: 'group_front_face',
+					id: 'front_face',
 					humanLabel: 'front face',
 					aliases: ['front end'],
 					confidence: 0.89,
@@ -162,7 +175,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: bodyMaterial!.meshIds.slice(0, 1),
 					materialIds: [bodyMaterial!.id],
-					derivedFrom: ['synthetic', 'parts']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: [
@@ -187,7 +200,7 @@ describe('vehicle semantic overlays', () => {
 
 		expect(overlay?.acceptedParts).toHaveLength(1);
 		expect(overlay?.acceptedParts[0]?.id).toBe('front_grille');
-		expect(overlay?.acceptedGroups.some((group) => group.id === 'group_front_face')).toBe(true);
+		expect(overlay?.acceptedGroups.some((group) => group.id === 'front_face')).toBe(true);
 		expect(overlay?.discardedSuggestions[0]?.kind).toBe('part');
 	});
 
@@ -225,7 +238,7 @@ describe('vehicle semantic overlays', () => {
 			acceptedParts: [],
 			acceptedGroups: [
 				{
-					id: 'group_wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel'],
 					confidence: 0.91,
@@ -234,10 +247,10 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: [wheelMaterial!.id],
-					derivedFrom: ['synthetic']
+					author: 'agent'
 				},
 				{
-					id: 'group-wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel'],
 					confidence: 0.96,
@@ -246,7 +259,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: ['material-contaminated'],
-					derivedFrom: ['llm']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -260,7 +273,7 @@ describe('vehicle semantic overlays', () => {
 		);
 
 		expect(groups).toHaveLength(1);
-		expect(groups[0]?.id).toBe('group_wheels');
+		expect(groups[0]?.id).toBe('wheels');
 	});
 
 	it('prefers node-backed semantic groups for structural actions like isolate', async () => {
@@ -295,7 +308,7 @@ describe('vehicle semantic overlays', () => {
 			acceptedParts: [],
 			acceptedGroups: [
 				{
-					id: 'group_wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel'],
 					confidence: 0.95,
@@ -304,10 +317,10 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: [wheelMaterial!.id],
-					derivedFrom: ['synthetic']
+					author: 'agent'
 				},
 				{
-					id: 'group-wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel'],
 					confidence: 0.9,
@@ -316,7 +329,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: wheelNode ? [wheelNode.id] : [],
 					meshIds: wheelMaterial!.meshIds.slice(0, 1),
 					materialIds: [wheelMaterial!.id],
-					derivedFrom: ['llm']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -338,7 +351,7 @@ describe('vehicle semantic overlays', () => {
 		);
 
 		expect(groups).toHaveLength(1);
-		expect(groups[0]?.id).toBe('group_wheels');
+		expect(groups[0]?.id).toBe('wheels');
 		expect(groups[0]?.nodeIds).toEqual([wheelNode!.id]);
 	});
 
@@ -374,16 +387,7 @@ describe('vehicle semantic overlays', () => {
 		const group = overlay.acceptedGroups.find((entry) => entry.category === 'doors');
 		expect(group).toBeDefined();
 		expect(group?.nodeIds).toContain(targetNode!.id);
-		expect(group?.derivedFrom).toContain('user');
-
-		const assignments = await readAssetSemanticAssignments('audi_r8', capabilities.generatedAt);
-		expect(assignments.assignments).toContainEqual(
-			expect.objectContaining({
-				nodeId: targetNode!.id,
-				semanticGroupId: 'doors',
-				status: 'reviewed'
-			})
-		);
+		expect(group?.author).toBe('user');
 	});
 
 	it('reduces duplicate semantic groups by id when overlay reads merge stored and reviewed groups', async () => {
@@ -406,7 +410,7 @@ describe('vehicle semantic overlays', () => {
 			acceptedParts: [],
 			acceptedGroups: [
 				{
-					id: 'group_body_shell',
+					id: 'body_shell',
 					humanLabel: 'shell',
 					aliases: ['outer shell'],
 					confidence: 0.75,
@@ -415,7 +419,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: [],
 					meshIds: [],
 					materialIds: [],
-					derivedFrom: ['materials']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -430,13 +434,13 @@ describe('vehicle semantic overlays', () => {
 		});
 
 		const overlay = await readVehicleSemanticOverlay('audi_r8');
-		const groups = overlay?.acceptedGroups.filter((group) => group.id === 'group_body_shell') ?? [];
+		const groups = overlay?.acceptedGroups.filter((group) => group.id === 'body_shell') ?? [];
 
 		expect(groups).toHaveLength(1);
 		expect(groups[0]?.humanLabel).toBe('body shell');
 		expect(groups[0]?.supports).toEqual(expect.arrayContaining(['highlight', 'paint']));
 		expect(groups[0]?.nodeIds).toContain(targetNode!.id);
-		expect(groups[0]?.derivedFrom).toEqual(expect.arrayContaining(['user']));
+		expect(groups[0]?.author).toBe('user');
 	});
 
 	it('reduces visible semantic groups with different ids when they share the same category', async () => {
@@ -456,7 +460,7 @@ describe('vehicle semantic overlays', () => {
 			acceptedParts: [],
 			acceptedGroups: [
 				{
-					id: 'group_wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['wheel'],
 					confidence: 0.94,
@@ -465,10 +469,10 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: ['node-a'],
 					meshIds: ['mesh-a'],
 					materialIds: ['material-a'],
-					derivedFrom: ['synthetic']
+					author: 'agent'
 				},
 				{
-					id: 'group-wheels',
+					id: 'wheels',
 					humanLabel: 'wheels',
 					aliases: ['rims'],
 					confidence: 0.98,
@@ -477,7 +481,7 @@ describe('vehicle semantic overlays', () => {
 					nodeIds: ['node-b'],
 					meshIds: ['mesh-b'],
 					materialIds: ['material-b'],
-					derivedFrom: ['materials']
+					author: 'agent'
 				}
 			],
 			discardedSuggestions: []
@@ -493,7 +497,7 @@ describe('vehicle semantic overlays', () => {
 		);
 	});
 
-	it('syncs a single planner-visible part with the reviewed semantic group for the same category', async () => {
+	it('keeps explicit semantic groups separate from unrelated accepted parts', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const structure = await deriveStructuralAssetSnapshot('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
@@ -538,12 +542,15 @@ describe('vehicle semantic overlays', () => {
 			aliases: ['door']
 		});
 
+		const group = overlay.acceptedGroups.find((entry) => entry.id === 'doors');
 		const part = overlay.acceptedParts.find((entry) => entry.id === 'door_shell');
+		expect(group).toBeDefined();
+		expect(group?.nodeIds).toContain(targetNode!.id);
 		expect(part).toBeDefined();
-		expect(part?.nodeIds).toContain(targetNode!.id);
+		expect(part?.nodeIds).toEqual([baselineNode!.id]);
 	});
 
-	it('resolves existing semantic groups by freeform name before writing reviewed assignments', async () => {
+	it('resolves existing semantic groups by freeform name before mutating the overlay', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const structure = await deriveStructuralAssetSnapshot('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
@@ -571,14 +578,10 @@ describe('vehicle semantic overlays', () => {
 			semanticGroup: 'headlights'
 		});
 
-		const assignments = await readAssetSemanticAssignments('audi_r8', capabilities.generatedAt);
-		expect(assignments.assignments).toContainEqual(
-			expect.objectContaining({
-				nodeId: targetNode!.id,
-				semanticGroupId: 'front_lighting',
-				status: 'reviewed'
-			})
-		);
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const group = overlay?.acceptedGroups.find((entry) => entry.id === 'front_lighting');
+		expect(group).toBeDefined();
+		expect(group?.nodeIds).toContain(targetNode!.id);
 	});
 
 	it('creates a new shared other-group definition when no existing semantic group matches', async () => {
@@ -618,17 +621,13 @@ describe('vehicle semantic overlays', () => {
 			})
 		);
 
-		const assignments = await readAssetSemanticAssignments('audi_r8', capabilities.generatedAt);
-		expect(assignments.assignments).toContainEqual(
-			expect.objectContaining({
-				nodeId: targetNode!.id,
-				semanticGroupId: 'other_number_plate',
-				status: 'reviewed'
-			})
-		);
+		const overlay = await readVehicleSemanticOverlay('audi_r8');
+		const group = overlay?.acceptedGroups.find((entry) => entry.id === 'other_number_plate');
+		expect(group).toBeDefined();
+		expect(group?.nodeIds).toContain(targetNode!.id);
 	});
 
-	it('persists reviewed material assignments when annotation includes selected material context', async () => {
+	it('persists material-backed semantic group coverage when annotation includes selected material context', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
 		const structure = await deriveStructuralAssetSnapshot('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
@@ -668,16 +667,62 @@ describe('vehicle semantic overlays', () => {
 			]
 		});
 
-		const assignments = await readAssetSemanticAssignments('audi_r8', capabilities.generatedAt);
-		expect(assignments.assignments).toContainEqual(
-			expect.objectContaining({
-				materialId: targetMaterialId,
-				semanticGroupId: 'glasshouse',
-				status: 'reviewed'
-			})
-		);
 		const group = overlay.acceptedGroups.find((entry) => entry.category === 'glasshouse');
 		expect(group?.materialIds).toContain(targetMaterialId);
+	});
+
+	it('keeps user-authored accepted groups on regenerate early return when they still have structural coverage', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		const overlayPath = resolveSemanticOverlayPath('audi_r8');
+		await mkdir(path.dirname(overlayPath), { recursive: true });
+		await writeFile(
+			overlayPath,
+			JSON.stringify(
+				{
+					assetId: 'audi_r8',
+					revision: 0,
+					structuralGeneratedAt: capabilities.generatedAt,
+					generatedAt: new Date().toISOString(),
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'front_lighting',
+							humanLabel: 'front lighting',
+							aliases: ['headlights'],
+							confidence: 1,
+							category: 'front_lighting',
+							supports: ['highlight', 'focus', 'isolate'],
+							nodeIds: ['node-35'],
+							meshIds: ['mesh-15'],
+							materialIds: [],
+							author: 'user'
+						}
+					],
+					discardedSuggestions: []
+				},
+				null,
+				2
+			),
+			'utf8'
+		);
+
+		const overlay = await generateVehicleSemanticOverlay('audi_r8');
+
+		expect(overlay.acceptedGroups.find((group) => group.id === 'front_lighting')).toEqual(
+			expect.objectContaining({
+				id: 'front_lighting',
+				nodeIds: ['node-35'],
+				author: 'user'
+			})
+		);
 	});
 
 	it('keeps pending llm semantic proposals out of planner-visible group reads', async () => {
