@@ -1,0 +1,89 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const envMock = {
+	OPENAI_API_KEY: 'test-key',
+	OPENAI_REALTIME_MODEL: 'gpt-realtime-mini',
+	OPENAI_REALTIME_VOICE: 'alloy',
+	OPENAI_AUDIO_TTS_VOICE: 'alloy'
+};
+
+const resolveContextHistoryMock = vi.fn();
+const deriveVehicleInspectionCapabilitiesMock = vi.fn();
+const getVehicleSemanticOverlayStatusMock = vi.fn();
+
+vi.mock('$env/dynamic/private', () => ({
+	env: envMock
+}));
+
+vi.mock('$lib/server/connectors/context-history', () => ({
+	resolveContextHistory: resolveContextHistoryMock
+}));
+
+vi.mock('$lib/server/connectors/gltf-preprocess', () => ({
+	deriveVehicleInspectionCapabilities: deriveVehicleInspectionCapabilitiesMock
+}));
+
+vi.mock('$lib/server/connectors/vehicle-semantic-overlay', () => ({
+	getVehicleSemanticOverlayStatus: getVehicleSemanticOverlayStatusMock
+}));
+
+describe('realtime session payload', () => {
+	beforeEach(() => {
+		resolveContextHistoryMock.mockReset();
+		deriveVehicleInspectionCapabilitiesMock.mockReset();
+		getVehicleSemanticOverlayStatusMock.mockReset();
+		resolveContextHistoryMock.mockResolvedValue({
+			historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
+			compactionApplied: false,
+			sourceUsed: 'current_asset',
+			currentAssetSummary: 'Stored active-asset context: highlights 2; viewer xray.',
+			userGlobalSummary: 'Stored user-global context: recent assets audi_r8.'
+		});
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('missing');
+	});
+
+	it('enables server vad interruption and exposes the vehicle tool bridge', async () => {
+		const { buildRealtimeSessionPayload } = await import('./realtime');
+
+		const payload = await buildRealtimeSessionPayload({
+			userId: 'email:test@example.com',
+			assetId: 'audi_r8',
+			selectedNodeId: 'node-1',
+			selectedNodeName: 'Front Fascia',
+			selectedNodePath: 'Scene/Body/Front'
+		});
+
+		expect(payload.model).toBe('gpt-realtime-mini');
+		expect(payload.output_modalities).toEqual(['audio']);
+		expect(payload.audio.input.turn_detection).toEqual({
+			type: 'server_vad',
+			create_response: true,
+			interrupt_response: true,
+			prefix_padding_ms: 250,
+			silence_duration_ms: 450
+		});
+		expect(payload.tools).toHaveLength(1);
+		expect(payload.tools[0]?.name).toBe('execute_vehicle_request');
+		expect(payload.instructions).toContain('Active asset: audi_r8.');
+		expect(payload.instructions).toContain('Semantic overlay status: missing.');
+		expect(payload.instructions).toContain('semantic grouping approval is handled by the app layer');
+		expect(payload.instructions).toContain('Stored active-asset context: highlights 2; viewer xray.');
+	});
+
+	it('treats stale semantic overlays as cautionary in realtime instructions', async () => {
+		const { buildRealtimeSessionPayload } = await import('./realtime');
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('stale');
+
+		const payload = await buildRealtimeSessionPayload({
+			userId: 'email:test@example.com',
+			assetId: 'audi_r8'
+		});
+
+		expect(payload.instructions).toContain('Semantic overlay status: stale.');
+		expect(payload.instructions).toContain('Treat semantic grouping as provisional');
+	});
+});

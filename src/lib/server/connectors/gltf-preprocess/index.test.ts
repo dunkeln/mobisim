@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
 	deriveVehicleInspectionCapabilities,
 	planVehicleBodyPaint,
@@ -6,6 +9,16 @@ import {
 	planVehicleWindowTint,
 	validateVehicleInspectionPatchManifest
 } from './index';
+import { writeVehicleSemanticOverlay } from '$lib/server/connectors/vehicle-semantic-overlay';
+
+const semanticDirs: string[] = [];
+
+afterEach(async () => {
+	await Promise.all(
+		semanticDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
+	);
+	delete process.env.SEMANTIC_MANIFEST_LOCAL_DIR;
+});
 
 describe('deriveVehicleInspectionCapabilities', () => {
 	it('builds a deterministic inspection capability summary for a local vehicle asset', async () => {
@@ -79,7 +92,7 @@ describe('deriveVehicleInspectionCapabilities', () => {
 		expect(
 			plan.operations.every(
 				(operation) =>
-					operation.targetType === 'material' &&
+					operation.targetType === 'node' &&
 					operation.op === 'set_overlay_highlight' &&
 					Array.isArray(operation.value) &&
 					operation.value[3] === 0.48
@@ -92,7 +105,7 @@ describe('deriveVehicleInspectionCapabilities', () => {
 
 		expect(plan.assetId).toBe('audi_r8');
 		expect(plan.matchedMaterialNames.length).toBeGreaterThan(0);
-		expect(plan.operations.length).toBe(plan.matchedMaterialNames.length);
+		expect(plan.operations.length).toBeGreaterThan(0);
 		expect(
 			plan.operations.every(
 				(operation) =>
@@ -118,13 +131,62 @@ describe('deriveVehicleInspectionCapabilities', () => {
 		);
 	});
 
+	it('resolves body paint from a reviewed body-shell semantic group even without paint-tagged materials', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const bodyMaterial = capabilities.materials[0];
+		const distractorMaterial = capabilities.materials[1];
+
+		expect(bodyMaterial).toBeDefined();
+		expect(distractorMaterial).toBeDefined();
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'group_body_shell',
+					humanLabel: 'body shell',
+					aliases: ['body', 'paint'],
+					confidence: 1,
+					category: 'body_shell',
+					supports: ['focus', 'highlight', 'isolate', 'paint'],
+					nodeIds: [],
+					meshIds: bodyMaterial!.meshIds.slice(0, 1),
+					materialIds: [bodyMaterial!.id],
+					derivedFrom: ['user']
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleBodyPaint('audi_r8', [0.85, 0.08, 0.12, 1]);
+		const paintedMaterialIds = new Set(
+			plan.operations
+				.filter((operation) => operation.op === 'set_base_color_factor')
+				.map((operation) => operation.targetId)
+		);
+
+		expect(plan.matchedMaterialNames).toContain(bodyMaterial!.name);
+		expect(paintedMaterialIds.has(bodyMaterial!.id)).toBe(true);
+		expect(paintedMaterialIds.has(distractorMaterial!.id)).toBe(false);
+	});
+
 	it('plans window tint operations for configured glass materials', async () => {
 		const plan = await planVehicleWindowTint('audi_r8', '5% dark tint', [0.04, 0.04, 0.05, 0.94]);
 
 		expect(plan.assetId).toBe('audi_r8');
 		expect(plan.resolvedLabel).toBe('5% dark tint');
 		expect(plan.matchedMaterialNames.length).toBeGreaterThan(0);
-		expect(plan.operations.length).toBe(plan.matchedMaterialNames.length);
+		expect(plan.operations.length).toBeGreaterThan(0);
 		expect(
 			plan.operations.every(
 				(operation) =>

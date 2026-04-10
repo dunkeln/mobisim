@@ -7,7 +7,8 @@ import {
 } from '$lib/server/connectors/gltf-structure';
 import {
 	listSemanticMaterialsByQuery,
-	listSemanticMaterialsByTags
+	listSemanticMaterialsByTags,
+	readVehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type {
@@ -62,8 +63,20 @@ function deriveMaterialSummaries(
 		textureSlots: material.textureSlots,
 		meshIds: material.meshIds,
 		meshNames: material.meshNames,
+		meshMaterialSlots: material.meshMaterialSlots,
 		nodePaths: material.nodePaths
 	}));
+}
+
+function dedupeMaterialsById(
+	materials: VehicleInspectionMaterialSummary[]
+): VehicleInspectionMaterialSummary[] {
+	const reduced = new Map<string, VehicleInspectionMaterialSummary>();
+	for (const material of materials) {
+		reduced.set(material.id, material);
+	}
+
+	return Array.from(reduced.values()).sort((left, right) => left.id.localeCompare(right.id));
 }
 
 const PRIMARY_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.5566, 0.5308, 0.7892, 0.48];
@@ -107,16 +120,18 @@ function includesAnyTerm(value: string, terms: string[]): boolean {
 	return terms.some((term) => normalizedValue.includes(term));
 }
 
-function inferBodyPaintMaterialNames(capabilities: VehicleInspectionCapabilities): string[] {
+function inferBodyPaintMaterials(
+	capabilities: VehicleInspectionCapabilities
+): VehicleInspectionMaterialSummary[] {
 	const configuredNames = VEHICLE_CATALOG[capabilities.assetId].bodyPaintMaterialNames;
 	if (configuredNames && configuredNames.length > 0) {
 		const configuredNameSet = new Set(configuredNames);
-		const matchedConfiguredNames = capabilities.materials
-			.filter((material) => configuredNameSet.has(material.name))
-			.map((material) => material.name);
+		const matchedConfiguredMaterials = capabilities.materials.filter((material) =>
+			configuredNameSet.has(material.name)
+		);
 
-		if (matchedConfiguredNames.length > 0) {
-			return matchedConfiguredNames;
+		if (matchedConfiguredMaterials.length > 0) {
+			return dedupeMaterialsById(matchedConfiguredMaterials);
 		}
 	}
 
@@ -127,13 +142,13 @@ function inferBodyPaintMaterialNames(capabilities: VehicleInspectionCapabilities
 				(name.includes('paint') || name.includes('body')) &&
 				!name.includes('glass') &&
 				!name.includes('tire') &&
-				!name.includes('rim')
+				!name.includes('rim') &&
+				!name.includes('wheel')
 			);
-		})
-		.map((material) => material.name);
+		});
 
 	if (materialNameMatches.length > 0) {
-		return materialNameMatches;
+		return dedupeMaterialsById(materialNameMatches);
 	}
 
 	const bodyLikeMeshIds = new Set(
@@ -160,26 +175,52 @@ function inferBodyPaintMaterialNames(capabilities: VehicleInspectionCapabilities
 		return [];
 	}
 
-	const bodyLikeMaterialNames = new Set<string>();
-	for (const mesh of capabilities.wireframeMeshes) {
-		if (!bodyLikeMeshIds.has(mesh.meshId)) {
-			continue;
-		}
+	return dedupeMaterialsById(
+		capabilities.materials.filter((material) => {
+			const name = material.name.toLowerCase();
+			return (
+				material.meshIds.some((meshId) => bodyLikeMeshIds.has(meshId)) &&
+				!name.includes('glass') &&
+				!name.includes('chrome') &&
+				!name.includes('mirror') &&
+				!name.includes('tire') &&
+				!name.includes('rim') &&
+				!name.includes('wheel')
+			);
+		})
+	);
+}
 
-		for (const materialName of mesh.materialNames) {
-			if (
-				!materialName.toLowerCase().includes('glass') &&
-				!materialName.toLowerCase().includes('chrome') &&
-				!materialName.toLowerCase().includes('mirror')
-			) {
-				bodyLikeMaterialNames.add(materialName);
-			}
-		}
+async function resolveBodyPaintMaterials(
+	assetId: VehicleAssetId,
+	capabilities: VehicleInspectionCapabilities
+): Promise<VehicleInspectionMaterialSummary[]> {
+	const materialsById = new Map(capabilities.materials.map((material) => [material.id, material]));
+	const overlay = await readVehicleSemanticOverlay(assetId);
+	const semanticBodyShellMaterials =
+		overlay?.structuralGeneratedAt === capabilities.generatedAt
+			? overlay.acceptedGroups
+					.filter((group) => group.category === 'body_shell' && group.supports.includes('paint'))
+					.flatMap((group) => group.materialIds)
+					.map((materialId) => materialsById.get(materialId))
+					.filter((material): material is VehicleInspectionMaterialSummary => !!material)
+			: [];
+
+	const semanticTaggedMaterials = (
+		await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, ['body_paint_candidate'])
+	)
+		.map((candidate) => materialsById.get(candidate.targetId))
+		.filter((material): material is VehicleInspectionMaterialSummary => !!material);
+
+	const semanticMatches = dedupeMaterialsById([
+		...semanticBodyShellMaterials,
+		...semanticTaggedMaterials
+	]);
+	if (semanticMatches.length > 0) {
+		return semanticMatches;
 	}
 
-	return capabilities.materials
-		.filter((material) => bodyLikeMaterialNames.has(material.name))
-		.map((material) => material.name);
+	return inferBodyPaintMaterials(capabilities);
 }
 
 function inferWindowTintMaterialNames(capabilities: VehicleInspectionCapabilities): string[] {
@@ -246,6 +287,26 @@ function validatePatchOperation(
 					return isBoolean(operation.value)
 						? { accepted: operation }
 						: { reason: 'Node visibility requires a boolean value' };
+				case 'set_base_color_factor':
+				case 'set_overlay_highlight':
+					return isVec4(operation.value)
+						? { accepted: operation }
+						: { reason: `${operation.op} requires a 4-number tuple` };
+				case 'set_metalness_factor':
+				case 'set_roughness_factor':
+				case 'set_env_map_intensity':
+				case 'set_alpha':
+					return isNumber(operation.value)
+						? { accepted: operation }
+						: { reason: `${operation.op} requires a numeric value` };
+				case 'set_emissive_factor':
+					return isVec3(operation.value)
+						? { accepted: operation }
+						: { reason: 'Emissive factor requires a 3-number tuple' };
+				case 'set_double_sided':
+					return isBoolean(operation.value)
+						? { accepted: operation }
+						: { reason: 'Double-sided requires a boolean value' };
 			}
 			break;
 		case 'material':
@@ -330,6 +391,36 @@ export async function deriveVehicleInspectionCapabilities(
 	};
 }
 
+function buildNodeLookupByPath(capabilities: VehicleInspectionCapabilities): Map<string, string[]> {
+	const nodeIdsByPath = new Map<string, string[]>();
+	for (const candidate of capabilities.controlCandidates) {
+		nodeIdsByPath.set(candidate.path, [...(nodeIdsByPath.get(candidate.path) ?? []), candidate.nodeId]);
+	}
+
+	return nodeIdsByPath;
+}
+
+function collectNodeTargetsFromMaterials(
+	capabilities: VehicleInspectionCapabilities,
+	materials: VehicleInspectionMaterialSummary[]
+): Array<{ nodeId: string; targetName: string }> {
+	const nodeIdsByPath = buildNodeLookupByPath(capabilities);
+	const targets = new Map<string, { nodeId: string; targetName: string }>();
+
+	for (const material of materials) {
+		for (const nodePath of material.nodePaths) {
+			for (const nodeId of nodeIdsByPath.get(nodePath) ?? []) {
+				targets.set(nodeId, {
+					nodeId,
+					targetName: material.name
+				});
+			}
+		}
+	}
+
+	return Array.from(targets.values());
+}
+
 export async function planVehiclePartHighlight(
 	assetId: VehicleAssetId,
 	partQuery: string
@@ -388,10 +479,10 @@ export async function planVehiclePartHighlight(
 			new Set([...matchedPaths, ...matchedMaterials.flatMap((material) => material.nodePaths)])
 		),
 		matchedMaterialNames: matchedMaterials.map((material) => material.name),
-		operations: matchedMaterials.map((material) => ({
-			targetType: 'material',
-			targetId: material.id,
-			targetName: material.name,
+		operations: collectNodeTargetsFromMaterials(capabilities, matchedMaterials).map((target) => ({
+			targetType: 'node',
+			targetId: target.nodeId,
+			targetName: target.targetName,
 			op: 'set_overlay_highlight',
 			value: PRIMARY_HIGHLIGHT_FACTOR
 		}))
@@ -408,25 +499,16 @@ export async function planVehicleBodyPaint(
 	}
 ): Promise<VehicleBodyPaintPlan> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
-	const semanticMatches = await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, [
-		'body_paint_candidate'
-	]);
-	const matchedMaterialNames =
-		semanticMatches.length > 0
-			? capabilities.materials
-					.filter((material) =>
-						semanticMatches.some((candidate) => candidate.targetId === material.id)
-					)
-					.map((material) => material.name)
-			: inferBodyPaintMaterialNames(capabilities);
-	const matchedNameSet = new Set(matchedMaterialNames);
+	const matchedMaterials = await resolveBodyPaintMaterials(assetId, capabilities);
+	const matchedMaterialIds = new Set(matchedMaterials.map((material) => material.id));
+	const matchedMaterialNames = matchedMaterials.map((material) => material.name);
 
 	return {
 		assetId,
 		color,
 		matchedMaterialNames,
 		operations: capabilities.materials
-			.filter((material) => matchedNameSet.has(material.name))
+			.filter((material) => matchedMaterialIds.has(material.id))
 			.flatMap((material) => {
 				const operations: VehicleInspectionPatchOperation[] = [
 					{

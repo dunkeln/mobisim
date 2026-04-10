@@ -38,7 +38,7 @@
 		</div>
 		<div class="footer-blueprint__orb-slot">
 			<FooterOrb class="footer-blueprint__orb-live" />
-			<span class="footer-blueprint__label footer-blueprint__label--orb">not Ultron</span>
+			<span class="footer-blueprint__label footer-blueprint__label--orb">FRIDAY</span>
 		</div>
 		<div class="footer-blueprint__stack footer-blueprint__stack--right">
 			{#if hasSupplementaryList}

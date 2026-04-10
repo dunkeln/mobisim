@@ -56,6 +56,19 @@ Routing defaults:
 - `OPENAI_TOOL_MODEL` drives planning, tool choice, and tool chaining for footer chat and voice requests.
 - `OPENAI_REPLY_MODEL` drives short Jarvis-style reply polishing when the audio path needs a spoken summary.
 - `OPENAI_MODEL` remains a legacy fallback for older deployments that have not split the model config yet.
+- `OPENAI_REALTIME_MODEL` drives the full-duplex orb session when the browser supports WebRTC.
+- `OPENAI_REALTIME_VOICE` sets the realtime session voice and falls back to `OPENAI_AUDIO_TTS_VOICE` when unset.
+
+## Duplex Voice
+
+The footer orb now prefers a full-duplex realtime voice session when the browser supports WebRTC:
+
+- Click once to open a live voice session.
+- Speak naturally without push-to-talk.
+- Speaking over the assistant interrupts the current reply.
+- Click again to end the session.
+
+If realtime session setup fails, the orb falls back to the buffered audio request path.
 
 ## Building
 

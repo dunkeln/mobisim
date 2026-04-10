@@ -2,8 +2,17 @@ export type VehicleInspectionNodePatchOperation = {
 	targetType: 'node';
 	targetId: string;
 	targetName?: string;
-	op: 'set_visibility' | 'set_overlay_highlight';
-	value: boolean | [number, number, number, number];
+	op:
+		| 'set_visibility'
+		| 'set_overlay_highlight'
+		| 'set_base_color_factor'
+		| 'set_metalness_factor'
+		| 'set_roughness_factor'
+		| 'set_env_map_intensity'
+		| 'set_emissive_factor'
+		| 'set_alpha'
+		| 'set_double_sided';
+	value: boolean | [number, number, number, number] | [number, number, number] | number;
 };
 
 export type VehicleInspectionMaterialPatchOperation = {

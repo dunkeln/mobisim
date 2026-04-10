@@ -129,6 +129,7 @@ describe('createFooterChatResponse', () => {
 			compactionApplied: false,
 			sourceUsed: 'none'
 		});
+		listSemanticIngressBindingsMock.mockResolvedValue({ bindings: [] });
 	});
 
 	it('refreshes semantic overlays through the chat tool loop', async () => {
@@ -191,6 +192,66 @@ describe('createFooterChatResponse', () => {
 		expect(response.message.content).toBe('Semantic overlay refreshed.');
 		expect(response.trace?.plannerModel).toBe('gpt-5.2-reasoner');
 		expect(response.trace?.planningMode).toBe('single_tool');
+	});
+
+	it('surfaces tool execution failures directly instead of continuing the loop', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			revision: 1,
+			generatedAt: 'semantic-1',
+			structuralGeneratedAt: 'structural-1',
+			model: 'gpt-5.2',
+			minAcceptedConfidence: 0.5,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		resolveVehicleIntentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			operations: [],
+			rejected: [],
+			summary: 'No valid paint operations were accepted.'
+		});
+		createMock.mockResolvedValueOnce({
+			choices: [
+				{
+					message: {
+						role: 'assistant',
+						content: null,
+						tool_calls: [
+							{
+								id: 'tool-1',
+								type: 'function',
+								function: {
+									name: 'edit_vehicle_presentation',
+									arguments: JSON.stringify({ action: 'appearance' })
+								}
+							}
+						]
+					}
+				}
+			]
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'paint it'
+		});
+
+		expect(response.message.content).toBe(
+			'A freeform appearance request or normalized paint fields are required.'
+		);
+		expect(createMock).toHaveBeenCalledTimes(1);
+		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_presentation']);
+		expect(response.trace?.planningMode).toBe('direct');
 	});
 
 	it('supports a catalog-to-action-to-ui tool chain in one turn', async () => {
@@ -1550,7 +1611,9 @@ describe('createFooterChatResponse', () => {
 
 		expect(response.presentationRestore).toBeUndefined();
 		expect(resolveVehicleIntentMock).not.toHaveBeenCalled();
-		expect(response.message.content).toBe('No wheel highlight is active right now.');
+		expect(response.message.content).toBe(
+			'No matching active presentation state was available to restore.'
+		);
 	});
 
 	it('applies terse tint edits directly to the current selection without an LLM round trip', async () => {

@@ -25,8 +25,7 @@ export const GET: RequestHandler = async ({ params }) => {
 			buildVehicleSemanticOverlaySnapshot({
 				overlay: null,
 				overlayStatus: 'missing'
-			}),
-			{ status: 404 }
+			})
 		);
 	}
 

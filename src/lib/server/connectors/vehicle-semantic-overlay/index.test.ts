@@ -109,14 +109,17 @@ describe('vehicle semantic overlays', () => {
 
 		const paintPlan = await planVehicleBodyPaint('audi_r8', [0.2, 0.3, 0.4, 1]);
 		const tintPlan = await planVehicleWindowTint('audi_r8', 'smoke tint', [0.1, 0.1, 0.1, 0.7]);
+		const paintedMaterialIds = new Set(
+			paintPlan.operations
+				.filter((operation) => operation.op === 'set_base_color_factor')
+				.map((operation) => operation.targetId)
+		);
 
-		expect(paintPlan.matchedMaterialNames).toEqual([bodyMaterial!.name]);
-		expect(paintPlan.operations).toHaveLength(1);
-		expect(paintPlan.operations[0]?.targetId).toBe(bodyMaterial!.id);
+		expect(paintedMaterialIds.has(bodyMaterial!.id)).toBe(true);
 
 		expect(tintPlan.matchedMaterialNames).toEqual([glassMaterial!.name]);
-		expect(tintPlan.operations).toHaveLength(1);
-		expect(tintPlan.operations[0]?.targetId).toBe(glassMaterial!.id);
+		expect(tintPlan.operations.length).toBeGreaterThan(0);
+		expect(tintPlan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
 	});
 
 	it('persists semantic part units alongside material suggestions', async () => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import RequestGate from '$lib/components/ui/request-gate.svelte';
 	import InspectionViewport from '$lib/components/threlte/inspection-viewport.svelte';
 	import type { PageData } from './$types';
 
@@ -18,4 +19,5 @@
 			<InspectionViewport assetId={data.assetId} {assetUrl} class="min-h-0 flex-1" />
 		{/key}
 	</div>
+	<RequestGate />
 </div>

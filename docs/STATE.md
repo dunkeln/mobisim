@@ -98,6 +98,7 @@ In `Done`:
 - [x] T-038 | Remove client semantic fixup mutators | completed: 2026-04-08
 - [x] T-039 | Split semantic lookup from presentation side effects | completed: 2026-04-08
 - [x] T-040 | Delete dead orchestration contracts | completed: 2026-04-08
+- [x] T-041 | Add reusable request gate intercept store | completed: 2026-04-09
 
 ## Updates
 
@@ -149,3 +150,6 @@ In `Done`:
 - 2026-04-08 18:49 PT | Compressed `openai-chat/execution.ts` again by moving semantic target resolution and semantic tool execution into `semantic-execution.ts`, leaving the top-level dispatcher and non-semantic tool flow in place
 - 2026-04-08 19:02 PT | Collapsed the model-facing chat tool surface into domain tools for presentation, selection, semantics, and assistant UI, while translating those broader actions onto the existing deterministic executors underneath
 - 2026-04-08 19:17 PT | Collapsed presentation-state synchronization onto `vehiclePatchState.apply(...)`, migrated production callers and tests off `queue`/`setHighlights`/`clearHighlights`/`clearHighlightTargets`/`restore`, and deleted the dead wrapper methods
+- 2026-04-09 17:01 PT | Marked `T-041` done after adding a reusable request-gate approval UI, extracting its interaction state into a shared `requestGate` store, and making the overlay block underlying canvas interaction when visible
+- 2026-04-09 17:01 PT | Removed the request-gate debug default by hiding it at store reset and leaving the mounted component dormant until app-layer intercept code calls `requestGate.open(...)`
+- 2026-04-09 17:01 PT | Recorded that duplex chat handling remains in place and the new request-gate store is ready to serve as an ALI intercept surface for tool-usage approval flows

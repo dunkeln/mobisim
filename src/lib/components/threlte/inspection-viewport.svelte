@@ -17,6 +17,7 @@
 		buildRuntimeNodePath,
 		resolveRuntimeSelection
 	} from '$lib/components/threlte/runtime-selection';
+	import { resolveRuntimeMaterialTargets } from '$lib/components/threlte/runtime-material-targets';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 	import type {
@@ -174,6 +175,7 @@
 	let cameraPosition = $state<Vec3Tuple>(getCameraPresetPosition());
 	const HIGHLIGHT_OVERLAY_NAME = '__mobisim-highlight-overlay__';
 	const SELECTION_OVERLAY_NAME = '__mobisim-selection-overlay__';
+	const EMISSIVE_GLOW_OVERLAY_NAME = '__mobisim-emissive-glow-overlay__';
 	const semanticRuntimeAsset = $derived.by(
 		() =>
 			$semanticRuntimeState.byAsset[assetId] ?? {
@@ -236,80 +238,6 @@
 			: node.material
 				? [node.material]
 				: [];
-	}
-
-	type RuntimeMaterialTarget = {
-		node: THREE.Object3D;
-		material: THREE.Material;
-		materialIndex?: number;
-	};
-
-	function buildRuntimeNodePathLookup(scene: THREE.Object3D): Map<string, THREE.Object3D[]> {
-		const nodesByPath = new Map<string, THREE.Object3D[]>();
-
-		scene.traverse((node) => {
-			if (node === scene) {
-				return;
-			}
-
-			const path = buildRuntimeNodePath(node, scene);
-			nodesByPath.set(path, [...(nodesByPath.get(path) ?? []), node]);
-		});
-
-		return nodesByPath;
-	}
-
-	function resolveRuntimeMaterialTargets(
-		scene: THREE.Object3D,
-		operation: VehicleInspectionPatchOperation
-	): RuntimeMaterialTarget[] {
-		if (operation.targetType !== 'material') {
-			return [];
-		}
-
-		const summary = materialSummaryById.get(operation.targetId);
-		const targetName = summary?.name ?? operation.targetName;
-		if (!targetName) {
-			return [];
-		}
-
-		const results = new Map<string, RuntimeMaterialTarget>();
-
-		const appendNodeTargets = (node: THREE.Object3D): void => {
-			if (!(node instanceof THREE.Mesh)) {
-				return;
-			}
-
-			listNodeMaterials(node).forEach((material, index) => {
-				if (material.name !== targetName) {
-					return;
-				}
-
-				results.set(`${node.uuid}:${index}:${material.uuid}`, {
-					node,
-					material,
-					materialIndex: Array.isArray(node.material) ? index : undefined
-				});
-			});
-		};
-
-		if (summary) {
-			const nodesByPath = buildRuntimeNodePathLookup(scene);
-			for (const nodePath of summary.nodePaths) {
-				const nodes = nodesByPath.get(nodePath) ?? [];
-				nodes.forEach(appendNodeTargets);
-			}
-		}
-
-		if (results.size > 0) {
-			return Array.from(results.values());
-		}
-
-		scene.traverse((node) => {
-			appendNodeTargets(node);
-		});
-
-		return Array.from(results.values());
 	}
 
 	function hasWireframeProperty(
@@ -617,6 +545,25 @@
 		});
 	}
 
+	function clearEmissiveGlowOverlays(scene: THREE.Object3D): void {
+		scene.traverse((node) => {
+			const overlays = node.children.filter(
+				(child) => child.name === EMISSIVE_GLOW_OVERLAY_NAME && child instanceof THREE.Mesh
+			);
+
+			for (const overlay of overlays) {
+				node.remove(overlay);
+				if (overlay instanceof THREE.Mesh && overlay.material instanceof THREE.Material) {
+					overlay.material.dispose();
+				} else if (overlay instanceof THREE.Mesh && Array.isArray(overlay.material)) {
+					for (const material of overlay.material) {
+						material.dispose();
+					}
+				}
+			}
+		});
+	}
+
 	function createInvisibleOverlayMaterial(): THREE.MeshBasicMaterial {
 		const material = new THREE.MeshBasicMaterial({
 			transparent: true,
@@ -689,6 +636,45 @@
 
 		node.add(overlayMesh);
 		node.add(wireframeOverlay);
+	}
+
+	function addEmissiveGlowOverlay(
+		node: THREE.Object3D,
+		color: THREE.Color,
+		strength: number,
+		selectedMaterialIndex?: number
+	): void {
+		if (!(node instanceof THREE.Mesh) || strength <= 0.01) {
+			return;
+		}
+
+		const baseGlowMaterial = new THREE.MeshBasicMaterial({
+			color,
+			transparent: true,
+			opacity: THREE.MathUtils.clamp(0.08 + strength * 0.12, 0.08, 0.22),
+			depthWrite: false,
+			depthTest: false,
+			side: THREE.DoubleSide,
+			blending: THREE.AdditiveBlending
+		});
+		baseGlowMaterial.toneMapped = false;
+
+		const glowMaterial =
+			Array.isArray(node.material) && Number.isInteger(selectedMaterialIndex)
+				? node.material.map((_, index) =>
+						index === selectedMaterialIndex
+							? baseGlowMaterial.clone()
+							: createInvisibleOverlayMaterial()
+					)
+				: baseGlowMaterial;
+
+		const glowMesh = new THREE.Mesh(node.geometry, glowMaterial);
+		glowMesh.name = EMISSIVE_GLOW_OVERLAY_NAME;
+		glowMesh.renderOrder = 14;
+		glowMesh.frustumCulled = false;
+		glowMesh.scale.setScalar(1 + THREE.MathUtils.clamp(0.006 + strength * 0.018, 0.006, 0.03));
+
+		node.add(glowMesh);
 	}
 
 	function clearSelectionOverlays(scene: THREE.Object3D): void {
@@ -827,7 +813,7 @@
 			return;
 		}
 
-		for (const target of resolveRuntimeMaterialTargets(scene, operation)) {
+		for (const target of resolveRuntimeMaterialTargets(scene, operation, materialSummaryById)) {
 			const { node, material, materialIndex } = target;
 
 			switch (operation.op) {
@@ -878,17 +864,57 @@
 						operation.value.length === 3 &&
 						hasEmissiveProperty(material)
 					) {
+						const originalMaterial = originalMaterialState.get(material);
 						const requestedEmissiveColor = new THREE.Color(
 							operation.value[0] ?? 0,
 							operation.value[1] ?? 0,
 							operation.value[2] ?? 0
 						);
-						const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
 						const requestedStrength = THREE.MathUtils.clamp(
 							Math.max(...operation.value.map((channel) => Math.abs(channel ?? 0))),
 							0,
 							1
 						);
+						if (requestedStrength === 0) {
+							if (originalMaterial?.emissive) {
+								material.emissive.copy(originalMaterial.emissive);
+							} else {
+								material.emissive.setRGB(0, 0, 0);
+							}
+
+							if (hasEmissiveIntensityProperty(material)) {
+								material.emissiveIntensity = originalMaterial?.emissiveIntensity ?? 1;
+							}
+
+							if (hasColorProperty(material) && originalMaterial?.color) {
+								material.color.copy(originalMaterial.color);
+							}
+
+							if (hasOpacityProperty(material)) {
+								if (originalMaterial?.opacity !== undefined) {
+									material.opacity = originalMaterial.opacity;
+								}
+								if (originalMaterial?.transparent !== undefined) {
+									material.transparent = originalMaterial.transparent;
+								}
+							}
+
+							if (hasTransmissionProperty(material)) {
+								if (originalMaterial?.transmission !== undefined) {
+									material.transmission = originalMaterial.transmission;
+								}
+								if (originalMaterial?.thickness !== undefined) {
+									material.thickness = originalMaterial.thickness;
+								}
+								if (originalMaterial?.roughness !== undefined) {
+									material.roughness = originalMaterial.roughness;
+								}
+							}
+
+							break;
+						}
+
+						const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
 						const resolvedLuminance =
 							emissiveColor.r * 0.2126 + emissiveColor.g * 0.7152 + emissiveColor.b * 0.0722;
 						const emissiveStrength =
@@ -903,18 +929,16 @@
 
 						if (hasEmissiveIntensityProperty(material)) {
 							const baseEmissiveIntensity =
-								originalMaterialState.get(material)?.emissiveIntensity ??
-								material.emissiveIntensity;
-							material.emissiveIntensity = baseEmissiveIntensity + emissiveStrength * 1.35;
+								originalMaterial?.emissiveIntensity ?? material.emissiveIntensity;
+							material.emissiveIntensity = baseEmissiveIntensity + emissiveStrength * 1.15;
 						}
 
 						if (hasColorProperty(material)) {
-							const baseColor = originalMaterialState.get(material)?.color ?? material.color.clone();
-							material.color.copy(baseColor).lerp(emissiveColor, emissiveStrength * 0.18);
+							const baseColor = originalMaterial?.color ?? material.color.clone();
+							material.color.copy(baseColor).lerp(emissiveColor, emissiveStrength * 0.08);
 						}
 
 						if (hasOpacityProperty(material) && emissiveStrength > 0) {
-							const originalMaterial = originalMaterialState.get(material);
 							const baseOpacity = originalMaterial?.opacity ?? material.opacity;
 							const baseTransparent = originalMaterial?.transparent ?? material.transparent;
 
@@ -925,7 +949,6 @@
 						}
 
 						if (hasTransmissionProperty(material) && emissiveStrength > 0) {
-							const originalMaterial = originalMaterialState.get(material);
 							const baseTransmission = originalMaterial?.transmission ?? 0;
 
 							if (baseTransmission > 0.01) {
@@ -937,6 +960,8 @@
 								);
 							}
 						}
+
+						addEmissiveGlowOverlay(node, emissiveColor, emissiveStrength, materialIndex);
 					}
 					break;
 				case 'set_alpha':
@@ -1021,6 +1046,97 @@
 
 		if (operation.op === 'set_visibility' && typeof operation.value === 'boolean') {
 			node.visible = operation.value;
+			return;
+		}
+
+		for (const material of listNodeMaterials(node)) {
+			switch (operation.op) {
+				case 'set_base_color_factor':
+					if (Array.isArray(operation.value) && operation.value.length === 4 && hasColorProperty(material)) {
+						material.color.setRGB(
+							operation.value[0] ?? 1,
+							operation.value[1] ?? 1,
+							operation.value[2] ?? 1
+						);
+					}
+					break;
+				case 'set_metalness_factor':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.metalness = THREE.MathUtils.clamp(operation.value, 0, 1);
+					}
+					break;
+				case 'set_roughness_factor':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.roughness = THREE.MathUtils.clamp(operation.value, 0, 1);
+					}
+					break;
+				case 'set_env_map_intensity':
+					if (typeof operation.value === 'number' && hasFinishProperty(material)) {
+						material.envMapIntensity = THREE.MathUtils.clamp(operation.value, 0, 3);
+					}
+					break;
+				case 'set_alpha':
+					if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
+						material.opacity = operation.value;
+						material.transparent = operation.value < 1;
+					}
+					break;
+				case 'set_double_sided':
+					if (typeof operation.value === 'boolean' && hasOpacityProperty(material)) {
+						material.side = operation.value
+							? THREE.DoubleSide
+							: (originalMaterialState.get(material)?.side ?? THREE.FrontSide);
+					}
+					break;
+				case 'set_emissive_factor':
+					if (
+						Array.isArray(operation.value) &&
+						operation.value.length === 3 &&
+						hasEmissiveProperty(material)
+					) {
+						const originalMaterial = originalMaterialState.get(material);
+						const requestedEmissiveColor = new THREE.Color(
+							operation.value[0] ?? 0,
+							operation.value[1] ?? 0,
+							operation.value[2] ?? 0
+						);
+						const requestedStrength = THREE.MathUtils.clamp(
+							Math.max(...operation.value.map((channel) => Math.abs(channel ?? 0))),
+							0,
+							1
+						);
+
+						if (requestedStrength === 0) {
+							if (originalMaterial?.emissive) {
+								material.emissive.copy(originalMaterial.emissive);
+							} else {
+								material.emissive.setRGB(0, 0, 0);
+							}
+
+							if (hasEmissiveIntensityProperty(material)) {
+								material.emissiveIntensity = originalMaterial?.emissiveIntensity ?? 1;
+							}
+						} else {
+							const emissiveColor = getResolvedLensGlowColor(requestedEmissiveColor);
+							const resolvedLuminance =
+								emissiveColor.r * 0.2126 + emissiveColor.g * 0.7152 + emissiveColor.b * 0.0722;
+							const emissiveStrength = Math.max(
+								requestedStrength,
+								THREE.MathUtils.clamp(resolvedLuminance * 0.85, 0.24, 0.9)
+							);
+
+							material.emissive.setRGB(emissiveColor.r, emissiveColor.g, emissiveColor.b);
+							if (hasEmissiveIntensityProperty(material)) {
+								const baseEmissiveIntensity =
+									originalMaterial?.emissiveIntensity ?? material.emissiveIntensity;
+								material.emissiveIntensity = baseEmissiveIntensity + emissiveStrength * 1.15;
+							}
+						}
+					}
+					break;
+			}
+
+			material.needsUpdate = true;
 		}
 	}
 
@@ -1031,6 +1147,7 @@
 		snapshotSceneState(scene);
 		restoreSceneState(scene);
 		clearHighlightOverlays(scene);
+		clearEmissiveGlowOverlays(scene);
 		const nodeLookup = buildRuntimeNodeLookup(scene).nodeById;
 
 		for (const operation of operations) {

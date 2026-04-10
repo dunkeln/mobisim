@@ -921,6 +921,35 @@ function mergePatchOperations(
 	return Array.from(merged.values());
 }
 
+function buildNodeIdsByPath(
+	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>
+): Map<string, string[]> {
+	const nodeIdsByPath = new Map<string, string[]>();
+	for (const candidate of capabilities.controlCandidates) {
+		nodeIdsByPath.set(candidate.path, [...(nodeIdsByPath.get(candidate.path) ?? []), candidate.nodeId]);
+	}
+
+	return nodeIdsByPath;
+}
+
+function collectNodeTargetsFromMaterials(
+	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>,
+	materials: Awaited<ReturnType<typeof inferHeadlightMaterials>>
+): Array<{ nodeId: string; targetName: string }> {
+	const nodeIdsByPath = buildNodeIdsByPath(capabilities);
+	const targets = new Map<string, { nodeId: string; targetName: string }>();
+
+	for (const material of materials) {
+		for (const nodePath of material.nodePaths) {
+			for (const nodeId of nodeIdsByPath.get(nodePath) ?? []) {
+				targets.set(nodeId, { nodeId, targetName: material.name });
+			}
+		}
+	}
+
+	return Array.from(targets.values());
+}
+
 function mapIntentModeToActionSupport(mode: VehiclePartIntentMode): VehicleSemanticActionSupport {
 	switch (mode) {
 		case 'focus':
@@ -1126,49 +1155,44 @@ export async function planVehiclePartIntent(
 	let operations: SharedVehicleInspectionPatchOperation[] = [];
 
 	if (mode === 'highlight') {
-		operations = capabilities.materials
-			.filter((material) => matchedMaterialIds.includes(material.id))
-			.map((material) => ({
-				targetType: 'material' as const,
-				targetId: material.id,
-				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
-				op: 'set_overlay_highlight' as const,
-				value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
-			}));
+		operations = matchedNodeIds.map((nodeId) => ({
+			targetType: 'node' as const,
+			targetId: nodeId,
+			targetName: matchedPartLabels.join(', '),
+			op: 'set_overlay_highlight' as const,
+			value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
+		}));
 	}
 
 	if (mode === 'isolate') {
-		const contextMaterialOperations = capabilities.materials
-			.filter((material) => !matchedMaterialIds.includes(material.id))
-			.map((material) => ({
-				targetType: 'material' as const,
-				targetId: material.id,
-				targetName: material.name,
+		const matchedNodeIdSet = new Set(matchedNodeIds);
+		const contextNodeOperations = capabilities.controlCandidates
+			.filter((candidate) => !matchedNodeIdSet.has(candidate.nodeId) && candidate.meshId !== null)
+			.map((candidate) => ({
+				targetType: 'node' as const,
+				targetId: candidate.nodeId,
+				targetName: candidate.name,
 				op: 'set_alpha' as const,
 				value: ISOLATE_CONTEXT_ALPHA
 			}));
-		const highlightMaterialOperations = capabilities.materials
-			.filter((material) => matchedMaterialIds.includes(material.id))
-			.map((material) => ({
-				targetType: 'material' as const,
-				targetId: material.id,
-				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
-				op: 'set_overlay_highlight' as const,
-				value: ISOLATE_HIGHLIGHT_FACTOR
-			}));
-		operations = [...contextMaterialOperations, ...highlightMaterialOperations];
+		const highlightNodeOperations = matchedNodeIds.map((nodeId) => ({
+			targetType: 'node' as const,
+			targetId: nodeId,
+			targetName: matchedPartLabels.join(', '),
+			op: 'set_overlay_highlight' as const,
+			value: ISOLATE_HIGHLIGHT_FACTOR
+		}));
+		operations = [...contextNodeOperations, ...highlightNodeOperations];
 	}
 
 	if (mode === 'remove') {
-		operations = capabilities.materials
-			.filter((material) => matchedMaterialIds.includes(material.id))
-			.map((material) => ({
-				targetType: 'material' as const,
-				targetId: material.id,
-				targetName: formatSemanticTargetName(material.name, matchedPartLabels),
-				op: 'set_alpha' as const,
-				value: REMOVE_PART_ALPHA
-			}));
+		operations = matchedNodeIds.map((nodeId) => ({
+			targetType: 'node' as const,
+			targetId: nodeId,
+			targetName: matchedPartLabels.join(', '),
+			op: 'set_alpha' as const,
+			value: REMOVE_PART_ALPHA
+		}));
 	}
 
 	return {
@@ -1400,15 +1424,16 @@ export async function planVehicleSetLogicIntent(
 		.filter((materialId) => !keepMaterialIds.includes(materialId))
 		.sort((left, right) => left.localeCompare(right));
 
-	const operations: SharedVehicleInspectionPatchOperation[] = capabilities.materials
-		.filter((material) => mutatedMaterialIds.includes(material.id))
-		.map((material) => ({
-			targetType: 'material' as const,
-			targetId: material.id,
-			targetName: material.name,
-			op: 'set_alpha' as const,
-			value: REMOVE_PART_ALPHA
-		}));
+	const operations: SharedVehicleInspectionPatchOperation[] = collectNodeTargetsFromMaterials(
+		capabilities,
+		capabilities.materials.filter((material) => mutatedMaterialIds.includes(material.id))
+	).map((target) => ({
+		targetType: 'node' as const,
+		targetId: target.nodeId,
+		targetName: target.targetName,
+		op: 'set_alpha' as const,
+		value: REMOVE_PART_ALPHA
+	}));
 
 	const validation = await validatePlannedOperations(
 		assetId,
@@ -1416,13 +1441,7 @@ export async function planVehicleSetLogicIntent(
 		operations,
 		capabilities.generatedAt
 	);
-	const acceptedMutatedMaterialIds = validation.operations
-		.filter(
-			(operation): operation is Extract<SharedVehicleInspectionPatchOperation, { targetType: 'material' }> =>
-				operation.targetType === 'material'
-		)
-		.map((operation) => operation.targetId)
-		.sort((left, right) => left.localeCompare(right));
+	const acceptedMutatedMaterialIds = mutatedMaterialIds;
 
 	return {
 		assetId,

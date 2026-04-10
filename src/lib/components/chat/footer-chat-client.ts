@@ -5,6 +5,7 @@ import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
+import { requestGate } from '$lib/stores/request-gate';
 import type {
 	FooterChatPresentationContext,
 	FooterChatSidebarState,
@@ -13,9 +14,31 @@ import type {
 	FooterChatResponse as ChatResponse,
 	FooterChatViewerMode
 } from '$lib/server/connectors/openai-chat/types';
-import type { VehicleSemanticOverlaySnapshot } from '$lib/server/connectors/vehicle-semantic-overlay/types';
+import type {
+	VehicleSemanticOverlaySnapshot,
+	VehicleSemanticOverlayStatus
+} from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
+
+const BULK_MATERIAL_TARGET_THRESHOLD = 8;
+const BULK_NODE_TARGET_THRESHOLD = 12;
+const BULK_TOTAL_TARGET_THRESHOLD = 12;
+const BULK_SELECTION_THRESHOLD = 12;
+const SEMANTIC_BOOTSTRAP_REQUEST_PATTERN =
+	/\b(semantic|semantics|overlay|group|grouping|highlight|isolate|paint|repaint|body color|body paint|glass|window|tint|headlight|headlights|taillight|taillights|wheel|wheels|rim|rims|door|doors|trim|interior|front face|body shell)\b/i;
+
+type GateAwareFetch = typeof fetch;
+
+export type AppLayerApprovalResult = {
+	approved: boolean;
+	blockedMessage?: string;
+};
+
+type SemanticOverlaySnapshotResponse = VehicleSemanticOverlaySnapshot & {
+	commandStatus?: string;
+	appliedCommand?: string;
+};
 
 function summarizeTargets(
 	operations: VehicleInspectionPatchOperation[],
@@ -117,6 +140,125 @@ export function getSupplementaryListContext(): FooterChatSupplementaryListState 
 export function beginFooterResponseCycle(): void {
 	footerActiveTool.reset();
 	footerSupplementaryList.reset();
+}
+
+async function requestApproval(requestVariable: string): Promise<boolean> {
+	try {
+		return await requestGate.requestApproval({ requestVariable });
+	} finally {
+		requestGate.reset();
+	}
+}
+
+function buildBulkRequestVariable(payload: ChatResponse): string | null {
+	const operations = payload.vehiclePatchOperations ?? [];
+	const materialTargetCount = new Set(
+		operations
+			.filter((operation) => operation.targetType === 'material')
+			.map((operation) => operation.targetId)
+	).size;
+	const nodeTargetCount = new Set(
+		operations
+			.filter((operation) => operation.targetType === 'node')
+			.map((operation) => operation.targetId)
+	).size;
+	const totalTargetCount = new Set(
+		operations
+			.filter(
+				(operation) => operation.targetType === 'material' || operation.targetType === 'node'
+			)
+			.map((operation) => `${operation.targetType}:${operation.targetId}`)
+	).size;
+	const selectionTargetCount = payload.selectionUpdate?.selectedNodes.length ?? 0;
+
+	const isBulkApply =
+		materialTargetCount >= BULK_MATERIAL_TARGET_THRESHOLD ||
+		nodeTargetCount >= BULK_NODE_TARGET_THRESHOLD ||
+		totalTargetCount >= BULK_TOTAL_TARGET_THRESHOLD ||
+		selectionTargetCount >= BULK_SELECTION_THRESHOLD;
+
+	if (!isBulkApply) {
+		return null;
+	}
+
+	if (selectionTargetCount >= BULK_SELECTION_THRESHOLD && totalTargetCount === 0) {
+		return `Approve selection update for ${selectionTargetCount} nodes?`;
+	}
+
+	if (totalTargetCount > 0) {
+		return `Approve changes across ${totalTargetCount} targets?`;
+	}
+
+	return 'Approve bulk request?';
+}
+
+export async function prepareSemanticBootstrapForRequest(
+	message: string,
+	assetId?: VehicleAssetId,
+	fetchImpl: GateAwareFetch = fetch
+): Promise<{ bootstrapApplied: boolean }> {
+	if (!assetId || !SEMANTIC_BOOTSTRAP_REQUEST_PATTERN.test(message)) {
+		return { bootstrapApplied: false };
+	}
+
+	const runtimeState = semanticRuntimeState.getAssetState(assetId);
+	const overlayStatus: VehicleSemanticOverlayStatus = runtimeState.overlayStatus;
+	if (overlayStatus !== 'missing' && overlayStatus !== 'stale') {
+		return { bootstrapApplied: false };
+	}
+
+	const approved = await requestApproval(
+		overlayStatus === 'stale'
+			? 'Refresh semantic grouping before continuing?'
+			: 'Create semantic grouping before continuing?'
+	);
+	if (!approved) {
+		return { bootstrapApplied: false };
+	}
+
+	const response = await fetchImpl(`/api/vehicle-assets/${assetId}/semantic-overlay`, {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({
+			force: overlayStatus === 'stale'
+		})
+	});
+	const payload = (await response.json().catch(() => null)) as SemanticOverlaySnapshotResponse | null;
+
+	if (!response.ok || !payload) {
+		throw new Error(
+			typeof payload === 'object' && payload && 'error' in payload && typeof payload.error === 'string'
+				? payload.error
+				: `Semantic grouping request failed with HTTP ${response.status}.`
+		);
+	}
+
+	semanticRuntimeState.applyAssetState(assetId, {
+		overlaySnapshot: {
+			overlay: payload.overlay ?? null,
+			overlayRevision: payload.overlayRevision ?? payload.overlay?.revision ?? null,
+			overlayStatus: payload.overlayStatus
+		}
+	});
+
+	return { bootstrapApplied: true };
+}
+
+export async function approveBulkApplication(payload: ChatResponse): Promise<AppLayerApprovalResult> {
+	const requestVariable = buildBulkRequestVariable(payload);
+	if (!requestVariable) {
+		return { approved: true };
+	}
+
+	const approved = await requestApproval(requestVariable);
+	return approved
+		? { approved: true }
+		: {
+				approved: false,
+				blockedMessage: 'Approval declined. No changes were applied.'
+			};
 }
 
 export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {

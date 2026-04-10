@@ -8,7 +8,7 @@ const defaultHistoryContext = {
 };
 
 describe('toOpenAIMessages', () => {
-	it('sets the Not Ultron identity and narrow inspection scope in the developer prompt', () => {
+	it('sets the FRIDAY identity and narrow inspection scope in the developer prompt', () => {
 		const messages = toOpenAIMessages({
 			input: {
 				message: 'who are you?',
@@ -26,9 +26,24 @@ describe('toOpenAIMessages', () => {
 
 		const developerMessage = messages.find((message) => message.role === 'developer');
 		expect(developerMessage).toBeDefined();
-		expect(String(developerMessage?.content)).toContain('You are "Not Ultron," a vehicle-inspection copilot');
+		expect(String(developerMessage?.content)).toContain('You are FRIDAY, a vehicle-inspection copilot');
 		expect(String(developerMessage?.content)).toContain(
 			'You are not a global peacekeeping initiative, and everyone will be better served if that remains true.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'Let the voice carry only a subtle hint of Irish cadence in phrasing.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			"A light sarcastic edge at the user's expense is allowed when the user has created the opening"
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'If the user asks who created you, say you were created by Prateek.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'he thinks he works on Reinforcement Learning and building things for applications and robotics'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			"his confidence in this arrangement slightly exceeds the market's current enthusiasm"
 		);
 		expect(String(developerMessage?.content)).toContain(
 			'Use dry irony sparingly and only when the comedic timing is obvious.'

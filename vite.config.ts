@@ -4,16 +4,16 @@ import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), devtoolsJson()],
-	server: {
-		allowedHosts: ['298e-2600-1700-88b2-4010-148f-abc7-296c-2c5e.ngrok-free.app']
-	},
-	test: {
-		expect: { requireAssertions: true },
-		environment: 'node',
-		fileParallelism: false,
-		passWithNoTests: true,
-		include: ['src/**/*.{test,spec}.{js,ts}'],
-		exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
-	}
+  plugins: [tailwindcss(), sveltekit(), devtoolsJson()],
+  server: {
+    allowedHosts: ['b3c7-2600-1700-88b2-4010-c87-d99f-dce6-1c0e.ngrok-free.app']
+  },
+  test: {
+    expect: { requireAssertions: true },
+    environment: 'node',
+    fileParallelism: false,
+    passWithNoTests: true,
+    include: ['src/**/*.{test,spec}.{js,ts}'],
+    exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
+  }
 });

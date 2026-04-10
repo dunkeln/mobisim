@@ -48,6 +48,10 @@ export type StructuralMaterial = {
 	textureSlots: string[];
 	meshIds: string[];
 	meshNames: string[];
+	meshMaterialSlots: Array<{
+		meshId: string;
+		slotIndices: number[];
+	}>;
 	nodeIds: string[];
 	nodePaths: string[];
 };

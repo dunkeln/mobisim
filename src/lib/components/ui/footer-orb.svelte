@@ -14,17 +14,21 @@
 	import { resolveInspectionAssetId } from '$lib/routes/inspection';
 	import { toast } from '$lib/components/ui/sonner';
 	import {
+		approveBulkApplication,
 		applyChatResponse,
 		beginFooterResponseCycle,
 		getPresentationContext,
+		prepareSemanticBootstrapForRequest,
 		getSidebarContext,
 		getSupplementaryListContext,
 		getSelectedNodeContext
 	} from '$lib/components/chat/footer-chat-client';
 	import type {
 		FooterChatAudioResponse,
-		FooterChatAudioStreamEvent
+		FooterChatAudioStreamEvent,
+		FooterChatResponse
 	} from '$lib/server/connectors/openai-chat/types';
+	import type { VehicleAssetId } from '$lib/vehicles/catalog';
 	import * as THREE from 'three';
 
 	type OrbMode = 'idle' | 'listening' | 'processing' | 'responding';
@@ -47,8 +51,17 @@
 
 	let canvas: HTMLCanvasElement | undefined = $state();
 	let audioElement: HTMLAudioElement | null = null;
+	let realtimeAudioElement: HTMLAudioElement | null = null;
 	let mediaRecorder: MediaRecorder | null = $state(null);
 	let mediaStream: MediaStream | null = $state(null);
+	let realtimePeerConnection: RTCPeerConnection | null = $state(null);
+	let realtimeDataChannel: RTCDataChannel | null = $state(null);
+	let realtimeToolAbortController: AbortController | null = null;
+	let realtimeResponseActive = $state(false);
+	let realtimeSessionActive = $state(false);
+	let realtimeSessionAssetId = $state<VehicleAssetId | undefined>();
+	let realtimeSemanticOverlayStatus = $state<'missing' | 'stale' | 'fresh' | 'unknown'>('unknown');
+	let realtimeConnecting = $state(false);
 	let recorderChunks: BlobPart[] = [];
 	let activeMode = $state<OrbMode>('idle');
 	let activeAmplitude = $state(0);
@@ -63,9 +76,21 @@
 	] as const;
 
 	$effect(() => {
-		if (!busy && mediaRecorder?.state !== 'recording' && !audioElement) {
+		if (
+			!busy &&
+			!realtimeSessionActive &&
+			mediaRecorder?.state !== 'recording' &&
+			!audioElement &&
+			!realtimeAudioElement
+		) {
 			activeMode = mode;
 			activeAmplitude = amplitude;
+		}
+	});
+
+	$effect(() => {
+		if (realtimeSessionActive && realtimeSessionAssetId && realtimeSessionAssetId !== assetId) {
+			closeRealtimeSession();
 		}
 	});
 
@@ -80,8 +105,14 @@
 	}
 
 	function resetOrbState(): void {
-		busy = false;
+		if (!realtimeSessionActive && !realtimeConnecting) {
+			busy = false;
+		}
 		syncVisuals(mode, amplitude);
+	}
+
+	function supportsRealtimeDuplex(): boolean {
+		return typeof RTCPeerConnection !== 'undefined';
 	}
 
 	function isTrustedLocalOrigin(hostname: string): boolean {
@@ -106,8 +137,8 @@
 			return 'This browser context does not expose microphone capture.';
 		}
 
-		if (typeof MediaRecorder === 'undefined') {
-			return 'Microphone permission is available, but recording is not supported in this browser.';
+		if (!supportsRealtimeDuplex() && typeof MediaRecorder === 'undefined') {
+			return 'This browser does not support either realtime voice sessions or recorded fallback audio.';
 		}
 
 		return null;
@@ -245,6 +276,339 @@
 		}
 	}
 
+	function buildRealtimeContextPayload() {
+		const selectedNodeContext = getSelectedNodeContext(assetId);
+		return {
+			assetId,
+			selectedNodeId: selectedNodeContext.selectedNodeId,
+			selectedNodeName: selectedNodeContext.selectedNodeName,
+			selectedNodePath: selectedNodeContext.selectedNodePath,
+			selectedNodes: selectedNodeContext.selectedNodes,
+			presentation: getPresentationContext(assetId),
+			sidebar: getSidebarContext(),
+			supplementaryList: getSupplementaryListContext()
+		};
+	}
+
+	function sendRealtimeEvent(event: Record<string, unknown>): void {
+		realtimeDataChannel?.send(JSON.stringify(event));
+	}
+
+	function closeRealtimeSession(): void {
+		realtimeToolAbortController?.abort();
+		realtimeToolAbortController = null;
+		realtimeDataChannel?.close();
+		realtimeDataChannel = null;
+		realtimePeerConnection?.close();
+		realtimePeerConnection = null;
+		realtimeAudioElement?.pause();
+		realtimeAudioElement = null;
+		stopRecorderStream();
+		realtimeResponseActive = false;
+		realtimeSessionActive = false;
+		realtimeConnecting = false;
+		realtimeSessionAssetId = undefined;
+		realtimeSemanticOverlayStatus = 'unknown';
+		busy = false;
+		resetOrbState();
+	}
+
+	async function parseChatResponse(response: Response): Promise<FooterChatResponse> {
+		const rawBody = await response.text();
+		let payload: FooterChatResponse | { error?: string } | null = null;
+
+		try {
+			payload = JSON.parse(rawBody) as FooterChatResponse | { error?: string };
+		} catch {
+			payload = null;
+		}
+
+		if (!response.ok || !payload || !('message' in payload)) {
+			throw new Error(
+				payload && 'error' in payload && typeof payload.error === 'string'
+					? payload.error || summarizeHttpFailure(response.status, rawBody)
+					: summarizeHttpFailure(response.status, rawBody)
+			);
+		}
+
+		return payload;
+	}
+
+	async function executeRealtimeVehicleRequest(requestText: string, callId: string): Promise<void> {
+		const controller = new AbortController();
+		realtimeToolAbortController?.abort();
+		realtimeToolAbortController = controller;
+
+		try {
+			await prepareSemanticBootstrapForRequest(requestText, assetId);
+			const payload = buildRealtimeContextPayload();
+			const response = await fetch('/api/chat', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					...payload,
+					message: requestText
+				}),
+				signal: controller.signal
+			});
+			const chatResponse = await parseChatResponse(response);
+			const approval = await approveBulkApplication(chatResponse);
+			if (!approval.approved) {
+				sendRealtimeEvent({
+					type: 'conversation.item.create',
+					item: {
+						type: 'function_call_output',
+						call_id: callId,
+						output: JSON.stringify({
+							...chatResponse,
+							message: {
+								role: 'assistant',
+								content: approval.blockedMessage
+							},
+							vehiclePatchAssetId: undefined,
+							vehiclePatchLabel: undefined,
+							vehiclePatchOperations: undefined,
+							presentationRestore: undefined,
+							selectionUpdate: undefined,
+							sidebar: undefined,
+							supplementaryList: undefined
+						})
+					}
+				});
+				sendRealtimeEvent({
+					type: 'response.create'
+				});
+				return;
+			}
+
+			applyChatResponse(chatResponse, assetId);
+
+			sendRealtimeEvent({
+				type: 'conversation.item.create',
+				item: {
+					type: 'function_call_output',
+					call_id: callId,
+					output: JSON.stringify(chatResponse)
+				}
+			});
+			sendRealtimeEvent({
+				type: 'response.create'
+			});
+		} catch (error) {
+			if (controller.signal.aborted) {
+				sendRealtimeEvent({
+					type: 'response.cancel'
+				});
+				return;
+			}
+
+			sendRealtimeEvent({
+				type: 'conversation.item.create',
+				item: {
+					type: 'function_call_output',
+					call_id: callId,
+					output: JSON.stringify({
+						error: error instanceof Error ? error.message : 'Realtime tool execution failed.'
+					})
+				}
+			});
+			sendRealtimeEvent({
+				type: 'response.create'
+			});
+		} finally {
+			if (realtimeToolAbortController === controller) {
+				realtimeToolAbortController = null;
+			}
+		}
+	}
+
+	async function handleRealtimeEvent(event: Record<string, unknown>): Promise<void> {
+		const type = typeof event.type === 'string' ? event.type : '';
+
+		if (type === 'input_audio_buffer.speech_started') {
+			realtimeToolAbortController?.abort();
+			realtimeResponseActive = false;
+			syncVisuals('listening', 0.62);
+			return;
+		}
+
+		if (type === 'input_audio_buffer.speech_stopped') {
+			syncVisuals('processing', 0.3);
+			return;
+		}
+
+		if (type === 'output_audio_buffer.cleared') {
+			realtimeResponseActive = false;
+			syncVisuals('listening', 0.55);
+			return;
+		}
+
+		if (type === 'response.created') {
+			realtimeResponseActive = true;
+			syncVisuals('processing', 0.38);
+			return;
+		}
+
+		if (type === 'response.done') {
+			realtimeResponseActive = false;
+			syncVisuals('listening', 0.52);
+			return;
+		}
+
+		if (type === 'response.function_call_arguments.done') {
+			const name = typeof event.name === 'string' ? event.name : '';
+			const callId = typeof event.call_id === 'string' ? event.call_id : '';
+			const argumentsJson = typeof event.arguments === 'string' ? event.arguments : '{}';
+			if (name !== 'execute_vehicle_request' || !callId) {
+				return;
+			}
+
+			let parsedArgs: { request?: string } = {};
+			try {
+				parsedArgs = JSON.parse(argumentsJson) as { request?: string };
+			} catch {}
+
+			if (!parsedArgs.request?.trim()) {
+				sendRealtimeEvent({
+					type: 'conversation.item.create',
+					item: {
+						type: 'function_call_output',
+						call_id: callId,
+						output: JSON.stringify({
+							error: 'Realtime tool request was empty.'
+						})
+					}
+				});
+				sendRealtimeEvent({
+					type: 'response.create'
+				});
+				return;
+			}
+
+			await executeRealtimeVehicleRequest(parsedArgs.request, callId);
+		}
+	}
+
+	async function startRealtimeConversation(): Promise<void> {
+		if (busy || realtimeSessionActive || realtimeConnecting) {
+			return;
+		}
+
+		const unavailableReason = getVoiceInputUnavailableReason();
+		if (unavailableReason) {
+			toast.error('Voice input unavailable', {
+				description: unavailableReason
+			});
+			return;
+		}
+
+		realtimeConnecting = true;
+		busy = true;
+		realtimeSessionAssetId = assetId;
+
+		try {
+			mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const peerConnection = new RTCPeerConnection();
+			realtimePeerConnection = peerConnection;
+
+			for (const track of mediaStream.getTracks()) {
+				peerConnection.addTrack(track, mediaStream);
+			}
+
+			realtimeAudioElement = new Audio();
+			realtimeAudioElement.autoplay = true;
+			realtimeAudioElement.setAttribute('playsinline', 'true');
+			peerConnection.ontrack = (event) => {
+				if (realtimeAudioElement) {
+					realtimeAudioElement.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+					void realtimeAudioElement.play().catch(() => {});
+				}
+			};
+
+			const dataChannel = peerConnection.createDataChannel('oai-events');
+			realtimeDataChannel = dataChannel;
+			dataChannel.onmessage = (messageEvent) => {
+				try {
+					const event = JSON.parse(messageEvent.data as string) as Record<string, unknown>;
+					void handleRealtimeEvent(event);
+				} catch {}
+			};
+			dataChannel.onerror = () => {
+				toast.error('Voice session failed', {
+					description: 'The realtime voice control channel failed.'
+				});
+				closeRealtimeSession();
+			};
+			dataChannel.onopen = () => {
+				realtimeSessionActive = true;
+				realtimeConnecting = false;
+				busy = false;
+				syncVisuals('listening', 0.58);
+				toast.success('Duplex voice active', {
+					description: 'Speak naturally. Speak again to interrupt the assistant, or click to end the session.'
+				});
+			};
+			dataChannel.onclose = () => {
+				closeRealtimeSession();
+			};
+
+			const sessionResponse = await fetch('/api/chat/audio/realtime', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					...buildRealtimeContextPayload()
+				})
+			});
+
+			if (!sessionResponse.ok) {
+				throw new Error(await sessionResponse.text());
+			}
+
+			const sessionPayload = (await sessionResponse.json()) as {
+				clientSecret?: string;
+				semanticOverlayStatus?: 'missing' | 'stale' | 'fresh' | 'unknown';
+				error?: string;
+			};
+			if (!sessionPayload.clientSecret) {
+				throw new Error(sessionPayload.error ?? 'Realtime session secret was missing.');
+			}
+			realtimeSemanticOverlayStatus = sessionPayload.semanticOverlayStatus ?? 'unknown';
+
+			const offer = await peerConnection.createOffer();
+			await peerConnection.setLocalDescription(offer);
+
+			const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+				method: 'POST',
+				body: offer.sdp ?? '',
+				headers: {
+					Authorization: `Bearer ${sessionPayload.clientSecret}`,
+					'Content-Type': 'application/sdp'
+				}
+			});
+
+			if (!sdpResponse.ok) {
+				throw new Error(await sdpResponse.text());
+			}
+
+			const answerSdp = await sdpResponse.text();
+			await peerConnection.setRemoteDescription({
+				type: 'answer',
+				sdp: answerSdp
+			});
+		} catch (error) {
+			const resolvedError =
+				error instanceof Error ? error.message : 'Realtime voice session could not be started.';
+			closeRealtimeSession();
+			toast.error('Voice session unavailable', {
+				description: resolvedError
+			});
+		}
+	}
+
 	async function sendAudioMessage(audioBlob: Blob): Promise<void> {
 		const file = await blobToFile(audioBlob);
 		const selectedNodeContext = getSelectedNodeContext(assetId);
@@ -305,6 +669,15 @@
 			);
 		}
 
+		const approval = await approveBulkApplication(payload.chat);
+		if (!approval.approved) {
+			resetOrbState();
+			toast.error('Request not applied', {
+				description: approval.blockedMessage
+			});
+			return;
+		}
+
 		applyChatResponse(payload.chat, assetId);
 		toast.success('Voice request sent', {
 			description: `${payload.transcript} -> ${payload.chat.message.content}`
@@ -334,6 +707,7 @@
 		let buffer = '';
 		let transcript = '';
 		let chatPayload: FooterChatAudioResponse['chat'] | null = null;
+		let chatApproved = true;
 
 		while (true) {
 			const { done, value } = await reader.read();
@@ -351,18 +725,37 @@
 					}
 
 					if (event.type === 'chat') {
-						chatPayload = event.chat;
-						applyChatResponse(event.chat, assetId);
-						toast.success('Voice request sent', {
-							description: transcript
-								? `${transcript} -> ${event.chat.message.content}`
-								: event.chat.message.content
-						});
+						const approval = await approveBulkApplication(event.chat);
+						if (!approval.approved) {
+							chatApproved = false;
+							chatPayload = {
+								...event.chat,
+								message: {
+									role: 'assistant',
+									content: approval.blockedMessage ?? 'Approval declined. No changes were applied.'
+								}
+							};
+							toast.error('Request not applied', {
+								description: chatPayload.message.content
+							});
+						} else {
+							chatPayload = event.chat;
+							applyChatResponse(event.chat, assetId);
+							toast.success('Voice request sent', {
+								description: transcript
+									? `${transcript} -> ${event.chat.message.content}`
+									: event.chat.message.content
+							});
+						}
 					}
 
 					if (event.type === 'audio') {
 						if (!chatPayload) {
 							throw new Error('Live audio reply arrived before the assistant response.');
+						}
+
+						if (!chatApproved) {
+							continue;
 						}
 
 						await playReplyAudio({
@@ -390,9 +783,18 @@
 		if (!chatPayload) {
 			throw new Error('Live audio stream ended before the assistant replied.');
 		}
+
+		if (!chatApproved) {
+			resetOrbState();
+		}
 	}
 
 	async function stopListening(): Promise<void> {
+		if (realtimeSessionActive || realtimeConnecting) {
+			closeRealtimeSession();
+			return;
+		}
+
 		if (!mediaRecorder || mediaRecorder.state !== 'recording') {
 			return;
 		}
@@ -402,6 +804,11 @@
 	}
 
 	async function startListening(): Promise<void> {
+		if (supportsRealtimeDuplex()) {
+			await startRealtimeConversation();
+			return;
+		}
+
 		if (busy) {
 			return;
 		}
@@ -474,7 +881,7 @@
 	}
 
 	async function toggleListening(): Promise<void> {
-		if (mediaRecorder?.state === 'recording') {
+		if (realtimeSessionActive || realtimeConnecting || mediaRecorder?.state === 'recording') {
 			await stopListening();
 			return;
 		}
@@ -862,12 +1269,12 @@
 
 		return () => {
 			cancelAnimationFrame(raf);
+			closeRealtimeSession();
 			audioElement?.pause();
 			if (audioElement?.src) {
 				URL.revokeObjectURL(audioElement.src);
 			}
 			audioElement = null;
-			stopRecorderStream();
 			renderer.dispose();
 			[volGeo, spokeGeo, coreGeo].forEach((g) => g.dispose());
 			[outerLines, innerLines].forEach((ls) => {
@@ -884,11 +1291,17 @@
 		class="glass-motion-color glass-motion-transform orb-shell {className}"
 		class:is-active={activeMode !== 'idle'}
 		class:is-busy={busy}
+		class:is-processing={activeMode === 'processing'}
 		style={`--orb-size: ${size};`}
 		onclick={toggleListening}
-		aria-label={mediaRecorder?.state === 'recording' ? 'Stop orb recording' : 'Start orb recording'}
-		aria-pressed={mediaRecorder?.state === 'recording'}
+		aria-label={
+			realtimeSessionActive || realtimeConnecting || mediaRecorder?.state === 'recording'
+				? 'Stop duplex voice session'
+				: 'Start duplex voice session'
+		}
+		aria-pressed={realtimeSessionActive || realtimeConnecting || mediaRecorder?.state === 'recording'}
 	>
+		<div class="orb-processing-ring" aria-hidden="true"></div>
 		<div class="orb">
 			<canvas bind:this={canvas} class="orb-canvas"></canvas>
 		</div>
@@ -898,9 +1311,11 @@
 		class="glass-motion-color glass-motion-transform orb-shell {className}"
 		class:is-active={activeMode !== 'idle'}
 		class:is-busy={busy}
+		class:is-processing={activeMode === 'processing'}
 		style={`--orb-size: ${size};`}
 		aria-hidden="true"
 	>
+		<div class="orb-processing-ring" aria-hidden="true"></div>
 		<div class="orb">
 			<canvas bind:this={canvas} class="orb-canvas"></canvas>
 		</div>
@@ -1008,9 +1423,73 @@
 		box-shadow: none;
 	}
 
+	.orb-processing-ring {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: calc(var(--orb-size, 96) * 1px + 2.9rem);
+		height: calc((var(--orb-size, 96) * 1px + 1.3rem) * 0.34);
+		transform: translate(-50%, -50%) rotate(-16deg) scaleX(1.06);
+		border-radius: 999px;
+		opacity: 0;
+		pointer-events: none;
+		z-index: -1;
+		background:
+			linear-gradient(
+				90deg,
+				color-mix(in srgb, var(--color-boundary-secondary) 8%, transparent) 0%,
+				color-mix(in srgb, var(--color-boundary-text) 24%, transparent) 18%,
+				color-mix(in srgb, white 20%, transparent) 30%,
+				color-mix(in srgb, var(--color-boundary-tertiary) 26%, transparent) 52%,
+				color-mix(in srgb, var(--color-boundary-secondary) 34%, transparent) 74%,
+				color-mix(in srgb, var(--color-boundary-text) 12%, transparent) 100%
+			);
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 8%, transparent);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
+			0 0 0 1px color-mix(in srgb, var(--color-boundary-secondary) 6%, transparent),
+			0 10px 28px color-mix(in srgb, var(--color-boundary-background) 14%, transparent);
+		backdrop-filter: blur(10px) saturate(112%);
+		-webkit-backdrop-filter: blur(10px) saturate(112%);
+		mask:
+			radial-gradient(
+				ellipse at center,
+				transparent 0 53%,
+				black 60% 72%,
+				transparent 79%
+			);
+		-webkit-mask:
+			radial-gradient(
+				ellipse at center,
+				transparent 0 53%,
+				black 60% 72%,
+				transparent 79%
+			);
+		transition:
+			opacity 180ms ease,
+			filter 180ms ease,
+			transform 180ms ease;
+		filter: blur(0.35px);
+	}
+
+	.orb-shell.is-processing .orb-processing-ring {
+		opacity: 0.92;
+		animation: orb-processing-ring-spin 4.8s linear infinite;
+	}
+
 	.orb-canvas {
 		width: 100%;
 		height: 100%;
 		display: block;
+	}
+
+	@keyframes orb-processing-ring-spin {
+		from {
+			transform: translate(-50%, -50%) rotate(-16deg) scaleX(1.06);
+		}
+
+		to {
+			transform: translate(-50%, -50%) rotate(344deg) scaleX(1.06);
+		}
 	}
 </style>

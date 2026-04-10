@@ -289,6 +289,12 @@ function deriveStructuralMaterials(
 			...material,
 			meshIds: owningMeshes.map((mesh) => mesh.id),
 			meshNames: owningMeshes.map((mesh) => mesh.name),
+			meshMaterialSlots: owningMeshes.map((mesh) => ({
+				meshId: mesh.id,
+				slotIndices: mesh.materialIds
+					.map((materialId, index) => (materialId === material.id ? index : -1))
+					.filter((index) => index >= 0)
+			})),
 			nodeIds: Array.from(new Set(owningNodes.map((node) => node.id))).sort((left, right) =>
 				left.localeCompare(right)
 			),

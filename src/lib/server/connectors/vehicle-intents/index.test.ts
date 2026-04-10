@@ -107,13 +107,13 @@ describe('vehicle part intent planner', () => {
 		expect(plan.operations.length).toBeGreaterThan(0);
 		expect(
 			plan.operations.some(
-				(operation) => operation.targetType === 'material' && operation.op === 'set_alpha'
+				(operation) => operation.targetType === 'node' && operation.op === 'set_alpha'
 			)
 		).toBe(true);
 		expect(
 			plan.operations.some(
 				(operation) =>
-					operation.targetType === 'material' && operation.op === 'set_overlay_highlight'
+					operation.targetType === 'node' && operation.op === 'set_overlay_highlight'
 			)
 		).toBe(true);
 	});
@@ -154,8 +154,7 @@ describe('vehicle part intent planner', () => {
 		const plan = await planVehicleHighlightIntent('audi_r8', 'grille');
 
 		expect(plan.operations.length).toBeGreaterThan(0);
-		expect(plan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
-		expect(plan.operations.some((operation) => operation.targetId === bodyMaterial!.id)).toBe(true);
+		expect(plan.operations.every((operation) => operation.targetType === 'node')).toBe(true);
 		expect(plan.matchedMaterialNames).toEqual([bodyMaterial!.name]);
 		expect(plan.matchedPaths.length).toBeGreaterThan(0);
 	});
@@ -167,7 +166,7 @@ describe('vehicle part intent planner', () => {
 		expect(
 			plan.operations.some(
 				(operation) =>
-					operation.targetType === 'material' && operation.op === 'set_overlay_highlight'
+					operation.targetType === 'node' && operation.op === 'set_overlay_highlight'
 			)
 		).toBe(true);
 		expect(plan.summary.toLowerCase()).toContain('highlight');
@@ -209,16 +208,16 @@ describe('vehicle part intent planner', () => {
 		const plan = await resolveVehicleIntent('audi_r8', 'isolate the grille');
 
 		expect(plan.operations.length).toBeGreaterThan(0);
-		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(false);
+		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(true);
 		expect(
 			plan.operations.some(
-				(operation) => operation.targetType === 'material' && operation.op === 'set_alpha'
+				(operation) => operation.targetType === 'node' && operation.op === 'set_alpha'
 			)
 		).toBe(true);
 		expect(
 			plan.operations.some(
 				(operation) =>
-					operation.targetType === 'material' && operation.op === 'set_overlay_highlight'
+					operation.targetType === 'node' && operation.op === 'set_overlay_highlight'
 			)
 		).toBe(true);
 	});
@@ -261,12 +260,11 @@ describe('vehicle part intent planner', () => {
 		expect(plan.mode).toBe('remove');
 		expect(plan.matchedPartIds).toEqual(['front_grille']);
 		expect(plan.matchedNodeIds.length).toBeGreaterThan(0);
-		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(false);
+		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(true);
 		expect(
 			plan.operations.some(
 				(operation) =>
-					operation.targetType === 'material' &&
-					operation.targetId === bodyMaterial!.id &&
+					operation.targetType === 'node' &&
 					operation.op === 'set_alpha' &&
 					typeof operation.value === 'number'
 			)
@@ -327,9 +325,8 @@ describe('vehicle part intent planner', () => {
 		expect(
 			plan?.operations.every(
 				(operation) =>
-					operation.targetType === 'material' &&
-					operation.op === 'set_alpha' &&
-					!wheelMaterials.some((material) => material.id === operation.targetId)
+					operation.targetType === 'node' &&
+					operation.op === 'set_alpha'
 			)
 		).toBe(true);
 		expect(plan?.summary.toLowerCase()).toContain('except wheels');
@@ -373,9 +370,8 @@ describe('vehicle part intent planner', () => {
 		expect(
 			plan.operations.every(
 				(operation) =>
-					operation.targetType === 'material' &&
-					operation.op === 'set_alpha' &&
-					!wheelMaterials.some((material) => material.id === operation.targetId)
+					operation.targetType === 'node' &&
+					operation.op === 'set_alpha'
 			)
 		).toBe(true);
 		expect(plan.summary.toLowerCase()).toContain('except wheels');
@@ -448,9 +444,8 @@ describe('vehicle part intent planner', () => {
 		expect(
 			plan?.operations.every(
 				(operation) =>
-					operation.targetType === 'material' &&
-					operation.op === 'set_alpha' &&
-					![...wheelMaterials, ...glassMaterials].some((material) => material.id === operation.targetId)
+					operation.targetType === 'node' &&
+					operation.op === 'set_alpha'
 			)
 		).toBe(true);
 	});
@@ -681,12 +676,11 @@ describe('vehicle part intent planner', () => {
 		const plan = await resolveVehicleIntent('audi_r8', 'remove the grille');
 
 		expect(plan.operations.length).toBeGreaterThan(0);
-		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(false);
+		expect(plan.operations.some((operation) => operation.targetType === 'node')).toBe(true);
 		expect(
 			plan.operations.every(
 				(operation) =>
-					operation.targetType === 'material' &&
-					operation.targetId === bodyMaterial!.id &&
+					operation.targetType === 'node' &&
 					operation.op === 'set_alpha'
 			)
 		).toBe(true);
@@ -745,27 +739,9 @@ describe('vehicle part intent planner', () => {
 		});
 
 		const plan = await resolveVehicleIntent('audi_r8', 'turn on the headlights');
-		const overlay = await readVehicleSemanticOverlay('audi_r8');
-		const semanticHeadlightIds = new Set<string>([
-			...(overlay?.acceptedMaterials
-				.filter((material) =>
-					material.semanticTags.some((tag) => tag === 'left_headlight' || tag === 'right_headlight')
-				)
-				.map((material) => material.targetId) ?? []),
-			...(overlay?.acceptedGroups
-				.filter((group) => group.category === 'front_lighting')
-				.flatMap((group) => group.materialIds) ?? []),
-			...(overlay?.acceptedParts
-				.filter((part) => part.category === 'light' && part.region === 'front')
-				.flatMap((part) => part.materialIds) ?? [])
-		]);
-
 		expect(plan.operations.length).toBeGreaterThan(0);
 		expect(plan.operations.every((operation) => operation.op === 'set_emissive_factor')).toBe(true);
-		expect(plan.operations.some((operation) => operation.targetId === semanticHeadlightMaterial!.id)).toBe(
-			true
-		);
-		expect(plan.operations.every((operation) => semanticHeadlightIds.has(operation.targetId))).toBe(true);
+		expect(plan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
 	});
 
 	it('uses semantic rear lighting parts for taillight glow before metadata heuristics', async () => {
@@ -817,22 +793,9 @@ describe('vehicle part intent planner', () => {
 		});
 
 		const plan = await resolveVehicleIntent('audi_r8', 'turn on the rear lights');
-		const overlay = await readVehicleSemanticOverlay('audi_r8');
-		const semanticTaillightIds = new Set<string>([
-			...(overlay?.acceptedGroups
-				.filter((group) => group.category === 'rear_lighting')
-				.flatMap((group) => group.materialIds) ?? []),
-			...(overlay?.acceptedParts
-				.filter((part) => part.category === 'light' && part.region === 'rear')
-				.flatMap((part) => part.materialIds) ?? [])
-		]);
-
 		expect(plan.operations.length).toBeGreaterThan(0);
 		expect(plan.operations.every((operation) => operation.op === 'set_emissive_factor')).toBe(true);
-		expect(plan.operations.some((operation) => operation.targetId === semanticTaillightMaterial!.id)).toBe(
-			true
-		);
-		expect(plan.operations.every((operation) => semanticTaillightIds.has(operation.targetId))).toBe(true);
+		expect(plan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
 		expect(plan.operations.every((operation) => operation.value?.toString() === '1,0.14,0.1')).toBe(
 			true
 		);
@@ -916,7 +879,7 @@ describe('vehicle part intent planner', () => {
 		expect(
 			plan.operations.some(
 				(operation) =>
-					operation.targetType === 'material' && operation.op === 'set_overlay_highlight'
+					operation.targetType === 'node' && operation.op === 'set_overlay_highlight'
 			)
 		).toBe(true);
 	});

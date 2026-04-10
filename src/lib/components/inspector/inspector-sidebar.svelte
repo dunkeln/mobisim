@@ -25,7 +25,6 @@
 		nodes: Array<{
 			id: string;
 			label: string;
-			targetType: 'node' | 'material';
 			highlightTargets: HighlightTargetRef[];
 		}>;
 		highlightTargets: HighlightTargetRef[];
@@ -33,7 +32,7 @@
 
 	type HighlightTargetRef = {
 		targetId: string;
-		targetType: 'node' | 'material';
+		targetType: 'node';
 	};
 
 	type HighlightScopeDescriptor = {
@@ -45,10 +44,9 @@
 	let { assetId, class: className = '' }: Props = $props();
 
 	const NODE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.502, 0.808, 0.843, 1];
-	const MATERIAL_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.751, 0.341, 0.269, 1];
-
 	let expandedGroupIds = $state<string[]>([]);
 	let activeHighlightKey = $state<string | null>(null);
+	let missingPromptedAssetIds = $state<VehicleAssetId[]>([]);
 	const runtimeAsset = $derived.by(
 		() =>
 			$semanticRuntimeState.byAsset[assetId] ?? {
@@ -58,13 +56,10 @@
 			}
 	);
 	const overlay = $derived(runtimeAsset.overlay);
+	const overlayStatus = $derived(runtimeAsset.overlayStatus);
 
 	function partMatchesGroup(part: VehicleSemanticPartUnit, group: VehicleSemanticGroup): boolean {
 		if (group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId))) {
-			return true;
-		}
-
-		if (group.materialIds.some((materialId) => part.materialIds.includes(materialId))) {
 			return true;
 		}
 
@@ -76,38 +71,33 @@
 			return [];
 		}
 
-		const materialById = new Map(
-			currentOverlay.acceptedMaterials.map((material) => [material.targetId, material])
-		);
-
 		return currentOverlay.acceptedGroups
-			.map((group) => {
-				const matchedParts = currentOverlay.acceptedParts.filter((part) => partMatchesGroup(part, group));
+			.map((group: VehicleSemanticGroup) => {
+				const matchedParts = currentOverlay.acceptedParts.filter((part: VehicleSemanticPartUnit) =>
+					partMatchesGroup(part, group)
+				);
 				const semanticNodes = [
-					...group.nodeIds.map((nodeId) => ({
+					...group.nodeIds.map((nodeId: string) => ({
 						id: nodeId,
-						label: matchedParts.find((part) => part.nodeIds.includes(nodeId))?.humanLabel ?? nodeId,
-						targetType: 'node' as const,
+						label:
+							matchedParts.find((part: VehicleSemanticPartUnit) => part.nodeIds.includes(nodeId))
+								?.humanLabel ?? nodeId,
 						highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
 					})),
-					...group.materialIds.map((materialId) => {
-						const matchedPart = matchedParts.find((part) => part.materialIds.includes(materialId));
-						const matchedMaterial = materialById.get(materialId);
-						return {
-							id: materialId,
-							label:
-								matchedPart?.humanLabel ??
-								matchedMaterial?.humanLabel ??
-								matchedMaterial?.targetName ??
-								materialId,
-							targetType: 'material' as const,
-							highlightTargets: [{ targetId: materialId, targetType: 'material' as const }]
-						};
-					})
+					...matchedParts
+						.flatMap((part: VehicleSemanticPartUnit) =>
+							part.nodeIds.map((nodeId: string) => ({
+								id: nodeId,
+								label: part.humanLabel,
+								highlightTargets: [{ targetId: nodeId, targetType: 'node' as const }]
+							}))
+						)
 				];
 				const groupHighlightTargets = [
-					...group.nodeIds.map((targetId) => ({ targetId, targetType: 'node' as const })),
-					...group.materialIds.map((targetId) => ({ targetId, targetType: 'material' as const }))
+					...group.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const })),
+					...matchedParts.flatMap((part: VehicleSemanticPartUnit) =>
+						part.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const }))
+					)
 				];
 
 				return {
@@ -125,8 +115,10 @@
 					)
 				};
 			})
-			.filter((group) => group.highlightTargets.length > 0)
-			.sort((left, right) => left.label.localeCompare(right.label));
+			.filter((group: SemanticGroupView) => group.highlightTargets.length > 0)
+			.sort((left: SemanticGroupView, right: SemanticGroupView) =>
+				left.label.localeCompare(right.label)
+			);
 	}
 
 	const semanticGroups = $derived(buildGroupViews(overlay));
@@ -243,22 +235,6 @@
 		return `Highlight ${label}`;
 	}
 
-	function getHighlightTone(targets: HighlightTargetRef[]): 'node' | 'material' | 'mixed' {
-		const targetTypes = new Set(targets.map((target) => target.targetType));
-		if (targetTypes.size === 1) {
-			return targetTypes.has('material') ? 'material' : 'node';
-		}
-
-		return 'mixed';
-	}
-
-	function hasHighlightTargetType(
-		targets: HighlightTargetRef[],
-		targetType: HighlightTargetRef['targetType']
-	): boolean {
-		return targets.some((target) => target.targetType === targetType);
-	}
-
 	function toggleHighlight(
 		highlightKey: string,
 		targets: HighlightTargetRef[],
@@ -337,32 +313,15 @@
 		targets: HighlightTargetRef[],
 		label: string
 	): VehicleInspectionPatchOperation[] {
-		const materialNameById = new Map(
-			(overlay?.acceptedMaterials ?? []).map((material: VehicleSemanticOverlay['acceptedMaterials'][number]) => [
-				material.targetId,
-				material.targetName
-			])
-		);
-
 		return Array.from(
 			new Map(targets.map((target) => [getTargetKey(target), target])).values()
-		).map((target): VehicleInspectionPatchOperation =>
-			target.targetType === 'material'
-				? {
-						targetType: 'material',
-						targetId: target.targetId,
-						targetName: materialNameById.get(target.targetId) ?? label,
-						op: 'set_overlay_highlight',
-						value: [...MATERIAL_HIGHLIGHT_FACTOR]
-					}
-				: {
-						targetType: 'node',
-						targetId: target.targetId,
-						targetName: label,
-						op: 'set_overlay_highlight',
-						value: [...NODE_HIGHLIGHT_FACTOR]
-					}
-		);
+		).map((target): VehicleInspectionPatchOperation => ({
+			targetType: 'node',
+			targetId: target.targetId,
+			targetName: label,
+			op: 'set_overlay_highlight',
+			value: [...NODE_HIGHLIGHT_FACTOR]
+		}));
 	}
 
 	$effect(() => {
@@ -388,6 +347,17 @@
 				expandedGroupIds = expandedGroupIds.filter((groupId) =>
 					(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === groupId)
 				);
+
+				if (
+					payload.overlayStatus === 'missing' &&
+					!missingPromptedAssetIds.includes(assetId)
+				) {
+					missingPromptedAssetIds = [...missingPromptedAssetIds, assetId];
+					toast.success('Create semantic grouping?', {
+						description:
+							'This asset does not have semantic groups yet. Use the inspector prompt to generate them when you are ready.'
+					});
+				}
 			} catch {
 				if (cancelled) {
 					return;
@@ -436,12 +406,10 @@
 								{#if !isExpanded(group.id)}
 									{@const groupHighlightKey = getGroupHighlightKey(group.id)}
 									{@const groupIsHighlighted = isGroupDirectlyHighlighted(group.id)}
-									<button
+								<button
 										type="button"
 										class="highlight-button"
 										class:is-active={groupIsHighlighted}
-										class:highlight-node={hasHighlightTargetType(group.highlightTargets, 'node')}
-										class:highlight-material={hasHighlightTargetType(group.highlightTargets, 'material')}
 										aria-label={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
 										aria-pressed={groupIsHighlighted}
 										title={getHighlightLabel(group.label, groupHighlightKey, group.highlightTargets)}
@@ -471,15 +439,7 @@
 										style={`--waterfall-delay:${groupIndex * 50 + nodeIndex * 36}ms`}
 									>
 										<div class="node-copy">
-											<span
-												class={[
-													'target-kind-indicator',
-													node.targetType === 'material'
-														? 'target-kind-material'
-														: 'target-kind-node'
-												]}
-												aria-hidden="true"
-											></span>
+											<span class={['target-kind-indicator', 'target-kind-node']} aria-hidden="true"></span>
 											<span class="node-label">{node.label}</span>
 										</div>
 									<button
@@ -487,8 +447,6 @@
 											class="highlight-button"
 											class:is-active={nodeIsDirectlyHighlighted}
 											class:is-downstream={nodeIsDownstreamHighlighted}
-											class:highlight-node={getHighlightTone(node.highlightTargets) === 'node'}
-											class:highlight-material={getHighlightTone(node.highlightTargets) === 'material'}
 											aria-label={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}
 											aria-pressed={nodeIsDirectlyHighlighted}
 											title={getHighlightLabel(node.label, nodeHighlightKey, node.highlightTargets, nodeIsDownstreamHighlighted)}

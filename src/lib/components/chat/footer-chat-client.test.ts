@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+	approveBulkApplication,
 	applyChatResponse,
-	beginFooterResponseCycle
+	beginFooterResponseCycle,
+	prepareSemanticBootstrapForRequest
 } from '$lib/components/chat/footer-chat-client';
 import { footerActiveTool } from '$lib/stores/footer-active-tool';
 import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
+import { requestGate } from '$lib/stores/request-gate';
 import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 import type { FooterChatResponse } from '$lib/server/connectors/openai-chat/types';
 
@@ -23,6 +26,7 @@ describe('footer chat footer lifecycle', () => {
 	beforeEach(() => {
 		footerActiveTool.reset();
 		footerSupplementaryList.reset();
+		requestGate.reset();
 		semanticRuntimeState.reset();
 	});
 
@@ -165,6 +169,65 @@ describe('footer chat footer lifecycle', () => {
 					ssePath: '/api/vehicle-assets/audi_r8/semantic-ingress/ingress-body-shell/events'
 				}
 			]
+		});
+	});
+
+	it('bootstraps semantic grouping through the app layer before semantic-heavy requests continue', async () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlayStatus: 'missing'
+		});
+
+		const decision = prepareSemanticBootstrapForRequest(
+			'highlight the wheels',
+			'audi_r8',
+			(async () =>
+				new Response(
+					JSON.stringify({
+						overlay: {
+							assetId: 'audi_r8',
+							revision: 3,
+							structuralGeneratedAt: 'struct-2',
+							generatedAt: 'overlay-2',
+							model: 'test-model',
+							minAcceptedConfidence: 0.7,
+							acceptedMaterials: [],
+							acceptedParts: [],
+							acceptedGroups: [],
+							discardedSuggestions: []
+						},
+						overlayRevision: 3,
+						overlayStatus: 'fresh'
+					}),
+					{
+						status: 200,
+						headers: {
+							'content-type': 'application/json'
+						}
+					}
+				)) as typeof fetch
+		);
+
+		requestGate.resolveApproved(120);
+		await expect(decision).resolves.toEqual({ bootstrapApplied: true });
+		expect(semanticRuntimeState.getAssetState('audi_r8').overlayStatus).toBe('fresh');
+	});
+
+	it('gates bulk response application through the request gate', async () => {
+		const decision = approveBulkApplication(
+			buildResponse({
+				vehiclePatchOperations: Array.from({ length: 12 }, (_, index) => ({
+					targetType: 'material' as const,
+					targetId: `material-${index}`,
+					op: 'set_overlay_highlight' as const,
+					value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
+				}))
+			})
+		);
+
+		requestGate.resolveRejected();
+		await expect(decision).resolves.toEqual({
+			approved: false,
+			blockedMessage: 'Approval declined. No changes were applied.'
 		});
 	});
 });

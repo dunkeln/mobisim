@@ -429,6 +429,7 @@ export async function createFooterChatResponse(
 				const toolCallsUsed: string[] = [];
 				let toolRoundsUsed = 0;
 				let clarificationIssued = false;
+				let toolFailureMessage: string | undefined;
 
 				let completion = await openai.chat.completions.create({
 					model,
@@ -462,6 +463,11 @@ export async function createFooterChatResponse(
 							normalized.presentation
 						);
 						messages.push(toolResult.message);
+						const toolError = getToolResultError(toolResult);
+						if (toolError) {
+							toolFailureMessage = toolError;
+							break;
+						}
 
 						if (toolResult.plannedOperations && toolResult.plannedOperations.length > 0) {
 							vehiclePatchOperations = mergePatchOperations(
@@ -505,11 +511,62 @@ export async function createFooterChatResponse(
 						}
 					}
 
+					if (toolFailureMessage) {
+						break;
+					}
+
 					completion = await openai.chat.completions.create({
 						model,
 						messages,
 						tools: CHAT_TOOLS
 					});
+				}
+
+				if (toolFailureMessage) {
+					const planningMode = deriveObservedPlanningMode({
+						policy,
+						route: effectiveRoute,
+						toolCallsUsed,
+						clarificationIssued: false
+					});
+
+					const response: FooterChatResponse = {
+						model,
+						message: {
+							role: 'assistant',
+							content: toolFailureMessage
+						},
+						sidebar,
+						supplementaryList,
+						semanticOverlayStatus: latestSemanticOverlayStatus,
+						semanticOverlay: latestSemanticOverlay,
+						semanticIngressBindings: latestSemanticIngressBindings,
+						trace: {
+							route: effectiveRoute,
+							semanticOverlayStatus: latestSemanticOverlayStatus,
+							toolCalls: toolCallsUsed,
+							sidebarAction: resolveSidebarAction(normalized.sidebar, sidebar),
+							supplementaryListAction: resolveSupplementaryListAction(
+								normalized.supplementaryList,
+								supplementaryList
+							),
+							...historyTrace,
+							plannerModel: model,
+							planningMode,
+							toolRoundsUsed,
+							clarificationIssued: false,
+							composedToolChain: toolCallsUsed.length > 1
+						}
+					};
+
+					await persistContextHistory({
+						userId: executionContext.userId,
+						request: normalized,
+						response,
+						rawUserMessage: input.message
+					});
+
+					return response;
 				}
 
 				const content = completion.choices[0]?.message?.content;

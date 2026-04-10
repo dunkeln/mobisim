@@ -34,6 +34,10 @@ export type VehicleInspectionMaterialSummary = {
 	textureSlots: string[];
 	meshIds: string[];
 	meshNames: string[];
+	meshMaterialSlots: Array<{
+		meshId: string;
+		slotIndices: number[];
+	}>;
 	nodePaths: string[];
 };
 
