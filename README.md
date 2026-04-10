@@ -24,15 +24,6 @@ AUTH_GITHUB_ID=...
 AUTH_GITHUB_SECRET=...
 ```
 
-For a local OpenTelemetry dashboard backed by Grafana LGTM:
-
-```sh
-npm run observability:up
-npm run dev:otel
-```
-
-Then open `http://localhost:3000` and inspect traces/metrics for `mobisim-web`.
-
 ## Voice Orb
 
 The footer orb now mirrors the footer textbox through a microphone-driven path:

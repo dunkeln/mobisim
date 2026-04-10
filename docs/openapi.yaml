@@ -1,0 +1,801 @@
+openapi: 3.1.0
+info:
+  title: Mobisim API
+  version: 0.1.0
+  description: |
+    OpenAPI contract for the current Mobisim HTTP surface.
+
+    The API is intentionally centered around one active vehicle asset at a time.
+    The core shape is:
+
+    - assets and asset delivery
+    - inspection-facing structural reads
+    - deterministic intent execution
+    - semantic truth through the semantic overlay
+    - live telemetry through semantic ingress
+    - FRIDAY interaction transport under /api/chat
+
+    This spec stays focused on the canonical surface described in
+    docs/ENDPOINTS.md. It is intentionally conservative where some live
+    planner and chat payloads are still broad or evolving.
+
+servers:
+  - url: http://localhost:5173
+    description: Local SvelteKit development server
+
+tags:
+  - name: Assets
+  - name: Inspection
+  - name: Intent
+  - name: Semantic Overlay
+  - name: Semantic Ingress
+  - name: Chat
+
+paths:
+  /api/vehicle-assets:
+    get:
+      tags: [Assets]
+      summary: List available vehicle assets
+      operationId: listVehicleAssets
+      responses:
+        '200':
+          description: Asset registry listing
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VehicleAsset'
+
+  /api/vehicle-assets/{assetId}/download:
+    get:
+      tags: [Assets]
+      summary: Download a vehicle GLB asset
+      operationId: downloadVehicleAsset
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: GLB payload
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/vehicle-assets/{assetId}/inspection:
+    get:
+      tags: [Inspection]
+      summary: Read inspection capabilities for an asset
+      operationId: getVehicleInspection
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - name: section
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, scenes, controls, wireframes, uv, materials]
+            default: all
+      responses:
+        '200':
+          description: Inspection capabilities or one inspection subsection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InspectionResponse'
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/vehicle-assets/{assetId}/intent:
+    post:
+      tags: [Intent]
+      summary: Resolve a deterministic vehicle intent
+      operationId: resolveVehicleIntent
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VehicleIntentRequest'
+      responses:
+        '200':
+          description: Deterministic vehicle intent plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntentPlan'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/vehicle-assets/{assetId}/semantic-overlay:
+    get:
+      tags: [Semantic Overlay]
+      summary: Read the semantic overlay snapshot
+      operationId: getSemanticOverlay
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: Semantic overlay snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticOverlaySnapshot'
+        '404':
+          $ref: '#/components/responses/Error404'
+    post:
+      tags: [Semantic Overlay]
+      summary: Refresh or regenerate the semantic overlay
+      operationId: refreshSemanticOverlay
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticOverlayRefreshRequest'
+      responses:
+        '200':
+          description: Refreshed semantic overlay snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticOverlaySnapshot'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
+
+  /api/vehicle-assets/{assetId}/semantic-ingress:
+    get:
+      tags: [Semantic Ingress]
+      summary: List semantic ingress bindings
+      operationId: listSemanticIngressBindings
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - name: targetType
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SemanticIngressTargetType'
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Semantic ingress binding store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticIngressStore'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+    post:
+      tags: [Semantic Ingress]
+      summary: Create or replace a semantic ingress binding
+      operationId: assignSemanticIngress
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignSemanticIngressRequest'
+      responses:
+        '200':
+          description: Semantic ingress binding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticIngressBinding'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/vehicle-assets/{assetId}/semantic-ingress/{ingressId}:
+    get:
+      tags: [Semantic Ingress]
+      summary: Read one semantic ingress snapshot
+      operationId: getSemanticIngressSnapshot
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IngressId'
+      responses:
+        '200':
+          description: Binding and bounded sample window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticIngressSnapshot'
+        '404':
+          $ref: '#/components/responses/Error404'
+    post:
+      tags: [Semantic Ingress]
+      summary: Ingest semantic telemetry samples
+      operationId: ingestSemanticIngressSamples
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IngressId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticIngressIngestRequest'
+      responses:
+        '200':
+          description: Updated semantic ingress snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SemanticIngressSnapshot'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+    delete:
+      tags: [Semantic Ingress]
+      summary: Delete a semantic ingress binding
+      operationId: deleteSemanticIngress
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IngressId'
+      responses:
+        '200':
+          description: Binding removed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [removed]
+                properties:
+                  removed:
+                    type: boolean
+                    const: true
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/vehicle-assets/{assetId}/semantic-ingress/{ingressId}/events:
+    get:
+      tags: [Semantic Ingress]
+      summary: Stream semantic ingress samples over SSE
+      operationId: streamSemanticIngressEvents
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - $ref: '#/components/parameters/IngressId'
+      responses:
+        '200':
+          description: Server-sent event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Event stream with:
+                  - semantic-ingress-snapshot
+                  - semantic-ingress-sample
+                  - heartbeat
+        '404':
+          $ref: '#/components/responses/Error404'
+
+  /api/chat:
+    post:
+      tags: [Chat]
+      summary: Execute a text chat request
+      operationId: postChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FooterChatRequest'
+      responses:
+        '200':
+          description: Footer chat response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FooterChatResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
+
+  /api/chat/audio:
+    post:
+      tags: [Chat]
+      summary: Execute a buffered audio chat request
+      operationId: postAudioChat
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AudioChatForm'
+      responses:
+        '200':
+          description: Audio chat response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FooterChatResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
+
+  /api/chat/audio/realtime:
+    post:
+      tags: [Chat]
+      summary: Create a realtime voice session
+      operationId: createRealtimeVoiceSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RealtimeSessionRequest'
+      responses:
+        '200':
+          description: Realtime session bootstrap payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RealtimeSessionResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '502':
+          $ref: '#/components/responses/Error502'
+
+components:
+  parameters:
+    AssetId:
+      name: assetId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Vehicle asset identifier from the asset registry
+    IngressId:
+      name: ingressId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Semantic ingress binding identifier
+
+  responses:
+    Error400:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error404:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Error502:
+      description: Upstream dependency failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    VehicleAsset:
+      type: object
+      additionalProperties: true
+      description: |
+        Vehicle registry asset metadata returned by the live asset catalog.
+        The concrete shape is still owned by the registry connector, so this
+        schema stays intentionally broad.
+
+    InspectionResponse:
+      type: object
+      additionalProperties: true
+      required: [assetId, section, generatedAt, semanticOverlayStatus]
+      description: |
+        Inspection-facing structural read for the active asset. Depending on
+        the requested section, this returns either the full capability snapshot
+        or one focused subsection of it.
+      properties:
+        assetId:
+          type: string
+        section:
+          type: string
+          enum: [all, scenes, controls, wireframes, uv, materials]
+        generatedAt:
+          type: string
+        semanticOverlayStatus:
+          type: string
+        items:
+          type: array
+          items: {}
+        item: {}
+
+    VehicleIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request:
+          type: string
+          minLength: 1
+
+    IntentPlan:
+      type: object
+      additionalProperties: true
+      description: |
+        Deterministic intent resolution output for the active asset.
+        The exact payload varies by intent class, so this schema stays broad on
+        purpose instead of freezing unstable planner internals too early.
+
+    SemanticOverlayRefreshRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        force:
+          type: boolean
+        minAcceptedConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    SemanticOverlayStatus:
+      type: string
+      enum: [missing, fresh]
+
+    SemanticOverlayGroup:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id:
+          type: string
+        humanLabel:
+          type: string
+        category:
+          type: string
+        nodeIds:
+          type: array
+          items:
+            type: string
+        materialIds:
+          type: array
+          items:
+            type: string
+
+    SemanticOverlay:
+      type: object
+      additionalProperties: true
+      required: [assetId, generatedAt, structuralGeneratedAt]
+      description: |
+        Accepted semantic overlay for the active asset. This is the semantic
+        truth layer the system uses for semantic groups and grounding.
+      properties:
+        assetId:
+          type: string
+        generatedAt:
+          type: string
+        structuralGeneratedAt:
+          type: string
+        acceptedGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticOverlayGroup'
+
+    SemanticOverlaySnapshot:
+      type: object
+      additionalProperties: true
+      required: [overlayStatus]
+      description: |
+        Snapshot wrapper around the semantic overlay, including freshness and
+        command status metadata when a refresh was explicitly requested.
+      properties:
+        overlayStatus:
+          $ref: '#/components/schemas/SemanticOverlayStatus'
+        commandStatus:
+          type: string
+        appliedCommand:
+          type: string
+        overlay:
+          oneOf:
+            - $ref: '#/components/schemas/SemanticOverlay'
+            - type: 'null'
+
+    SemanticIngressTargetType:
+      type: string
+      enum: [semantic_group, semantic_node]
+
+    SemanticIngressTransport:
+      type: string
+      enum: [rest_sse, stream]
+
+    SemanticIngressBinding:
+      type: object
+      additionalProperties: false
+      description: |
+        One live telemetry binding attached to one semantic target on one
+        asset. Bindings are created per target, transport, and scope.
+      required:
+        - ingressId
+        - assetId
+        - structuralGeneratedAt
+        - scope
+        - targetType
+        - targetId
+        - transport
+        - assignedAt
+        - assignedBy
+      properties:
+        ingressId:
+          type: string
+        assetId:
+          type: string
+        structuralGeneratedAt:
+          type: string
+        scope:
+          type: string
+          enum: [global, user]
+        scopeKey:
+          type: string
+        targetType:
+          $ref: '#/components/schemas/SemanticIngressTargetType'
+        targetId:
+          type: string
+        targetLabel:
+          type: string
+        transport:
+          $ref: '#/components/schemas/SemanticIngressTransport'
+        assignedAt:
+          type: string
+          format: date-time
+        assignedBy:
+          type: string
+          enum: [model, user]
+        restPath:
+          type: string
+        ssePath:
+          type: string
+        streamPath:
+          type: string
+
+    SemanticIngressNumericSample:
+      type: object
+      additionalProperties: false
+      description: |
+        One numeric telemetry sample flowing through a semantic ingress path.
+      required: [timestamp, value]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        value:
+          type: number
+        metric:
+          type: string
+        unit:
+          type: string
+        source:
+          type: string
+
+    SemanticIngressStore:
+      type: object
+      additionalProperties: false
+      required: [assetId, structuralGeneratedAt, bindings]
+      description: |
+        Asset-scoped ingress store containing visible bindings and any persisted
+        sample windows keyed by ingress id.
+      properties:
+        assetId:
+          type: string
+        structuralGeneratedAt:
+          type: string
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticIngressBinding'
+        samplesByIngress:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/SemanticIngressNumericSample'
+
+    AssignSemanticIngressRequest:
+      type: object
+      additionalProperties: false
+      required: [targetType, targetId, transport]
+      properties:
+        targetType:
+          $ref: '#/components/schemas/SemanticIngressTargetType'
+        targetId:
+          type: string
+        targetLabel:
+          type: string
+        transport:
+          $ref: '#/components/schemas/SemanticIngressTransport'
+        assignedBy:
+          type: string
+          enum: [model, user]
+
+    SemanticIngressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [binding, samples]
+      description: |
+        Live read shape for one semantic ingress binding and its bounded sample
+        window.
+      properties:
+        binding:
+          $ref: '#/components/schemas/SemanticIngressBinding'
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticIngressNumericSample'
+
+    SemanticIngressIngestRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        sample:
+          $ref: '#/components/schemas/SemanticIngressNumericSample'
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticIngressNumericSample'
+      anyOf:
+        - required: [sample]
+        - required: [samples]
+
+    FooterChatRequest:
+      type: object
+      additionalProperties: true
+      required: [message]
+      description: |
+        Request contract for FRIDAY text chat. This surface is intentionally
+        broad because it carries current asset, selection, presentation, and UI
+        context into the chat executor.
+      properties:
+        message:
+          type: string
+        assetId:
+          type: string
+        selectedGroupId:
+          type: string
+        selectedNodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        presentation:
+          type: object
+          additionalProperties: true
+        sidebar:
+          type: object
+          additionalProperties: true
+        supplementaryList:
+          type: object
+          additionalProperties: true
+
+    FooterChatResponse:
+      type: object
+      additionalProperties: true
+      required: [message]
+      description: |
+        Response contract for FRIDAY text or buffered audio chat. This remains
+        broad because the executor can return different combinations of message,
+        semantic state, UI chrome state, and deterministic execution output.
+      properties:
+        model:
+          type: string
+        message:
+          type: object
+          additionalProperties: true
+        semanticOverlayStatus:
+          type: string
+        semanticOverlay:
+          oneOf:
+            - $ref: '#/components/schemas/SemanticOverlay'
+            - type: 'null'
+        semanticIngressBindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticIngressBinding'
+
+    AudioChatForm:
+      type: object
+      additionalProperties: true
+      required: [audio]
+      properties:
+        audio:
+          type: string
+          format: binary
+        payload:
+          type: string
+          description: JSON-encoded footer chat payload
+
+    RealtimeSessionRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        assetId:
+          type: string
+        selectedGroupId:
+          type: string
+        selectedNodeId:
+          type: string
+        selectedNodeName:
+          type: string
+        selectedNodePath:
+          type: string
+        selectedNodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        presentation:
+          type: object
+          additionalProperties: true
+        sidebar:
+          type: object
+          additionalProperties: true
+        supplementaryList:
+          type: object
+          additionalProperties: true
+
+    RealtimeSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [clientSecret, semanticOverlayStatus, instructions]
+      description: |
+        Bootstrap payload for a realtime FRIDAY voice session.
+      properties:
+        clientSecret:
+          type: string
+        semanticOverlayStatus:
+          type: string
+        instructions:
+          type: string

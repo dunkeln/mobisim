@@ -39,28 +39,19 @@ In `Done`:
 
 ## Backlog
 
-- [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 - [ ] T-008 | Delete placeholder scene helpers after the first vertical slice lands | next: remove procedural stand-in scene code after asset-driven scene is live
 - [ ] T-013 | Reduce oversized client chunk from viewer route | next: re-measure after the first real asset and split any viewer-only code if still needed
 - [ ] T-023 | Add semantic overlay generation for GLB manifests | next: store reviewed LLM semantic candidates separately from structural manifests
-- [ ] T-024 | Add cross-instance semantic refresh coordination | next: persist overlay refresh job state and shared locks so cache revalidation survives multiple server instances
 - [ ] T-019 | Add Jarvis sub-UI components | next: define the smallest reusable control cluster for footer, inspector, and overlays
 - [ ] T-020 | Add freeform-to-deterministic tool instruction layer | next: document the minimal prompt and executor contract for expressive tool use
 - [ ] T-021 | Add voice agent slice | next: define one end-to-end voice command path that maps to the existing deterministic vehicle intent executor
 - [ ] T-022 | Isolate JARVIS-style components | next: separate the shell, chat, inspector, and viewport chrome into modular component boundaries
-- [ ] T-037 | Remove overlapping semantic write tools | next: collapse `annotate_vehicle_semantic_group` into the canonical semantic assignment path or delete it
-- [ ] T-038 | Remove client semantic fixup mutators | next: delete legacy semantic runtime `setOverlay` and `setOverlayStatus` write paths after snapshot-only callers are confirmed
-- [ ] T-039 | Split semantic lookup from presentation side effects | next: remove highlight-producing behavior from semantic group management and keep it as semantic lookup only
-- [ ] T-040 | Delete dead orchestration contracts | next: remove unused orchestration types and planner scaffolding left after disabling multi-step orchestration
 
 ## In Progress
 
-- [ ] T-006 | Add integration test for vehicle state endpoint | next: add a passing test path that does not depend on Playwright browser install
 - [ ] T-023 | Add semantic overlay generation for GLB manifests | next: finish planner reads, route wiring, and deterministic tests
 
 ## Blocked
-
-- [ ] T-001 | Load realistic vehicle asset into scene | blocked_on: approved production-ready source asset
 
 ## Review
 
@@ -69,6 +60,8 @@ In `Done`:
 ## Done
 
 - [x] T-000 | Initialize project documentation scaffold | completed: 2026-04-04
+- [x] T-001 | Load realistic vehicle asset into scene | completed: 2026-04-10
+- [x] T-006 | Add integration test for vehicle state endpoint | completed: 2026-04-10
 - [x] T-002 | Expose one REST-controlled vehicle state | completed: 2026-04-06
 - [x] T-003 | Reflect controlled vehicle state in the scene | completed: 2026-04-06
 - [x] T-004 | Define shared API contract for vehicle state | completed: 2026-04-06
@@ -159,3 +152,5 @@ In `Done`:
 - 2026-04-09 PT | Marked T-042 done after having createRealtimeClientSecret return the built instructions string, returning it through the API route, storing it in the orb on session open, and pushing session.update via a store-reactive $effect whenever vehicleNodeSelection or vehiclePatchState changes during a live session
 - 2026-04-09 PT | Marked T-043 done after adding label to HighlightScopeDescriptor and detecting in the sidebar $effect when all current highlight targets are a strict subset of the updated group targets, then re-applying set_highlights to include the new members
 - 2026-04-09 PT | Marked T-044 done after fixing resolveScopedSemanticTargets highlighted scope to split candidateTargets by targetType rather than assigning all to materialIds, matching the behaviour already in resolveTypedSemanticMutationTargets
+- 2026-04-10 16:22 PT | Marked `T-006` done after adding a route-level `POST /api/vehicle-assets/[assetId]/intent` integration test path that covers valid, missing-request, and unknown-asset cases under `npm test`
+- 2026-04-10 16:29 PT | Marked `T-001` done for the current review bar, removed cancelled `T-024`, and deleted stale backlog duplicates for `T-037` through `T-040`
