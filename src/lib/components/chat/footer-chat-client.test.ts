@@ -6,7 +6,6 @@ import {
 	beginFooterResponseCycle,
 	prepareSemanticBootstrapForRequest
 } from '$lib/components/chat/footer-chat-client';
-import { footerActiveTool } from '$lib/stores/footer-active-tool';
 import { footerSupplementaryList } from '$lib/stores/footer-supplementary-list';
 import { requestGate } from '$lib/stores/request-gate';
 import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
@@ -27,14 +26,12 @@ describe('footer chat footer lifecycle', () => {
 	const assetId = 'audi_r8';
 
 	beforeEach(() => {
-		footerActiveTool.reset();
 		footerSupplementaryList.reset();
 		requestGate.reset();
 		semanticRuntimeState.reset();
 	});
 
-	it('tears down tool and supplementary footer UI at the start of a new model cycle', () => {
-		footerActiveTool.setFromToolCalls(['set_vehicle_view_mode']);
+	it('tears down the supplementary footer UI at the start of a new model cycle', () => {
 		footerSupplementaryList.set(assetId, {
 			active: true,
 			entries: {
@@ -44,13 +41,6 @@ describe('footer chat footer lifecycle', () => {
 
 		beginFooterResponseCycle(assetId);
 
-		expect(footerActiveTool.getSnapshot()).toEqual({
-			active: false,
-			label: '',
-			toolName: null,
-			toolLabels: [],
-			toolNames: []
-		});
 		expect(footerSupplementaryList.getContext(assetId)).toEqual({
 			active: false,
 			entries: {}

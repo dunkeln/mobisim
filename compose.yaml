@@ -1,15 +1,4 @@
 services:
-  db:
-    image: postgres
-    restart: always
-    ports:
-      - 5432:5432
-    environment:
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: mysecretpassword
-      POSTGRES_DB: local
-    volumes:
-      - pgdata:/var/lib/postgresql
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     restart: unless-stopped
@@ -19,5 +8,4 @@ services:
     volumes:
       - dynamodb_data:/home/dynamodblocal/data
 volumes:
-  pgdata:
   dynamodb_data:
