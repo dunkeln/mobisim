@@ -1,8 +1,10 @@
-# mobisim [Live App](https://mobisim.dunkeln.com/app/inspect/audi_r8)
+# mobisim [🔗](https://mobisim.dunkeln.com/app/inspect/audi_r8)
 
 Mobisim is a browser-native vehicle understanding system that turns a 3D vehicle asset into an inspectable, semantically grounded interface with a voice/text copilot.
 
 It is Chrome-first, deterministic at the mutation boundary, and scoped to one active vehicle at a time.
+
+<img width="1497" height="881" alt="Screenshot 2026-04-17 at 11 40 30" src="https://github.com/user-attachments/assets/753934ba-33f2-4163-bf5e-48604ff47af5" />
 
 Raw meshes are hard to inspect and harder to operate safely through natural language. Mobisim adds structure, semantic grounding, and controlled execution so a vehicle can be reviewed visually and acted on through stable app behavior instead of fragile mesh-name guessing.
 
