@@ -1,4 +1,7 @@
-import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+import {
+	getSelectionConstraintNodeIds,
+	type VehicleNodeSelection
+} from '$lib/stores/vehicle-node-selection';
 import type { FooterChatTrace } from '$lib/server/connectors/openai-chat/types';
 import {
 	applyHistoryActionToPresentationContext,
@@ -203,7 +206,7 @@ function toSelectionSummary(selectedNodes: VehicleNodeSelection[]): ContextHisto
 		targetType: selection.targetType ?? 'node',
 		targetId: selection.targetId ?? selection.nodeId,
 		targetName: selection.targetName ?? selection.nodeName,
-		nodeIds: [...(selection.nodeIds ?? [selection.nodeId])],
+		nodeIds: [...getSelectionConstraintNodeIds(selection)],
 		anchorNodeId: selection.anchorNodeId,
 		nodeId: selection.nodeId,
 		nodeName: selection.nodeName,

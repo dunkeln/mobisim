@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import {
 	createFooterChatResponse,
 	OpenAIChatConfigError,
+	OpenAIChatExecutionError,
 	OpenAIChatInputError,
 	OpenAIChatUpstreamError
 } from '$lib/server/connectors/openai-chat';
@@ -30,6 +31,11 @@ export async function POST({ request, locals }) {
 
 		if (error instanceof OpenAIChatConfigError) {
 			console.error('chat config error', error.message);
+			return json({ error: error.message }, { status: 500 });
+		}
+
+		if (error instanceof OpenAIChatExecutionError) {
+			console.error('chat execution error', error.message);
 			return json({ error: error.message }, { status: 500 });
 		}
 

@@ -35,8 +35,8 @@ export const VEHICLE_CATALOG: Record<VehicleAssetId, VehicleCatalogEntry> = {
 			[19.65, 0.85, 5.22],
 			[13.95, 0.85, 5.22]
 		],
-		bodyPaintMaterialNames: ['Meshpart25Mtl', 'Meshpart36Mtl', 'Meshpart52Mtl'],
-		windowTintMaterialNames: ['Meshpart1Mtl', 'Meshpart49Mtl', 'Meshpart65Mtl', 'Meshpart66Mtl']
+		bodyPaintMaterialNames: ['phong1'],
+		windowTintMaterialNames: ['color_glass', 'glass', 'glass_surr']
 	},
 	acura_nsx_type_s_2022: {
 		id: 'acura_nsx_type_s_2022',
@@ -126,6 +126,26 @@ export const defaultVehicleAssetId = VEHICLE_CATALOG_LIST[0]?.id ?? 'audi_r8';
 
 export function isVehicleAssetId(value: string | null): value is VehicleAssetId {
 	return value !== null && value in VEHICLE_CATALOG;
+}
+
+export function resolveVehicleCatalogEntry(value: string | null | undefined): VehicleCatalogEntry | null {
+	if (typeof value !== 'string' || !isVehicleAssetId(value)) {
+		return null;
+	}
+
+	return VEHICLE_CATALOG[value];
+}
+
+export function requireVehicleCatalogEntry(
+	value: string | null | undefined,
+	label = 'vehicle asset'
+): VehicleCatalogEntry {
+	const entry = resolveVehicleCatalogEntry(value);
+	if (!entry) {
+		throw new Error(`Unknown ${label}: ${typeof value === 'string' && value.trim().length > 0 ? value : 'none'}`);
+	}
+
+	return entry;
 }
 
 export function resolveVehicleAssetId(value: string | null): VehicleAssetId {

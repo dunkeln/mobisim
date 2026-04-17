@@ -1,4 +1,9 @@
-import { resolveVehicleAssetId, type VehicleAssetId } from '$lib/vehicles/catalog';
+import {
+	defaultVehicleAssetId,
+	isVehicleAssetId,
+	resolveVehicleAssetId,
+	type VehicleAssetId
+} from '$lib/vehicles/catalog';
 
 const INSPECTION_ROUTE_PREFIX = '/app/inspect';
 
@@ -7,8 +12,18 @@ function readInspectionAssetId(pathname: string): string | null {
 	return routeMatch?.[1] ?? null;
 }
 
+export function tryResolveInspectionAssetId(url: URL): VehicleAssetId | undefined {
+	const routeAssetId = readInspectionAssetId(url.pathname);
+	if (isVehicleAssetId(routeAssetId)) {
+		return routeAssetId;
+	}
+
+	const legacyAssetId = url.searchParams.get('asset');
+	return isVehicleAssetId(legacyAssetId) ? legacyAssetId : undefined;
+}
+
 export function resolveInspectionAssetId(url: URL): VehicleAssetId {
-	return resolveVehicleAssetId(readInspectionAssetId(url.pathname) ?? url.searchParams.get('asset'));
+	return tryResolveInspectionAssetId(url) ?? resolveVehicleAssetId(defaultVehicleAssetId);
 }
 
 export function buildInspectionRoute(assetId: VehicleAssetId, searchParams?: URLSearchParams): string {

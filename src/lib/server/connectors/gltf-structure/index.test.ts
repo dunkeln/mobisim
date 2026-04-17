@@ -55,4 +55,13 @@ describe('deriveStructuralAssetSnapshot', () => {
 		expect(first.generatedAt).toBe(second.generatedAt);
 		expect(first.generatedAt.startsWith('structural:')).toBe(true);
 	});
+
+	it('loads the compressed komatsu asset through the structural reader', async () => {
+		const snapshot = await deriveStructuralAssetSnapshot('komatsu_hd_465_7eo');
+
+		expect(snapshot.assetId).toBe('komatsu_hd_465_7eo');
+		expect(snapshot.nodes.length).toBeGreaterThan(0);
+		expect(snapshot.meshes.length).toBeGreaterThan(0);
+		expect(snapshot.materials.length).toBeGreaterThan(0);
+	});
 });

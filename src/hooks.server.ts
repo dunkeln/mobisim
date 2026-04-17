@@ -1,6 +1,7 @@
 import { sequence } from '@sveltejs/kit/hooks';
 import type { Handle } from '@sveltejs/kit';
 import { handle as authHandle } from './auth';
+import { env } from '$env/dynamic/private';
 import {
 	buildRequestSpanAttributes,
 	buildRequestSpanOptions,
@@ -12,6 +13,20 @@ import {
 function shouldTraceRequest(pathname: string): boolean {
 	return pathname.startsWith('/api/');
 }
+
+const DEV_SESSION = {
+	user: { id: 'dev-user-id', name: 'Dev User', email: 'dev@localhost', image: null },
+	expires: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString()
+};
+
+// When DEV_AUTH=mock, override locals.auth to always return a dev session so
+// every downstream auth check (layouts, API routes, hooks) passes without OAuth.
+const devAuthHandle: Handle = async ({ event, resolve }) => {
+	if (env.DEV_AUTH === 'mock') {
+		event.locals.auth = async () => DEV_SESSION;
+	}
+	return resolve(event);
+};
 
 const authorizationHandle: Handle = async ({ event, resolve }) => {
 	if (!event.url.pathname.startsWith('/api/')) {
@@ -84,4 +99,4 @@ const telemetryHandle: Handle = async ({ event, resolve }) => {
 	);
 };
 
-export const handle: Handle = sequence(authHandle, authorizationHandle, telemetryHandle);
+export const handle: Handle = sequence(devAuthHandle, authHandle, authorizationHandle, telemetryHandle);

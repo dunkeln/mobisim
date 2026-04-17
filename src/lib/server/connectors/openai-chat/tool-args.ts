@@ -1,11 +1,9 @@
 import { OpenAIChatInputError } from './errors';
 import {
-	type AssignSemanticIngressToolArgs,
 	type ApplyVehicleAppearanceIntentToolArgs,
 	type ApplyVehicleFocusIntentToolArgs,
 	type EditVehiclePresentationToolArgs,
 	type EditVehicleSelectionToolArgs,
-	type EditVehicleSemanticsToolArgs,
 	type SetAssistantUiToolArgs,
 	type ExpandVehicleSelectionToolArgs,
 	type GetVehicleToolCatalogToolArgs,
@@ -200,14 +198,25 @@ export function parseMutateVehicleSemanticAssignmentToolArgs(
 export function parseManageVehicleSemanticGroupToolArgs(
 	input: string
 ): ManageVehicleSemanticGroupToolArgs {
-	const parsed = JSON.parse(input) as ManageVehicleSemanticGroupToolArgs;
-	if (!['create', 'patch', 'delete', 'get'].includes(parsed.action)) {
+	const parsed = JSON.parse(input) as ManageVehicleSemanticGroupToolArgs & {
+		action?: 'create' | 'patch' | 'delete' | 'get' | 'create_group' | 'patch_group' | 'delete_group' | 'get_group';
+	};
+	const action =
+		parsed.action === 'create_group'
+			? 'create'
+			: parsed.action === 'patch_group'
+				? 'patch'
+				: parsed.action === 'delete_group'
+					? 'delete'
+					: parsed.action === 'get_group'
+						? 'get'
+						: parsed.action;
+	if (!['create', 'patch', 'delete', 'get'].includes(action ?? '')) {
 		throw new OpenAIChatInputError('A valid semantic group management action is required.');
 	}
 
 	return {
-		action: parsed.action,
-		targetType: parsed.targetType === 'semantic_node' ? 'semantic_node' : 'semantic_group',
+		action,
 		scope:
 			parsed.scope === 'highlighted' || parsed.scope === 'hidden'
 				? parsed.scope
@@ -215,8 +224,11 @@ export function parseManageVehicleSemanticGroupToolArgs(
 					? 'selected'
 					: undefined,
 		query: typeof parsed.query === 'string' ? parsed.query.trim() || undefined : undefined,
+		semanticGroup:
+			typeof parsed.semanticGroup === 'string'
+				? parsed.semanticGroup.trim() || undefined
+				: undefined,
 		groupId: typeof parsed.groupId === 'string' ? parsed.groupId.trim() || undefined : undefined,
-		nodeId: typeof parsed.nodeId === 'string' ? parsed.nodeId.trim() || undefined : undefined,
 		nodeIds: Array.isArray(parsed.nodeIds)
 			? parsed.nodeIds.filter(
 					(value): value is string => typeof value === 'string' && value.trim().length > 0
@@ -248,25 +260,6 @@ export function parseManageVehicleSemanticGroupToolArgs(
 				: typeof parsed.exclusiveFamily === 'string'
 					? parsed.exclusiveFamily.trim() || undefined
 					: undefined
-	};
-}
-
-export function parseAssignSemanticIngressToolArgs(input: string): AssignSemanticIngressToolArgs {
-	const parsed = JSON.parse(input) as AssignSemanticIngressToolArgs;
-	if (
-		(parsed.targetType !== 'semantic_group' && parsed.targetType !== 'semantic_node') ||
-		typeof parsed.targetId !== 'string' ||
-		(parsed.transport !== 'rest_sse' && parsed.transport !== 'stream')
-	) {
-		throw new OpenAIChatInputError('A valid semantic ingress target and transport are required.');
-	}
-
-	return {
-		targetType: parsed.targetType,
-		targetId: parsed.targetId.trim(),
-		targetLabel:
-			typeof parsed.targetLabel === 'string' ? parsed.targetLabel.trim() || undefined : undefined,
-		transport: parsed.transport
 	};
 }
 
@@ -313,71 +306,6 @@ export function parseEditVehicleSelectionToolArgs(input: string): EditVehicleSel
 		action: 'expand',
 		...parseExpandVehicleSelectionToolArgs(input)
 	};
-}
-
-export function parseEditVehicleSemanticsToolArgs(input: string): EditVehicleSemanticsToolArgs {
-	const parsed = JSON.parse(input) as { action?: unknown };
-
-	if (parsed.action === 'assign' || parsed.action === 'reassign' || parsed.action === 'unassign') {
-		const args = parseMutateVehicleSemanticAssignmentToolArgs(input);
-		return {
-			...args,
-			action: parsed.action
-		};
-	}
-
-	if (
-		parsed.action === 'create_group' ||
-		parsed.action === 'patch_group' ||
-		parsed.action === 'delete_group' ||
-		parsed.action === 'get_group' ||
-		parsed.action === 'get_node'
-	) {
-		const args = parseManageVehicleSemanticGroupToolArgs(
-			JSON.stringify({
-				...(JSON.parse(input) as Record<string, unknown>),
-				action:
-					parsed.action === 'create_group'
-						? 'create'
-						: parsed.action === 'patch_group'
-							? 'patch'
-							: parsed.action === 'delete_group'
-								? 'delete'
-								: 'get',
-				targetType: parsed.action === 'get_node' ? 'semantic_node' : 'semantic_group'
-			})
-		);
-		return {
-			scope: args.scope,
-			query: args.query,
-			groupId: args.groupId,
-			nodeId: args.nodeId,
-			nodeIds: args.nodeIds,
-			humanLabel: args.humanLabel,
-			aliases: args.aliases,
-			category: args.category,
-			supports: args.supports,
-			assignmentMode: args.assignmentMode,
-			exclusiveFamily: args.exclusiveFamily,
-			action: parsed.action
-		};
-	}
-
-	if (parsed.action === 'refresh') {
-		return {
-			action: 'refresh',
-			...parseRefreshVehicleSemanticsToolArgs(input)
-		};
-	}
-
-	if (parsed.action === 'assign_ingress') {
-		return {
-			action: 'assign_ingress',
-			...parseAssignSemanticIngressToolArgs(input)
-		};
-	}
-
-	throw new OpenAIChatInputError('A valid semantic action is required.');
 }
 
 export function parseSetAssistantUiToolArgs(input: string): SetAssistantUiToolArgs {

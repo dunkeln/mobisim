@@ -1,4 +1,4 @@
-import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
+import { requireVehicleCatalogEntry, type VehicleAssetId } from '$lib/vehicles/catalog';
 import {
 	deriveStructuralAssetSnapshot,
 	type StructuralMaterial,
@@ -10,6 +10,7 @@ import {
 	listSemanticMaterialsByTags,
 	readVehicleSemanticOverlay
 } from '$lib/server/connectors/vehicle-semantic-overlay';
+import { isPaintableSurfaceReference } from '$lib/server/connectors/semantic-groups';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type {
 	VehicleBodyPaintPlan,
@@ -91,6 +92,80 @@ const HIGHLIGHT_TERM_SYNONYMS: Record<string, string[]> = {
 	trunk: ['trunk', 'boot']
 };
 
+const EXTERIOR_PAINT_EXCLUSION_TERMS = [
+	'glass',
+	'window',
+	'windshield',
+	'windscreen',
+	'tire',
+	'tyre',
+	'rim',
+	'wheel',
+	'mirror',
+	'chrome',
+	'light',
+	'lamp',
+	'lens'
+];
+
+function isExteriorPaintCandidateGroup(group: {
+	id: string;
+	humanLabel: string;
+	aliases: string[];
+	category: string;
+	supports: string[];
+}): boolean {
+	if (!group.supports.includes('paint')) {
+		return false;
+	}
+
+	if (group.category === 'body_shell') {
+		return true;
+	}
+
+	return [group.id, group.humanLabel, ...group.aliases].some((value) =>
+		isPaintableSurfaceReference(value)
+	);
+}
+
+function isExcludedPaintMaterialName(name: string): boolean {
+	const lowered = name.toLowerCase();
+	return EXTERIOR_PAINT_EXCLUSION_TERMS.some((term) => lowered.includes(term));
+}
+
+function collectPaintableMaterialIds(
+	materials: StructuralMaterial[],
+	group: {
+		nodeIds: string[];
+		meshIds: string[];
+		materialIds: string[];
+	}
+): string[] {
+	const directMaterialIds = group.materialIds.filter((materialId) =>
+		materials.some((material) => material.id === materialId)
+	);
+	if (directMaterialIds.length > 0) {
+		return Array.from(new Set(directMaterialIds)).sort((left, right) => left.localeCompare(right));
+	}
+
+	const groupNodeIds = new Set(group.nodeIds);
+	const groupMeshIds = new Set(group.meshIds);
+	const derivedMaterialIds = materials
+		.filter((material) => {
+			if (isExcludedPaintMaterialName(material.name)) {
+				return false;
+			}
+
+			return (
+				material.nodeIds.some((nodeId) => groupNodeIds.has(nodeId)) ||
+				material.meshIds.some((meshId) => groupMeshIds.has(meshId))
+			);
+		})
+		.map((material) => material.id);
+
+	return Array.from(new Set(derivedMaterialIds)).sort((left, right) => left.localeCompare(right));
+}
+
 function normalizeHighlightTerms(partQuery: string): string[] {
 	const baseTerms = partQuery
 		.toLowerCase()
@@ -123,7 +198,10 @@ function includesAnyTerm(value: string, terms: string[]): boolean {
 function inferBodyPaintMaterials(
 	capabilities: VehicleInspectionCapabilities
 ): VehicleInspectionMaterialSummary[] {
-	const configuredNames = VEHICLE_CATALOG[capabilities.assetId].bodyPaintMaterialNames;
+	const configuredNames = requireVehicleCatalogEntry(
+		capabilities.assetId,
+		'vehicle asset'
+	).bodyPaintMaterialNames;
 	if (configuredNames && configuredNames.length > 0) {
 		const configuredNameSet = new Set(configuredNames);
 		const matchedConfiguredMaterials = capabilities.materials.filter((material) =>
@@ -139,7 +217,9 @@ function inferBodyPaintMaterials(
 		.filter((material) => {
 			const name = material.name.toLowerCase();
 			return (
-				(name.includes('paint') || name.includes('body')) &&
+				(name.includes('paint') ||
+					name.includes('body') ||
+					isPaintableSurfaceReference(name)) &&
 				!name.includes('glass') &&
 				!name.includes('tire') &&
 				!name.includes('rim') &&
@@ -157,6 +237,14 @@ function inferBodyPaintMaterials(
 				const path = candidate.path.toLowerCase();
 				return (
 					path.includes('body') ||
+					path.includes('bodywork') ||
+					path.includes('shell') ||
+					path.includes('chassis') ||
+					path.includes('hull') ||
+					path.includes('fuselage') ||
+					path.includes('airframe') ||
+					path.includes('deck') ||
+					path.includes('exterior') ||
 					path.includes('door') ||
 					path.includes('hood') ||
 					path.includes('bonnet') ||
@@ -195,27 +283,29 @@ async function resolveBodyPaintMaterials(
 	assetId: VehicleAssetId,
 	capabilities: VehicleInspectionCapabilities
 ): Promise<VehicleInspectionMaterialSummary[]> {
-	const materialsById = new Map(capabilities.materials.map((material) => [material.id, material]));
+	const structure = await deriveStructuralAssetSnapshot(assetId);
 	const overlay = await readVehicleSemanticOverlay(assetId);
-	const semanticBodyShellMaterials =
+	const materialsById = new Map(capabilities.materials.map((material) => [material.id, material]));
+	const semanticSurfaceMaterials =
 		overlay?.structuralGeneratedAt === capabilities.generatedAt
 			? overlay.acceptedGroups
-					.filter((group) => group.category === 'body_shell' && group.supports.includes('paint'))
-					.flatMap((group) => group.materialIds)
+					.filter((group) => isExteriorPaintCandidateGroup(group))
+					.flatMap((group) => collectPaintableMaterialIds(structure.materials, group))
 					.map((materialId) => materialsById.get(materialId))
 					.filter((material): material is VehicleInspectionMaterialSummary => !!material)
 			: [];
 
 	const semanticTaggedMaterials = (
 		await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, ['body_paint_candidate'])
-	)
-		.map((candidate) => materialsById.get(candidate.targetId))
-		.filter((material): material is VehicleInspectionMaterialSummary => !!material);
+	).flatMap((candidate) =>
+		capabilities.materials.filter(
+			(material) =>
+				material.id === candidate.targetId &&
+				!isExcludedPaintMaterialName(material.name)
+		)
+	);
 
-	const semanticMatches = dedupeMaterialsById([
-		...semanticBodyShellMaterials,
-		...semanticTaggedMaterials
-	]);
+	const semanticMatches = dedupeMaterialsById([...semanticSurfaceMaterials, ...semanticTaggedMaterials]);
 	if (semanticMatches.length > 0) {
 		return semanticMatches;
 	}
@@ -224,7 +314,7 @@ async function resolveBodyPaintMaterials(
 }
 
 function inferWindowTintMaterialNames(capabilities: VehicleInspectionCapabilities): string[] {
-	const configuredNames = VEHICLE_CATALOG[capabilities.assetId].windowTintMaterialNames;
+	const configuredNames = requireVehicleCatalogEntry(capabilities.assetId, 'vehicle asset').windowTintMaterialNames;
 	if (configuredNames && configuredNames.length > 0) {
 		const configuredNameSet = new Set(configuredNames);
 		const matchedConfiguredNames = capabilities.materials
@@ -421,6 +511,33 @@ function collectNodeTargetsFromMaterials(
 	return Array.from(targets.values());
 }
 
+function collectTintableMaterialIds(
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
+	group: {
+		nodeIds: string[];
+		materialIds: string[];
+	}
+): string[] {
+	if (group.materialIds.length > 0) {
+		return Array.from(new Set(group.materialIds)).sort((left, right) => left.localeCompare(right));
+	}
+
+	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
+	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
+	return Array.from(
+		new Set(
+			group.nodeIds.flatMap((nodeId) => {
+				const meshId = nodeById.get(nodeId)?.meshId;
+				return meshId ? (meshById.get(meshId)?.materialIds ?? []) : [];
+			})
+		)
+	).sort((left, right) => left.localeCompare(right));
+}
+
+function isGlasshouseTintGroup(group: { category: string; supports: string[] }): boolean {
+	return group.category === 'glasshouse' && group.supports.includes('tint');
+}
+
 export async function planVehiclePartHighlight(
 	assetId: VehicleAssetId,
 	partQuery: string
@@ -561,16 +678,30 @@ export async function planVehicleWindowTint(
 	color: [number, number, number, number]
 ): Promise<VehicleWindowTintPlan> {
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
+	const structure = await deriveStructuralAssetSnapshot(assetId);
+	const overlay = await readVehicleSemanticOverlay(assetId);
+	const materialsById = new Map(capabilities.materials.map((material) => [material.id, material]));
+	const semanticGlasshouseMaterials =
+		overlay?.structuralGeneratedAt === capabilities.generatedAt
+			? overlay.acceptedGroups
+					.filter((group) => isGlasshouseTintGroup(group))
+					.flatMap((group) => collectTintableMaterialIds(structure, group))
+					.map((materialId) => materialsById.get(materialId))
+					.filter((material): material is VehicleInspectionMaterialSummary => !!material)
+			: [];
 	const semanticMatches = await listSemanticMaterialsByTags(assetId, capabilities.generatedAt, [
 		'glass_candidate'
 	]);
+	const semanticTaggedMaterials = capabilities.materials.filter((material) =>
+		semanticMatches.some((candidate) => candidate.targetId === material.id)
+	);
+	const tintableMaterials = dedupeMaterialsById([
+		...semanticGlasshouseMaterials,
+		...semanticTaggedMaterials
+	]);
 	const matchedMaterialNames =
-		semanticMatches.length > 0
-			? capabilities.materials
-					.filter((material) =>
-						semanticMatches.some((candidate) => candidate.targetId === material.id)
-					)
-					.map((material) => material.name)
+		tintableMaterials.length > 0
+			? tintableMaterials.map((material) => material.name)
 			: inferWindowTintMaterialNames(capabilities);
 	const matchedNameSet = new Set(matchedMaterialNames);
 

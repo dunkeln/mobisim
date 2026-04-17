@@ -85,7 +85,7 @@
 		</div>
 	{/if}
 
-	<div class="relative h-7 w-full overflow-hidden" bind:clientWidth={railWidth}>
+	<div class="relative h-5 w-full" bind:clientWidth={railWidth}>
 		{#if showValue}
 			<span
 				class="pointer-events-none absolute top-0 left-1/2 z-20 -translate-x-1/2 text-[0.68rem] font-medium tracking-[0.12em] text-boundary-secondary tabular-nums"
@@ -94,24 +94,24 @@
 			</span>
 		{/if}
 		<div
-			class="pointer-events-none absolute inset-y-0 left-0 z-10 w-14 bg-[linear-gradient(90deg,color-mix(in_oklab,var(--color-boundary-background)_88%,black),transparent)]"
+			class="pointer-events-none absolute inset-y-0 left-0 z-10 w-7 bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-boundary-background)_30%,transparent),transparent)]"
 		></div>
 		<div
-			class="pointer-events-none absolute inset-y-0 right-0 z-10 w-14 bg-[linear-gradient(270deg,color-mix(in_oklab,var(--color-boundary-background)_88%,black),transparent)]"
+			class="pointer-events-none absolute inset-y-0 right-0 z-10 w-7 bg-[linear-gradient(270deg,color-mix(in_srgb,var(--color-boundary-background)_30%,transparent),transparent)]"
 		></div>
 		{#each marks as mark (mark.key)}
 			<div
 				class={[
-					'pointer-events-none absolute w-[1.5px] -translate-x-1/2 -translate-y-1/2 bg-boundary-text',
+					'pointer-events-none absolute w-px -translate-x-1/2 -translate-y-1/2 rounded-full bg-boundary-text',
 					marksTopClass,
-					mark.level === 'major' && 'h-4',
-					mark.level === 'minor' && 'h-2'
+					mark.level === 'major' && 'h-3.5',
+					mark.level === 'minor' && 'h-1.5'
 				]}
 				style:left={`${mark.x}px`}
 				style:background-color={mark.selected
 					? 'var(--color-boundary-secondary)'
 					: 'var(--color-boundary-text)'}
-				style:opacity={mark.selected ? 0.92 : mark.opacity}
+				style:opacity={mark.selected ? 0.78 : mark.opacity * 0.68}
 			></div>
 		{/each}
 

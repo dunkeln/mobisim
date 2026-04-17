@@ -108,6 +108,46 @@ describe('vehicleNodeSelection', () => {
 		]);
 	});
 
+	it('keeps a non-additive reselection of the same target selected', () => {
+		vehicleNodeSelection.clear();
+
+		vehicleNodeSelection.select({
+			...baseSelection,
+			targetType: 'node',
+			targetId: 'engine',
+			targetName: 'Engine',
+			nodeIds: ['node-1'],
+			nodeName: 'Engine',
+			nodePath: 'Scene/Engine'
+		});
+
+		vehicleNodeSelection.select({
+			...baseSelection,
+			targetType: 'node',
+			targetId: 'engine',
+			targetName: 'Engine',
+			nodeIds: ['node-1'],
+			nodeName: 'Engine',
+			nodePath: 'Scene/Engine',
+			materialIndex: 1,
+			materialName: 'Engine Material'
+		});
+
+		expect(get(vehicleNodeSelection)).toEqual([
+			{
+				...baseSelection,
+				targetType: 'node',
+				targetId: 'engine',
+				targetName: 'Engine',
+				nodeIds: ['node-1'],
+				nodeName: 'Engine',
+				nodePath: 'Scene/Engine',
+				materialIndex: 1,
+				materialName: 'Engine Material'
+			}
+		]);
+	});
+
 	it('keeps additive reselection of the same node idempotent', () => {
 		vehicleNodeSelection.clear();
 
@@ -147,5 +187,33 @@ describe('vehicleNodeSelection', () => {
 				materialName: 'Glass'
 			}
 		]);
+	});
+
+	it('toggles a non-additive click off when the same target is clicked again', () => {
+		vehicleNodeSelection.clear();
+
+		vehicleNodeSelection.toggle({
+			...baseSelection,
+			targetType: 'node',
+			targetId: 'engine',
+			targetName: 'Engine',
+			nodeIds: ['node-1'],
+			nodeName: 'Engine',
+			nodePath: 'Scene/Engine'
+		});
+
+		expect(get(vehicleNodeSelection)).toHaveLength(1);
+
+		vehicleNodeSelection.toggle({
+			...baseSelection,
+			targetType: 'node',
+			targetId: 'engine',
+			targetName: 'Engine',
+			nodeIds: ['node-1'],
+			nodeName: 'Engine',
+			nodePath: 'Scene/Engine'
+		});
+
+		expect(get(vehicleNodeSelection)).toEqual([]);
 	});
 });

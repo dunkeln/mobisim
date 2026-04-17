@@ -232,23 +232,21 @@ See:
 
 Important defaults:
 
-- assets: `storage/vehicle-assets`
-- semantic overlay root: `storage/vehicle-semantic-overlays` or `SEMANTIC_MANIFEST_LOCAL_DIR`
-- semantic definitions and related stores: under `storage/`
+- assets: S3 in production and for the browser-facing inspection path
+- semantic overlays, proposals, and assignments: the same S3 bucket, keyed by object prefix
+- the app no longer depends on a local `storage/` tree for runtime state
 
 ## REST Surface You Will Actually Touch
 
 Vehicle inspection and asset routes:
 
 - `GET /api/vehicle-assets`
-- `GET /api/vehicle-assets/[assetId]/download`
 - `GET /api/vehicle-assets/[assetId]/inspection`
 - `POST /api/vehicle-assets/[assetId]/intent`
 - `POST /api/vehicle-assets/[assetId]/highlight`
 - `POST /api/vehicle-assets/[assetId]/paint`
 - `POST /api/vehicle-assets/[assetId]/window-tint`
 - `GET|POST /api/vehicle-assets/[assetId]/semantic-overlay`
-- `GET|POST /api/vehicle-assets/[assetId]/semantic-ingress...`
 
 Chat routes:
 

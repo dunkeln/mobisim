@@ -58,34 +58,33 @@
 	onpointercancel={deactivate}
 />
 
-<section class={['relative flex min-w-[2.75rem] items-center justify-center', className]}>
+<section class={['canvas-control', className]}>
 	<button
 		type="button"
-		class="flex h-9 min-w-[2.75rem] items-center justify-center rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_10%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_54%,transparent)] px-3.5 text-boundary-text/78 shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_9%,transparent),0_10px_24px_color-mix(in_oklab,var(--color-boundary-background)_24%,black)] backdrop-blur-xl"
+		class="lighting-control__button"
 		aria-expanded={isActive}
 		aria-label="Adjust lighting"
 		onpointerdown={activate}
 	>
 		{#if isActive}
-			<span
-				class="text-[0.68rem] font-medium tracking-[0.12em] text-boundary-secondary tabular-nums"
-			>
+			<span class="lighting-control__value">
 				{value.toFixed(2)}
 			</span>
 		{:else}
-			<Spotlight class="h-4 w-4" />
+			<Spotlight class="lighting-control__icon" size={14} />
 		{/if}
 	</button>
 
 	{#if isActive}
 		<div
-			class="pointer-events-auto absolute top-[calc(100%+0.5rem)] left-1/2 z-40 w-[11rem] -translate-x-1/2 rounded-full border border-[color:color-mix(in_oklab,var(--color-boundary-text)_12%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_56%,transparent)] px-2.5 py-1 shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_10%,transparent),0_10px_24px_color-mix(in_oklab,var(--color-boundary-background)_30%,black)] backdrop-blur-xl"
+			class="lighting-control__popover pointer-events-auto absolute top-[calc(100%+0.45rem)] left-1/2 z-40 w-[10.5rem] -translate-x-1/2"
 			bind:this={sliderContainer}
 		>
 			<Slider
 				bind:value
 				showValue={false}
 				id="lighting-control"
+				class="lighting-control__slider"
 				min={MIN_LIGHT_INTENSITY}
 				max={MAX_LIGHT_INTENSITY}
 				step={LIGHT_INTENSITY_STEP}
@@ -93,3 +92,90 @@
 		</div>
 	{/if}
 </section>
+
+<style>
+	.lighting-control__button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.75rem;
+		height: 1.75rem;
+		border-radius: 9999px;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		background:
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
+			);
+		color: color-mix(in oklab, var(--boundary-text) 46%, transparent);
+		cursor: pointer;
+		user-select: none;
+		touch-action: manipulation;
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		backdrop-filter: blur(16px) saturate(106%);
+		-webkit-backdrop-filter: blur(16px) saturate(106%);
+		transition:
+			background 180ms ease,
+			border-color 180ms ease,
+			box-shadow 180ms ease,
+			color 180ms ease;
+	}
+
+	.lighting-control__button:hover {
+		color: color-mix(in oklab, var(--boundary-text) 86%, transparent);
+		border-color: color-mix(in srgb, var(--color-boundary-text) 16%, transparent);
+		background:
+			radial-gradient(
+				44% 38% at 24% 18%,
+				color-mix(in srgb, var(--color-boundary-secondary) 10%, transparent),
+				transparent 72%
+			),
+			radial-gradient(
+				34% 32% at 76% 30%,
+				color-mix(in srgb, var(--color-boundary-secondary) 7%, transparent),
+				transparent 78%
+			),
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 5%, transparent), transparent 26%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-secondary) 6%, transparent),
+				color-mix(in srgb, var(--color-boundary-secondary) 2%, transparent) 55%,
+				color-mix(in srgb, var(--color-boundary-text) 1.25%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+			inset 0 0 20px color-mix(in srgb, var(--color-boundary-secondary) 5%, transparent),
+			0 12px 28px color-mix(in srgb, var(--color-boundary-background) 14%, transparent);
+		transform: translateY(-1px);
+	}
+
+	.lighting-control__icon {
+		flex-shrink: 0;
+		color: inherit;
+		opacity: 0.92;
+	}
+
+	.lighting-control__value {
+		font-size: 0.58rem;
+		font-weight: 500;
+		font-family: var(--font-mono, monospace);
+		letter-spacing: 0.06em;
+		tabular-nums: initial;
+		color: var(--boundary-secondary);
+	}
+
+	.lighting-control__popover {
+		position: absolute;
+		padding: 0;
+		isolation: isolate;
+	}
+
+	:global(.lighting-control__slider) {
+		position: relative;
+		z-index: 1;
+	}
+</style>

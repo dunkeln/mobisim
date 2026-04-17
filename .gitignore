@@ -1,11 +1,13 @@
 # Dependencies
 /node_modules
 
-# Local environment files
+# Local environment and secrets
 .env
 .env.*
 !.env.example
 !.env.test
+.envrc
+*.local
 
 # SvelteKit / Vite build outputs
 /.svelte-kit
@@ -21,6 +23,21 @@ vite.config.ts.timestamp-*
 /.vercel
 /.netlify
 /.wrangler
+
+# Terraform local state, provider caches, and plans
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 
 # Local tooling and editor state
 /.codex
@@ -43,7 +60,10 @@ pnpm-debug.log*
 
 # OS-generated files
 .DS_Store
+**/.DS_Store
 Thumbs.db
 
-# storage
-storage/
+# Local data and scratch space
+/storage/
+.cache/
+.eslintcache

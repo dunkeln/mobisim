@@ -3,21 +3,16 @@ import type {
 	VehicleSemanticOverlay,
 	VehicleSemanticPartUnit
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
-import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+import {
+	getSelectionConstraintNodeIds,
+	type VehicleNodeSelection
+} from '$lib/stores/vehicle-node-selection';
 
 export function partMatchesGroup(
 	part: VehicleSemanticPartUnit,
 	group: VehicleSemanticGroup
 ): boolean {
-	if (group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId))) {
-		return true;
-	}
-
-	if (group.materialIds.some((materialId) => part.materialIds.includes(materialId))) {
-		return true;
-	}
-
-	return false;
+	return group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId));
 }
 
 export type VehicleSemanticOverlayRuntimeIndex = {
@@ -90,7 +85,7 @@ export function buildVehicleSemanticOverlayRuntimeIndex(
 }
 
 function getSelectionNodeIds(selection: VehicleNodeSelection): string[] {
-	return selection.nodeIds && selection.nodeIds.length > 0 ? selection.nodeIds : [selection.nodeId];
+	return getSelectionConstraintNodeIds(selection);
 }
 
 export function getSemanticGroupCoveredNodeIds(

@@ -1,16 +1,16 @@
 import { writable } from 'svelte/store';
-import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
 import type {
 	VehicleSemanticOverlaySnapshot,
 	VehicleSemanticOverlay,
-	VehicleSemanticOverlayStatus
+	VehicleSemanticOverlayStatus,
+	type VehicleSemanticGroup
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 
 export type SemanticRuntimeAssetState = {
 	overlay: VehicleSemanticOverlay | null;
 	overlayStatus: VehicleSemanticOverlayStatus;
-	ingressBindings: SemanticIngressBinding[];
+	overlayRevision: number | null;
 	selectedGroupId: string | null;
 };
 
@@ -21,7 +21,6 @@ type SemanticRuntimeState = {
 export type SemanticRuntimeAssetPatch = {
 	overlaySnapshot?: VehicleSemanticOverlaySnapshot;
 	overlayStatus?: VehicleSemanticOverlayStatus;
-	ingressBindings?: SemanticIngressBinding[];
 	selectedGroupId?: string | null;
 };
 
@@ -35,7 +34,7 @@ function cloneAssetState(
 	return {
 		overlay: state?.overlay ?? null,
 		overlayStatus: state?.overlayStatus ?? 'unknown',
-		ingressBindings: [...(state?.ingressBindings ?? [])],
+		overlayRevision: state?.overlayRevision ?? null,
 		selectedGroupId: state?.selectedGroupId ?? null
 	};
 }
@@ -78,6 +77,44 @@ function shouldApplyOverlaySnapshot(
 	return incomingRevision >= currentRevision;
 }
 
+function mergeUniqueValues(values: string[], incoming: string[]): string[] {
+	return Array.from(new Set([...values, ...incoming]));
+}
+
+function mergeSemanticGroup(
+	current: VehicleSemanticGroup,
+	incoming: VehicleSemanticGroup
+): VehicleSemanticGroup {
+	const preferred = incoming.confidence >= current.confidence ? incoming : current;
+	return {
+		...preferred,
+		aliases: mergeUniqueValues(current.aliases, incoming.aliases),
+		supports: Array.from(new Set([...current.supports, ...incoming.supports])),
+		nodeIds: mergeUniqueValues(current.nodeIds, incoming.nodeIds),
+		meshIds: mergeUniqueValues(current.meshIds, incoming.meshIds),
+		materialIds: mergeUniqueValues(current.materialIds, incoming.materialIds)
+	};
+}
+
+function sanitizeOverlayForRuntime(
+	overlay: VehicleSemanticOverlay | null
+): VehicleSemanticOverlay | null {
+	if (!overlay) {
+		return null;
+	}
+
+	const groupsById = new Map<string, VehicleSemanticGroup>();
+	for (const group of overlay.acceptedGroups) {
+		const existing = groupsById.get(group.id);
+		groupsById.set(group.id, existing ? mergeSemanticGroup(existing, group) : group);
+	}
+
+	return {
+		...overlay,
+		acceptedGroups: Array.from(groupsById.values())
+	};
+}
+
 function normalizeSelectedGroupId(
 	selectedGroupId: string | null,
 	overlay: VehicleSemanticOverlay | null
@@ -115,14 +152,16 @@ function createSemanticRuntimeStore() {
 
 				const nextAssetState: SemanticRuntimeAssetState = {
 					...currentAssetState,
-					overlay: overlaySnapshot ? overlaySnapshot.overlay : currentAssetState.overlay,
+					overlay: overlaySnapshot
+						? sanitizeOverlayForRuntime(overlaySnapshot.overlay)
+						: currentAssetState.overlay,
 					overlayStatus:
 						patch.overlayStatus ??
 						(overlaySnapshot ? overlaySnapshot.overlayStatus : currentAssetState.overlayStatus),
-					ingressBindings:
-						patch.ingressBindings !== undefined
-							? [...patch.ingressBindings]
-							: currentAssetState.ingressBindings,
+					overlayRevision:
+						overlaySnapshot
+							? overlaySnapshot.overlayRevision ?? overlaySnapshot.overlay?.revision ?? null
+							: currentAssetState.overlayRevision,
 					selectedGroupId:
 						patch.selectedGroupId !== undefined
 							? patch.selectedGroupId

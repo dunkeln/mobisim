@@ -193,6 +193,57 @@ export function collectVisibleNodeIdsForIsolation(
 	return visibleNodeIds;
 }
 
+export function buildRenderableHighlightOperations(
+	structure: Awaited<ReturnType<typeof deriveStructuralAssetSnapshot>>,
+	capabilities: Awaited<ReturnType<typeof deriveVehicleInspectionCapabilities>>,
+	nodeIds: string[],
+	materialIds: string[],
+	targetName: string,
+	value: [number, number, number, number]
+): SharedVehicleInspectionPatchOperation[] {
+	const availableMaterialIds = new Set(capabilities.materials.map((material) => material.id));
+	const highlightedMaterialIds = new Set(
+		materialIds.filter((materialId) => availableMaterialIds.has(materialId))
+	);
+	const meshById = new Map(structure.meshes.map((mesh) => [mesh.id, mesh]));
+	const nodeById = new Map(structure.nodes.map((node) => [node.id, node]));
+
+	const materialOperations = Array.from(highlightedMaterialIds)
+		.sort((left, right) => left.localeCompare(right))
+		.map((materialId) => ({
+			targetType: 'material' as const,
+			targetId: materialId,
+			targetName,
+			op: 'set_overlay_highlight' as const,
+			value
+		}));
+
+	const nodeOperations = Array.from(new Set(nodeIds))
+		.filter((nodeId) => {
+			const node = nodeById.get(nodeId);
+			if (!node?.meshId) {
+				return false;
+			}
+
+			const mesh = meshById.get(node.meshId);
+			if (!mesh) {
+				return true;
+			}
+
+			return !mesh.materialIds.some((materialId) => highlightedMaterialIds.has(materialId));
+		})
+		.sort((left, right) => left.localeCompare(right))
+		.map((nodeId) => ({
+			targetType: 'node' as const,
+			targetId: nodeId,
+			targetName,
+			op: 'set_overlay_highlight' as const,
+			value
+		}));
+
+	return [...materialOperations, ...nodeOperations];
+}
+
 export function validatePlannedOperations(
 	assetId: Parameters<typeof deriveVehicleInspectionCapabilities>[0],
 	presetId: string,

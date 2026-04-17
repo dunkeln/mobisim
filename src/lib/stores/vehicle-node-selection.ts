@@ -6,6 +6,11 @@ export type VehicleSelectionTarget = {
 	targetType?: 'part' | 'node';
 	targetId?: string;
 	targetName?: string;
+	pickedNodeId?: string;
+	pickedNodeName?: string;
+	pickedNodePath?: string;
+	pickedMaterialIndex?: number;
+	pickedMaterialName?: string;
 	nodeIds?: string[];
 	anchorNodeId?: string;
 	nodeId: string;
@@ -38,7 +43,16 @@ export function selectionContainsNodeId(
 	selection: VehicleSelectionTarget,
 	nodeId: string
 ): boolean {
-	return (selection.nodeIds ?? [selection.nodeId]).includes(nodeId);
+	return getSelectionConstraintNodeIds(selection).includes(nodeId);
+}
+
+export function getSelectionConstraintNodeIds(selection: VehicleSelectionTarget): string[] {
+	return Array.from(
+		new Set([
+			...(selection.pickedNodeId ? [selection.pickedNodeId] : []),
+			...(selection.nodeIds ?? [selection.nodeId])
+		])
+	);
 }
 
 function createVehicleNodeSelectionStore() {
@@ -64,11 +78,33 @@ function createVehicleNodeSelectionStore() {
 				if (existing) {
 					return [
 						...otherAssets,
-						...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)
+						...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey),
+						selection
 					];
 				}
 
 				return [...otherAssets, selection];
+			});
+		},
+		toggle(selection: VehicleSelectionTarget, additive = false): void {
+			update((current) => {
+				const scoped = current.filter((entry) => entry.assetId === selection.assetId);
+				const otherAssets = current.filter((entry) => entry.assetId !== selection.assetId);
+				const selectionKey = getSelectionKey(selection);
+				const existing = scoped.find((entry) => getSelectionKey(entry) === selectionKey);
+
+				if (!existing) {
+					return [...otherAssets, ...scoped, selection];
+				}
+
+				if (additive) {
+					return [...otherAssets, ...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)];
+				}
+
+				return [
+					...otherAssets,
+					...scoped.filter((entry) => getSelectionKey(entry) !== selectionKey)
+				];
 			});
 		},
 		clear(assetId?: VehicleAssetId): void {

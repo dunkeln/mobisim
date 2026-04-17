@@ -8,11 +8,10 @@ info:
     The API is intentionally centered around one active vehicle asset at a time.
     The core shape is:
 
-    - assets and asset delivery
+    - assets and asset registry
     - inspection-facing structural reads
     - deterministic intent execution
     - semantic truth through the semantic overlay
-    - live telemetry through semantic ingress
     - FRIDAY interaction transport under /api/chat
 
     This spec stays focused on the canonical surface described in
@@ -28,7 +27,6 @@ tags:
   - name: Inspection
   - name: Intent
   - name: Semantic Overlay
-  - name: Semantic Ingress
   - name: Chat
 
 paths:
@@ -46,24 +44,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/VehicleAsset'
-
-  /api/vehicle-assets/{assetId}/download:
-    get:
-      tags: [Assets]
-      summary: Download a vehicle GLB asset
-      operationId: downloadVehicleAsset
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-      responses:
-        '200':
-          description: GLB payload
-          content:
-            model/gltf-binary:
-              schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/Error404'
 
   /api/vehicle-assets/{assetId}/inspection:
     get:
@@ -156,147 +136,6 @@ paths:
         '502':
           $ref: '#/components/responses/Error502'
 
-  /api/vehicle-assets/{assetId}/semantic-ingress:
-    get:
-      tags: [Semantic Ingress]
-      summary: List semantic ingress bindings
-      operationId: listSemanticIngressBindings
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-        - name: targetType
-          in: query
-          required: false
-          schema:
-            $ref: '#/components/schemas/SemanticIngressTargetType'
-        - name: targetId
-          in: query
-          required: false
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Semantic ingress binding store
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticIngressStore'
-        '404':
-          $ref: '#/components/responses/Error404'
-        '500':
-          $ref: '#/components/responses/Error500'
-    post:
-      tags: [Semantic Ingress]
-      summary: Create or replace a semantic ingress binding
-      operationId: assignSemanticIngress
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AssignSemanticIngressRequest'
-      responses:
-        '200':
-          description: Semantic ingress binding
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticIngressBinding'
-        '400':
-          $ref: '#/components/responses/Error400'
-        '404':
-          $ref: '#/components/responses/Error404'
-
-  /api/vehicle-assets/{assetId}/semantic-ingress/{ingressId}:
-    get:
-      tags: [Semantic Ingress]
-      summary: Read one semantic ingress snapshot
-      operationId: getSemanticIngressSnapshot
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-        - $ref: '#/components/parameters/IngressId'
-      responses:
-        '200':
-          description: Binding and bounded sample window
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticIngressSnapshot'
-        '404':
-          $ref: '#/components/responses/Error404'
-    post:
-      tags: [Semantic Ingress]
-      summary: Ingest semantic telemetry samples
-      operationId: ingestSemanticIngressSamples
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-        - $ref: '#/components/parameters/IngressId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SemanticIngressIngestRequest'
-      responses:
-        '200':
-          description: Updated semantic ingress snapshot
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticIngressSnapshot'
-        '400':
-          $ref: '#/components/responses/Error400'
-        '404':
-          $ref: '#/components/responses/Error404'
-    delete:
-      tags: [Semantic Ingress]
-      summary: Delete a semantic ingress binding
-      operationId: deleteSemanticIngress
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-        - $ref: '#/components/parameters/IngressId'
-      responses:
-        '200':
-          description: Binding removed
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [removed]
-                properties:
-                  removed:
-                    type: boolean
-                    const: true
-        '400':
-          $ref: '#/components/responses/Error400'
-        '404':
-          $ref: '#/components/responses/Error404'
-
-  /api/vehicle-assets/{assetId}/semantic-ingress/{ingressId}/events:
-    get:
-      tags: [Semantic Ingress]
-      summary: Stream semantic ingress samples over SSE
-      operationId: streamSemanticIngressEvents
-      parameters:
-        - $ref: '#/components/parameters/AssetId'
-        - $ref: '#/components/parameters/IngressId'
-      responses:
-        '200':
-          description: Server-sent event stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: |
-                  Event stream with:
-                  - semantic-ingress-snapshot
-                  - semantic-ingress-sample
-                  - heartbeat
-        '404':
-          $ref: '#/components/responses/Error404'
-
   /api/chat:
     post:
       tags: [Chat]
@@ -381,13 +220,6 @@ components:
       schema:
         type: string
       description: Vehicle asset identifier from the asset registry
-    IngressId:
-      name: ingressId
-      in: path
-      required: true
-      schema:
-        type: string
-      description: Semantic ingress binding identifier
 
   responses:
     Error400:
@@ -545,151 +377,6 @@ components:
             - $ref: '#/components/schemas/SemanticOverlay'
             - type: 'null'
 
-    SemanticIngressTargetType:
-      type: string
-      enum: [semantic_group, semantic_node]
-
-    SemanticIngressTransport:
-      type: string
-      enum: [rest_sse, stream]
-
-    SemanticIngressBinding:
-      type: object
-      additionalProperties: false
-      description: |
-        One live telemetry binding attached to one semantic target on one
-        asset. Bindings are created per target, transport, and scope.
-      required:
-        - ingressId
-        - assetId
-        - structuralGeneratedAt
-        - scope
-        - targetType
-        - targetId
-        - transport
-        - assignedAt
-        - assignedBy
-      properties:
-        ingressId:
-          type: string
-        assetId:
-          type: string
-        structuralGeneratedAt:
-          type: string
-        scope:
-          type: string
-          enum: [global, user]
-        scopeKey:
-          type: string
-        targetType:
-          $ref: '#/components/schemas/SemanticIngressTargetType'
-        targetId:
-          type: string
-        targetLabel:
-          type: string
-        transport:
-          $ref: '#/components/schemas/SemanticIngressTransport'
-        assignedAt:
-          type: string
-          format: date-time
-        assignedBy:
-          type: string
-          enum: [model, user]
-        restPath:
-          type: string
-        ssePath:
-          type: string
-        streamPath:
-          type: string
-
-    SemanticIngressNumericSample:
-      type: object
-      additionalProperties: false
-      description: |
-        One numeric telemetry sample flowing through a semantic ingress path.
-      required: [timestamp, value]
-      properties:
-        timestamp:
-          type: string
-          format: date-time
-        value:
-          type: number
-        metric:
-          type: string
-        unit:
-          type: string
-        source:
-          type: string
-
-    SemanticIngressStore:
-      type: object
-      additionalProperties: false
-      required: [assetId, structuralGeneratedAt, bindings]
-      description: |
-        Asset-scoped ingress store containing visible bindings and any persisted
-        sample windows keyed by ingress id.
-      properties:
-        assetId:
-          type: string
-        structuralGeneratedAt:
-          type: string
-        bindings:
-          type: array
-          items:
-            $ref: '#/components/schemas/SemanticIngressBinding'
-        samplesByIngress:
-          type: object
-          additionalProperties:
-            type: array
-            items:
-              $ref: '#/components/schemas/SemanticIngressNumericSample'
-
-    AssignSemanticIngressRequest:
-      type: object
-      additionalProperties: false
-      required: [targetType, targetId, transport]
-      properties:
-        targetType:
-          $ref: '#/components/schemas/SemanticIngressTargetType'
-        targetId:
-          type: string
-        targetLabel:
-          type: string
-        transport:
-          $ref: '#/components/schemas/SemanticIngressTransport'
-        assignedBy:
-          type: string
-          enum: [model, user]
-
-    SemanticIngressSnapshot:
-      type: object
-      additionalProperties: false
-      required: [binding, samples]
-      description: |
-        Live read shape for one semantic ingress binding and its bounded sample
-        window.
-      properties:
-        binding:
-          $ref: '#/components/schemas/SemanticIngressBinding'
-        samples:
-          type: array
-          items:
-            $ref: '#/components/schemas/SemanticIngressNumericSample'
-
-    SemanticIngressIngestRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        sample:
-          $ref: '#/components/schemas/SemanticIngressNumericSample'
-        samples:
-          type: array
-          items:
-            $ref: '#/components/schemas/SemanticIngressNumericSample'
-      anyOf:
-        - required: [sample]
-        - required: [samples]
-
     FooterChatRequest:
       type: object
       additionalProperties: true
@@ -740,10 +427,6 @@ components:
           oneOf:
             - $ref: '#/components/schemas/SemanticOverlay'
             - type: 'null'
-        semanticIngressBindings:
-          type: array
-          items:
-            $ref: '#/components/schemas/SemanticIngressBinding'
 
     AudioChatForm:
       type: object

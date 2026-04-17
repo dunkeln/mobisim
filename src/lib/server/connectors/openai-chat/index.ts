@@ -3,6 +3,7 @@ import { buildPresentationRestoreFromContext, summarizeRestoreInstruction } from
 import { getOpenAIChatClient } from './client';
 import {
 	OpenAIChatConfigError,
+	OpenAIChatExecutionError,
 	OpenAIChatInputError,
 	OpenAIChatUpstreamError
 } from './errors';
@@ -17,18 +18,19 @@ import { toOpenAIMessages } from './prompt';
 import { CHAT_TOOLS } from './tool-definitions';
 import { getToolModel } from './model-routing';
 import { withActiveSpan } from '$lib/server/telemetry';
+import { loadSceneDagWithSemanticOverlayState } from '$lib/server/scene-dag';
 import {
+	attemptDirectSemanticGroupDelete,
+	attemptDirectSemanticGroupPatch,
 	attemptDirectSemanticEdit,
 	attemptDirectVehicleEdit,
 	executeToolCall,
 	mergePatchOperations,
-	resolveSemanticOverlayPromptContext,
 	resolveSidebarAction,
 	resolveSupplementaryListAction
 } from './execution';
 import {
 	MAX_TOOL_ROUNDS,
-	type SemanticOverlayPromptContext,
 	GET_VEHICLE_TOOL_CATALOG_TOOL_NAME
 } from './internal';
 import {
@@ -37,6 +39,7 @@ import {
 	describeFooterChatPolicy
 } from './policy';
 import { describeIntentDraft, resolveIntentDraft } from './intent-resolver';
+import { resolveSemanticSidebarCadence } from './execution';
 import type {
 	FooterChatExecutionContext,
 	FooterChatPresentationContext,
@@ -52,6 +55,7 @@ import {
 
 export {
 	OpenAIChatConfigError,
+	OpenAIChatExecutionError,
 	OpenAIChatInputError,
 	OpenAIChatUpstreamError
 } from './errors';
@@ -127,136 +131,58 @@ function parseToolPayload(content: string | null): Record<string, unknown> | nul
 	}
 }
 
-function requestWantsSupplementaryFallback(message: string): boolean {
-	return /\b(footer|supplementary|list|options|status|available tools|what tools are available|what can you do here|what can i do here|capabilities|changed targets|what changed)\b/i.test(
-		message
-	);
-}
-
-function summarizeOperationTargets(operations: FooterChatVehiclePatchOperation[]): string | undefined {
-	const labels = summarizeTargets(operations)
-		.map((target) => target.targetName ?? target.targetId)
-		.filter((value, index, values) => value && values.indexOf(value) === index);
-
-	if (labels.length === 0) {
-		return undefined;
-	}
-
-	if (labels.length <= 3) {
-		return labels.join(', ');
-	}
-
-	return `${labels.slice(0, 3).join(', ')} +${labels.length - 3} more`;
-}
-
-function buildSupplementaryListFromCatalogPayload(
-	payload: Record<string, unknown>
-) {
-	const tools = Array.isArray(payload.tools) ? payload.tools : [];
-	const recommendations = Array.isArray(payload.recommendations) ? payload.recommendations : [];
-	const entries = Object.fromEntries(
-		tools
-			.map((tool) => {
-				if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
-					return null;
-				}
-
-				const name = typeof tool.name === 'string' ? tool.name.trim() : '';
-				const purpose = typeof tool.purpose === 'string' ? tool.purpose.trim() : '';
-				if (!name || !purpose) {
-					return null;
-				}
-
-				return [name, purpose] as const;
-			})
-			.filter((entry): entry is readonly [string, string] => entry !== null)
-			.slice(0, 5)
-	);
-
-	const primaryRecommendation = recommendations.find(
-		(value): value is string => typeof value === 'string' && value.trim().length > 0
-	);
-	if (primaryRecommendation) {
-		entries.Next = primaryRecommendation.trim();
-	}
-
-	return normalizeSupplementaryListState({
-		active: Object.keys(entries).length > 0,
-		entries
-	});
-}
-
-function buildSupplementaryListFromExecutionResult(input: {
-	message: string;
-	vehiclePatchLabel?: string;
+function hasCommittedToolSideEffects(input: {
 	vehiclePatchOperations: FooterChatVehiclePatchOperation[];
-	selectionUpdateCount: number;
-	finalText: string;
-}) {
-	const entries: Record<string, string> = {};
-	const actionSummary = input.vehiclePatchLabel?.trim() || input.finalText.trim();
-	if (actionSummary) {
-		entries.Action = actionSummary;
-	}
-
-	const targets = summarizeOperationTargets(input.vehiclePatchOperations);
-	if (targets) {
-		entries.Targets = targets;
-	}
-
-	if (input.selectionUpdateCount > 0) {
-		entries.Selection = `${input.selectionUpdateCount} selected`;
-	}
-
-	if (
-		Object.keys(entries).length === 1 &&
-		!/\b(changed targets|what changed|footer|supplementary|list|status|options)\b/i.test(
-			input.message
-		)
-	) {
-		return undefined;
-	}
-
-	return normalizeSupplementaryListState({
-		active: Object.keys(entries).length > 0,
-		entries
-	});
+	selectionUpdate?: VehicleNodeSelection[];
+	semanticOverlayKnown: boolean;
+	selectedGroupIdChanged: boolean;
+	sidebarChanged: boolean;
+	supplementaryListChanged: boolean;
+}): boolean {
+	return (
+		input.vehiclePatchOperations.length > 0 ||
+		(input.selectionUpdate?.length ?? 0) > 0 ||
+		input.semanticOverlayKnown ||
+		input.selectedGroupIdChanged ||
+		input.sidebarChanged ||
+		input.supplementaryListChanged
+	);
 }
 
-function buildSupplementaryListFallback(input: {
-	message: string;
-	existing: FooterChatResponse['supplementaryList'];
-	toolCatalogPayload?: Record<string, unknown>;
-	vehiclePatchLabel?: string;
+function buildCommittedToolFallbackMessage(input: {
 	vehiclePatchOperations: FooterChatVehiclePatchOperation[];
-	selectionUpdateCount: number;
-	finalText: string;
-}) {
-	const existingActive =
-		input.existing?.active === true && Object.keys(input.existing.entries ?? {}).length > 0;
-	if (existingActive || !requestWantsSupplementaryFallback(input.message)) {
-		return input.existing;
+	selectionUpdate?: VehicleNodeSelection[];
+	semanticOverlayKnown: boolean;
+}): string {
+	if (input.semanticOverlayKnown) {
+		return 'Applied the requested semantic update.';
 	}
 
-	const executionFallback = buildSupplementaryListFromExecutionResult({
-		message: input.message,
-		vehiclePatchLabel: input.vehiclePatchLabel,
-		vehiclePatchOperations: input.vehiclePatchOperations,
-		selectionUpdateCount: input.selectionUpdateCount,
-		finalText: input.finalText
-	});
-	if (executionFallback?.active) {
-		return executionFallback;
+	if ((input.selectionUpdate?.length ?? 0) > 0) {
+		return 'Updated the current selection.';
 	}
 
-	const catalogFallback = input.toolCatalogPayload
-		? buildSupplementaryListFromCatalogPayload(input.toolCatalogPayload)
-		: undefined;
-	if (catalogFallback?.active) {
-		return catalogFallback;
+	if (input.vehiclePatchOperations.length > 0) {
+		return 'Applied the requested vehicle edit.';
 	}
 
-	return input.existing;
+	return 'Applied the requested update.';
+}
+
+async function persistContextHistorySafely(input: {
+	userId?: string;
+	request: Parameters<typeof persistContextHistory>[0]['request'];
+	response: Parameters<typeof persistContextHistory>[0]['response'];
+	rawUserMessage: string;
+}): Promise<void> {
+	try {
+		await persistContextHistory(input);
+	} catch (error) {
+		console.error(
+			'chat history persistence failed',
+			error instanceof Error ? error.message : error
+		);
+	}
 }
 
 export function buildHighlightOverrideRestore(input: {
@@ -370,13 +296,32 @@ export async function createFooterChatResponse(
 			}
 		},
 		async () => {
-			try {
-				let effectiveRoute = route;
-				const semanticOverlayForTrace: SemanticOverlayPromptContext = {
-					status: 'unknown',
-					sidebarCadence: 'stable'
-				};
+			let vehiclePatchOperations: FooterChatVehiclePatchOperation[] = [];
+			let vehiclePatchLabel: string | undefined;
+			let presentationRestore = undefined;
+			let selectionUpdate: VehicleNodeSelection[] | undefined = undefined;
+			let selectionUpdateLabel: string | undefined;
+			let latestSemanticOverlay = undefined;
+			let latestSemanticOverlayStatus: FooterChatResponse['semanticOverlayStatus'] = 'unknown';
+			let currentSelectedGroupId = normalized.selectedGroupId;
+			let sidebar = normalized.sidebar;
+			let supplementaryList = normalized.supplementaryList;
+			const toolCallsUsed: string[] = [];
+			let latestToolTrace:
+				| Pick<
+						NonNullable<FooterChatResponse['trace']>,
+						| 'executedToolDomain'
+						| 'executedAction'
+						| 'affectedTargetCount'
+						| 'destructiveScope'
+						| 'approvalSummary'
+				  >
+				| undefined;
+			let toolRoundsUsed = 0;
+			let clarificationIssued = false;
+			let effectiveRoute = route;
 
+			try {
 				if (route === 'presentation_restore') {
 					const presentationRestore = buildPresentationRestoreFromContext(
 						normalized.message,
@@ -392,7 +337,7 @@ export async function createFooterChatResponse(
 						presentationRestore,
 							trace: {
 								route,
-								semanticOverlayStatus: semanticOverlayForTrace.status,
+								semanticOverlayStatus: 'unknown',
 								toolCalls: [],
 								sidebarAction: 'unchanged',
 								supplementaryListAction: 'unchanged',
@@ -418,7 +363,7 @@ export async function createFooterChatResponse(
 						},
 						trace: {
 							route: 'llm',
-							semanticOverlayStatus: semanticOverlayForTrace.status,
+							semanticOverlayStatus: 'unknown',
 							toolCalls: [],
 							sidebarAction: 'unchanged',
 							supplementaryListAction: 'unchanged',
@@ -433,6 +378,58 @@ export async function createFooterChatResponse(
 				}
 
 				if (policy.mode === 'direct') {
+					const directSemanticPatchResponse = await attemptDirectSemanticGroupPatch(
+						normalized,
+						model,
+						executeToolCall
+					);
+					if (directSemanticPatchResponse) {
+						return {
+							...directSemanticPatchResponse,
+							trace: {
+								route: 'direct_edit',
+								semanticOverlayStatus:
+									directSemanticPatchResponse.semanticOverlayStatus ?? 'unknown',
+								toolCalls: ['edit_vehicle_semantics'],
+								sidebarAction: 'unchanged',
+								supplementaryListAction: 'unchanged',
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+								toolRoundsUsed: 0,
+								clarificationIssued: false,
+								composedToolChain: false,
+								...(directSemanticPatchResponse.trace ?? {})
+							}
+						};
+					}
+
+					const directSemanticDeleteResponse = await attemptDirectSemanticGroupDelete(
+						normalized,
+						model,
+						executeToolCall
+					);
+					if (directSemanticDeleteResponse) {
+						return {
+							...directSemanticDeleteResponse,
+							trace: {
+								route: 'direct_edit',
+								semanticOverlayStatus:
+									directSemanticDeleteResponse.semanticOverlayStatus ?? 'unknown',
+								toolCalls: ['edit_vehicle_semantics'],
+								sidebarAction: 'unchanged',
+								supplementaryListAction: 'unchanged',
+								...historyTrace,
+								plannerModel: model,
+								planningMode: 'direct',
+								toolRoundsUsed: 0,
+								clarificationIssued: false,
+								composedToolChain: false,
+								...(directSemanticDeleteResponse.trace ?? {})
+							}
+						};
+					}
+
 					const directSemanticResponse = await attemptDirectSemanticEdit(
 						normalized,
 						model,
@@ -452,7 +449,8 @@ export async function createFooterChatResponse(
 								planningMode: 'direct',
 								toolRoundsUsed: 0,
 								clarificationIssued: false,
-								composedToolChain: false
+								composedToolChain: false,
+								...(directSemanticResponse.trace ?? {})
 							}
 						};
 					}
@@ -471,7 +469,7 @@ export async function createFooterChatResponse(
 							),
 							trace: {
 								route: 'direct_edit',
-								semanticOverlayStatus: semanticOverlayForTrace.status,
+								semanticOverlayStatus: 'unknown',
 								toolCalls: [],
 								sidebarAction: 'unchanged',
 								supplementaryListAction: 'unchanged',
@@ -486,32 +484,38 @@ export async function createFooterChatResponse(
 					}
 				}
 
-				const semanticOverlay = await resolveSemanticOverlayPromptContext(normalized);
+				const sceneDag = normalized.assetId
+					? await loadSceneDagWithSemanticOverlayState({
+							assetId: normalized.assetId,
+							selectedNodes: normalized.selectedNodes,
+							selectedGroupId: normalized.selectedGroupId,
+							presentation: normalized.presentation
+					  })
+					: null;
+				const semanticOverlay = sceneDag
+					? {
+							status: sceneDag.semanticOverlayStatus,
+							overlay: sceneDag.semanticOverlay ?? undefined,
+							sidebarCadence: resolveSemanticSidebarCadence(
+								normalized,
+								sceneDag.semanticOverlayStatus,
+								sceneDag.semanticOverlay ?? undefined
+							)
+					  }
+					: { status: 'unknown' as const, sidebarCadence: 'stable' as const };
 				const openai = getOpenAIChatClient();
 				const messages = toOpenAIMessages({
 					input: normalized,
 					semanticOverlay,
+					sceneDag,
 					historyContext,
 					policySummary: describeFooterChatPolicy(policy),
 					intentSummary: describeIntentDraft(intentDraft),
 					describePresentationTargets
 				});
 
-				let vehiclePatchOperations: FooterChatVehiclePatchOperation[] = [];
-				let vehiclePatchLabel: string | undefined;
-				let presentationRestore = undefined;
-				let selectionUpdate: VehicleNodeSelection[] | undefined = undefined;
-				let selectionUpdateLabel: string | undefined;
-				let latestSemanticOverlay = undefined;
-				let latestSemanticOverlayStatus = semanticOverlay.status;
-				let latestSemanticIngressBindings = undefined;
-				let latestSemanticIngressMutation = undefined;
-				let sidebar = normalized.sidebar;
-				let supplementaryList = normalized.supplementaryList;
+				latestSemanticOverlayStatus = semanticOverlay.status;
 				let latestToolCatalogPayload: Record<string, unknown> | undefined;
-				const toolCallsUsed: string[] = [];
-				let toolRoundsUsed = 0;
-				let clarificationIssued = false;
 				let toolFailureMessage: string | undefined;
 
 				let completion = await openai.chat.completions.create({
@@ -543,7 +547,8 @@ export async function createFooterChatResponse(
 							toolCall,
 							normalized.assetId,
 							normalized.selectedNodes,
-							normalized.presentation
+							normalized.presentation,
+							currentSelectedGroupId
 						);
 						messages.push(toolResult.message);
 						const toolError = getToolResultError(toolResult);
@@ -589,12 +594,12 @@ export async function createFooterChatResponse(
 							latestSemanticOverlayStatus = toolResult.semanticOverlay ? 'fresh' : 'missing';
 						}
 
-						if (toolResult.semanticIngressBindings) {
-							latestSemanticIngressBindings = toolResult.semanticIngressBindings;
+						if (toolResult.selectedGroupId !== undefined) {
+							currentSelectedGroupId = toolResult.selectedGroupId;
 						}
 
-						if (toolResult.semanticIngressMutation) {
-							latestSemanticIngressMutation = toolResult.semanticIngressMutation;
+						if (toolResult.trace) {
+							latestToolTrace = toolResult.trace;
 						}
 					}
 
@@ -627,8 +632,7 @@ export async function createFooterChatResponse(
 						supplementaryList,
 						semanticOverlayStatus: latestSemanticOverlayStatus,
 						semanticOverlay: latestSemanticOverlay,
-						semanticIngressBindings: latestSemanticIngressBindings,
-						semanticIngressMutation: latestSemanticIngressMutation,
+						selectedGroupId: currentSelectedGroupId,
 						trace: {
 							route: effectiveRoute,
 							semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -643,11 +647,12 @@ export async function createFooterChatResponse(
 							planningMode,
 							toolRoundsUsed,
 							clarificationIssued: false,
-							composedToolChain: toolCallsUsed.length > 1
+							composedToolChain: toolCallsUsed.length > 1,
+							...(latestToolTrace ?? {})
 						}
 					};
 
-					await persistContextHistory({
+					await persistContextHistorySafely({
 						userId: executionContext.userId,
 						request: normalized,
 						response,
@@ -666,14 +671,11 @@ export async function createFooterChatResponse(
 					: content?.trim();
 
 				clarificationIssued = !!text && /\?\s*$/.test(text);
-				supplementaryList = buildSupplementaryListFallback({
-					message: normalized.message,
-					existing: supplementaryList,
-					toolCatalogPayload: latestToolCatalogPayload,
-					vehiclePatchLabel,
-					vehiclePatchOperations,
-					selectionUpdateCount: selectionUpdate?.length ?? 0,
-					finalText: text ?? ''
+				const planningMode = deriveObservedPlanningMode({
+					policy,
+					route: effectiveRoute,
+					toolCallsUsed,
+					clarificationIssued
 				});
 				const highlightOverrideRestore = buildHighlightOverrideRestore({
 					presentation: normalized.presentation,
@@ -714,8 +716,7 @@ export async function createFooterChatResponse(
 							supplementaryList,
 							semanticOverlayStatus: latestSemanticOverlayStatus,
 							semanticOverlay: latestSemanticOverlay,
-							semanticIngressBindings: latestSemanticIngressBindings,
-							semanticIngressMutation: latestSemanticIngressMutation,
+							selectedGroupId: currentSelectedGroupId,
 							trace: {
 								route: effectiveRoute,
 								semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -730,61 +731,14 @@ export async function createFooterChatResponse(
 								planningMode,
 								toolRoundsUsed,
 								clarificationIssued: false,
-								composedToolChain: toolCallsUsed.length > 1
+								composedToolChain: toolCallsUsed.length > 1,
+								...(latestToolTrace ?? {})
 							}
 						};
 					}
 
 					throw new OpenAIChatConfigError('OpenAI returned an empty response.');
 				}
-
-				if (
-					vehiclePatchOperations.length === 0 &&
-					!presentationRestore &&
-					!(selectionUpdate && selectionUpdate.length > 0)
-				) {
-					const fallbackVehicleEditResponse = await attemptDirectVehicleEdit(normalized, model);
-					if (fallbackVehicleEditResponse) {
-						const fallbackHighlightOverrideRestore = buildHighlightOverrideRestore({
-							presentation: normalized.presentation,
-							vehiclePatchOperations: fallbackVehicleEditResponse.vehiclePatchOperations ?? []
-						});
-						return {
-							...fallbackVehicleEditResponse,
-							presentationRestore: mergePresentationRestores(
-								fallbackVehicleEditResponse.presentationRestore,
-								fallbackHighlightOverrideRestore
-							),
-							semanticOverlayStatus: latestSemanticOverlayStatus,
-							semanticOverlay: latestSemanticOverlay,
-							semanticIngressBindings: latestSemanticIngressBindings,
-							semanticIngressMutation: latestSemanticIngressMutation,
-							trace: {
-								route: 'direct_edit',
-								semanticOverlayStatus: latestSemanticOverlayStatus,
-								toolCalls: toolCallsUsed,
-								sidebarAction: resolveSidebarAction(normalized.sidebar, sidebar),
-								supplementaryListAction: resolveSupplementaryListAction(
-									normalized.supplementaryList,
-									supplementaryList
-								),
-								...historyTrace,
-								plannerModel: model,
-								planningMode: 'direct',
-								toolRoundsUsed,
-								clarificationIssued: false,
-								composedToolChain: toolCallsUsed.length > 1
-							}
-						};
-					}
-				}
-
-				const planningMode = deriveObservedPlanningMode({
-					policy,
-					route: effectiveRoute,
-					toolCallsUsed,
-					clarificationIssued
-				});
 
 				const response: FooterChatResponse = {
 					model,
@@ -810,8 +764,7 @@ export async function createFooterChatResponse(
 					supplementaryList,
 					semanticOverlayStatus: latestSemanticOverlayStatus,
 					semanticOverlay: latestSemanticOverlay,
-					semanticIngressBindings: latestSemanticIngressBindings,
-					semanticIngressMutation: latestSemanticIngressMutation,
+					selectedGroupId: currentSelectedGroupId,
 					trace: {
 						route: effectiveRoute,
 						semanticOverlayStatus: latestSemanticOverlayStatus,
@@ -826,11 +779,12 @@ export async function createFooterChatResponse(
 						planningMode,
 						toolRoundsUsed,
 						clarificationIssued,
-						composedToolChain: toolCallsUsed.length > 1
+						composedToolChain: toolCallsUsed.length > 1,
+						...(latestToolTrace ?? {})
 					}
 				};
 
-				await persistContextHistory({
+				await persistContextHistorySafely({
 					userId: executionContext.userId,
 					request: normalized,
 					response,
@@ -840,15 +794,99 @@ export async function createFooterChatResponse(
 				return response;
 			} catch (error) {
 				if (error instanceof OpenAI.APIError) {
+					if (
+						hasCommittedToolSideEffects({
+							vehiclePatchOperations,
+							selectionUpdate,
+							semanticOverlayKnown: latestSemanticOverlay !== undefined,
+							selectedGroupIdChanged: currentSelectedGroupId !== normalized.selectedGroupId,
+							sidebarChanged: sidebar !== normalized.sidebar,
+							supplementaryListChanged: supplementaryList !== normalized.supplementaryList
+						})
+					) {
+						const response: FooterChatResponse = {
+							model,
+							message: {
+								role: 'assistant',
+								content: buildCommittedToolFallbackMessage({
+									vehiclePatchOperations,
+									selectionUpdate,
+									semanticOverlayKnown: latestSemanticOverlay !== undefined
+								})
+							},
+							vehiclePatchAssetId:
+								vehiclePatchOperations.length > 0 ? normalized.assetId : undefined,
+							vehiclePatchLabel:
+								vehiclePatchOperations.length > 0
+									? (vehiclePatchLabel ??
+										buildCommittedToolFallbackMessage({
+											vehiclePatchOperations,
+											selectionUpdate,
+											semanticOverlayKnown: latestSemanticOverlay !== undefined
+										}))
+									: undefined,
+							vehiclePatchOperations:
+								vehiclePatchOperations.length > 0 ? vehiclePatchOperations : undefined,
+							presentationRestore,
+							selectionUpdate:
+								selectionUpdate && selectionUpdate.length > 0
+									? {
+											mode: 'replace',
+											selectedNodes: selectionUpdate,
+											label: selectionUpdateLabel
+									  }
+									: undefined,
+							sidebar,
+							supplementaryList,
+							semanticOverlayStatus: latestSemanticOverlayStatus,
+							semanticOverlay: latestSemanticOverlay,
+							selectedGroupId: currentSelectedGroupId,
+							trace: {
+								route: effectiveRoute,
+								semanticOverlayStatus: latestSemanticOverlayStatus,
+								toolCalls: toolCallsUsed,
+								sidebarAction: resolveSidebarAction(normalized.sidebar, sidebar),
+								supplementaryListAction: resolveSupplementaryListAction(
+									normalized.supplementaryList,
+									supplementaryList
+								),
+								...historyTrace,
+								plannerModel: model,
+								planningMode: deriveObservedPlanningMode({
+									policy,
+									route: effectiveRoute,
+									toolCallsUsed,
+									clarificationIssued: false
+								}),
+								toolRoundsUsed,
+								clarificationIssued: false,
+								composedToolChain: toolCallsUsed.length > 1
+							}
+						};
+
+						await persistContextHistorySafely({
+							userId: executionContext.userId,
+							request: normalized,
+							response,
+							rawUserMessage: input.message
+						});
+
+						return response;
+					}
+
 					throw new OpenAIChatUpstreamError(error.message);
+				}
+
+				if (error instanceof OpenAIChatInputError) {
+					throw error;
 				}
 
 				if (error instanceof OpenAIChatConfigError) {
 					throw error;
 				}
 
-				throw new OpenAIChatUpstreamError(
-					error instanceof Error ? error.message : 'OpenAI request failed.'
+				throw new OpenAIChatExecutionError(
+					error instanceof Error ? error.message : 'Chat request failed.'
 				);
 			}
 		}

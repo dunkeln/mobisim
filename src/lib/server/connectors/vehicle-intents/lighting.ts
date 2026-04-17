@@ -21,6 +21,10 @@ export function isLightingMaterialEligible(
 		return true;
 	}
 
+	if (supportingParts.length > 0) {
+		return true;
+	}
+
 	if (category === 'front_lighting') {
 		return (
 			semanticMaterial?.semanticTags.includes('left_headlight') === true ||
@@ -28,7 +32,7 @@ export function isLightingMaterialEligible(
 		);
 	}
 
-	return supportingParts.length > 0;
+	return false;
 }
 
 export function resolveLightingCategories(requestText: string): LightingSemanticCategory[] {
@@ -37,17 +41,25 @@ export function resolveLightingCategories(requestText: string): LightingSemantic
 	const excludesFront = LIGHTING_SCOPE_CONFIG.front_lighting.excludePattern.test(requestText);
 	const excludesRear = LIGHTING_SCOPE_CONFIG.rear_lighting.excludePattern.test(requestText);
 	const mentionsGenericLights = /\blights?\b/i.test(requestText);
+	const includesFrontLighting = includesFront && !excludesFront;
+	const includesRearLighting = includesRear && !excludesRear;
 
 	const includedCategories = new Set<LightingSemanticCategory>();
-	if (mentionsGenericLights) {
-		includedCategories.add('front_lighting');
-		includedCategories.add('rear_lighting');
-	}
-	if (includesFront) {
+	if (includesFrontLighting) {
 		includedCategories.add('front_lighting');
 	}
-	if (includesRear) {
+	if (includesRearLighting) {
 		includedCategories.add('rear_lighting');
+	}
+	if (mentionsGenericLights && !includesFrontLighting && !includesRearLighting) {
+		if (excludesFront && !excludesRear) {
+			includedCategories.add('rear_lighting');
+		} else if (excludesRear && !excludesFront) {
+			includedCategories.add('front_lighting');
+		} else if (!excludesFront && !excludesRear) {
+			includedCategories.add('front_lighting');
+			includedCategories.add('rear_lighting');
+		}
 	}
 	if (excludesFront) {
 		includedCategories.delete('front_lighting');
@@ -89,7 +101,7 @@ export async function resolveSemanticLightingEdits(
 		}
 
 		for (const group of groups) {
-			const materialIds =
+			const derivedGroupMaterialIds =
 				group.materialIds.length > 0
 					? group.materialIds
 					: Array.from(
@@ -100,6 +112,23 @@ export async function resolveSemanticLightingEdits(
 								})
 							)
 						).sort((left, right) => left.localeCompare(right));
+			const supportingParts = overlay.acceptedParts.filter(
+				(part) =>
+					part.category === 'light' &&
+					(category === 'front_lighting' ? part.region === 'front' : part.region === 'rear') &&
+					(part.nodeIds.some((nodeId) => group.nodeIds.includes(nodeId)) ||
+						part.meshIds.some((meshId) => group.meshIds.includes(meshId)) ||
+						part.materialIds.some(
+							(materialId) =>
+								group.materialIds.includes(materialId) ||
+								derivedGroupMaterialIds.includes(materialId)
+						))
+			);
+			const partBackedMaterialIds = Array.from(
+				new Set(supportingParts.flatMap((part) => part.materialIds))
+			).sort((left, right) => left.localeCompare(right));
+			const materialIds =
+				partBackedMaterialIds.length > 0 ? partBackedMaterialIds : derivedGroupMaterialIds;
 			const trustUserNodeCoverage =
 				group.author === 'user' && group.materialIds.length === 0 && materialIds.length > 0;
 
@@ -108,18 +137,15 @@ export async function resolveSemanticLightingEdits(
 				if (!material) {
 					continue;
 				}
-				const supportingParts = overlay.acceptedParts.filter(
-					(part) =>
-						part.category === 'light' &&
-						part.materialIds.includes(material.id) &&
-						(category === 'front_lighting' ? part.region === 'front' : part.region === 'rear')
+				const materialSupportingParts = supportingParts.filter((part) =>
+					part.materialIds.includes(material.id)
 				);
 
 				if (
 					!isLightingMaterialEligible(
 						category,
 						semanticMaterialsById.get(material.id),
-						supportingParts,
+						materialSupportingParts,
 						trustUserNodeCoverage
 					)
 				) {

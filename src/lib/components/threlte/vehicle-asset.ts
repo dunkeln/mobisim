@@ -13,7 +13,9 @@ export function normalizeVehicleScene(scene: THREE.Object3D): NormalizedVehicleS
 
 	const initialBounds = new THREE.Box3().setFromObject(scene);
 	const initialSize = new THREE.Vector3();
+	const initialCenter = new THREE.Vector3();
 	initialBounds.getSize(initialSize);
+	initialBounds.getCenter(initialCenter);
 
 	const scaleFactor = Math.min(
 		CANONICAL_FIT_BOX.x / Math.max(initialSize.x, 0.001),
@@ -24,11 +26,8 @@ export function normalizeVehicleScene(scene: THREE.Object3D): NormalizedVehicleS
 	scene.scale.multiplyScalar(scaleFactor);
 	scene.updateMatrixWorld(true);
 
-	const normalizedBounds = new THREE.Box3().setFromObject(scene);
-	const size = new THREE.Vector3();
-	const center = new THREE.Vector3();
-	normalizedBounds.getSize(size);
-	normalizedBounds.getCenter(center);
+	const size = initialSize.clone().multiplyScalar(scaleFactor);
+	const center = initialCenter.clone().multiplyScalar(scaleFactor);
 
 	return {
 		center,

@@ -253,6 +253,18 @@ describe('createFooterAudioChatResponse', () => {
 		expect(createFooterChatResponseMock).not.toHaveBeenCalled();
 		expect(response.chat.historyAction).toBe('undo');
 		expect(response.chat.message.content).toBe('Reverted the most recent change.');
+		const audioPrompt = chatCompletionsCreateMock.mock.calls[0]?.[0] as {
+			messages?: Array<{ role: string; content: string }>;
+		};
+		expect(audioPrompt.messages?.[0]?.content).toContain('Do not produce acknowledgment-only replies.');
+		expect(audioPrompt.messages?.[0]?.content).toContain(
+			'Treat "understood", "noted", "acknowledged", "got it", and "okay" as filler'
+		);
+		expect(audioPrompt.messages?.[0]?.content).toContain(
+			'When a live selection or highlight exists, treat deictic wording as a direct reference to it'
+		);
+		expect(audioPrompt.messages?.[0]?.content).toContain('fail closed with a hard no');
+		expect(audioPrompt.messages?.[0]?.content).toContain('Sorry, I cannot do that here.');
 		expect(chatCompletionsCreateMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				model: 'gpt-4o-mini'

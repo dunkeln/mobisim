@@ -1,7 +1,12 @@
 import { json } from '@sveltejs/kit';
 import { createRealtimeClientSecret } from '$lib/server/connectors/openai-chat/realtime';
 import { resolveAuthenticatedUserId } from '$lib/server/auth/identity';
-import { OpenAIChatConfigError, OpenAIChatUpstreamError } from '$lib/server/connectors/openai-chat';
+import {
+	OpenAIChatConfigError,
+	OpenAIChatExecutionError,
+	OpenAIChatInputError,
+	OpenAIChatUpstreamError
+} from '$lib/server/connectors/openai-chat';
 import type { FooterChatRequest } from '$lib/server/connectors/openai-chat/types';
 
 type RealtimeSessionRequest = {
@@ -43,10 +48,19 @@ export async function POST({ request, locals }) {
 		return json({
 			clientSecret: realtimeSession.clientSecret,
 			semanticOverlayStatus: realtimeSession.semanticOverlayStatus,
-			instructions: realtimeSession.instructions
+			instructions: realtimeSession.instructions,
+			contextKey: realtimeSession.contextKey
 		});
 	} catch (error) {
+		if (error instanceof OpenAIChatInputError) {
+			return json({ error: error.message }, { status: 400 });
+		}
+
 		if (error instanceof OpenAIChatConfigError) {
+			return json({ error: error.message }, { status: 500 });
+		}
+
+		if (error instanceof OpenAIChatExecutionError) {
 			return json({ error: error.message }, { status: 500 });
 		}
 

@@ -11,11 +11,10 @@
 
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { resolveInspectionAssetId } from '$lib/routes/inspection';
+	import { tryResolveInspectionAssetId } from '$lib/routes/inspection';
 	import { toast } from '$lib/components/ui/sonner';
 	import {
-		approveBulkApplication,
-		approveSemanticIngressApplication,
+		approveChatResponseApplication,
 		applyChatResponse,
 		beginFooterResponseCycle,
 		getPresentationContext,
@@ -26,7 +25,9 @@
 		getSelectedSemanticGroupContext
 	} from '$lib/components/chat/footer-chat-client';
 	import { diffSelectionAgainstSemanticGroup } from '$lib/semantic-overlay/runtime';
+	import { buildSessionLedger, type SessionLedger } from '$lib/contracts/session-ledger';
 	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
+	import { footerActiveTool } from '$lib/stores/footer-active-tool';
 	import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 	import type {
@@ -67,13 +68,14 @@
 	let realtimeSessionActive = $state(false);
 	let realtimeSessionAssetId = $state<VehicleAssetId | undefined>();
 	let realtimeSemanticOverlayStatus = $state<'missing' | 'stale' | 'fresh' | 'unknown'>('unknown');
+	let realtimeLastPushedContextKey = $state('');
 	let realtimeConnecting = $state(false);
 	let realtimeInstructions = $state('');
 	let recorderChunks: BlobPart[] = [];
 	let activeMode = $state<OrbMode>('idle');
 	let activeAmplitude = $state(0);
 	let busy = $state(false);
-	const assetId = $derived(resolveInspectionAssetId(page.url));
+	const assetId = $derived(tryResolveInspectionAssetId(page.url));
 
 	const RECORDER_MIME_CANDIDATES = [
 		'audio/webm;codecs=opus',
@@ -109,6 +111,10 @@
 		void $vehicleNodeSelection;
 		void $vehiclePatchState;
 		if (realtimeSessionActive) {
+			const contextKey = buildCurrentSessionLedger().contextKey;
+			if (contextKey === realtimeLastPushedContextKey) {
+				return;
+			}
 			pushRealtimeContextUpdate();
 		}
 	});
@@ -144,6 +150,10 @@
 	}
 
 	function getVoiceInputUnavailableReason(): string | null {
+		if (!assetId) {
+			return 'Voice input is only available while inspecting an asset.';
+		}
+
 		if (typeof window === 'undefined') {
 			return 'Voice input is only available in the browser.';
 		}
@@ -295,26 +305,34 @@
 		}
 	}
 
-	function buildRealtimeContextPayload() {
+	function buildCurrentSessionLedger(): SessionLedger {
+		const semanticState = semanticRuntimeState.getAssetState(assetId);
 		const selectedNodeContext = getSelectedNodeContext(assetId);
 		const selectedSemanticGroupContext = getSelectedSemanticGroupContext(assetId);
-		return {
+		const presentation = getPresentationContext(assetId);
+		const coreLedger = buildSessionLedger({
 			assetId,
 			selectedGroupId: selectedSemanticGroupContext.selectedGroupId,
 			selectedNodeId: selectedNodeContext.selectedNodeId,
 			selectedNodeName: selectedNodeContext.selectedNodeName,
 			selectedNodePath: selectedNodeContext.selectedNodePath,
 			selectedNodes: selectedNodeContext.selectedNodes,
-			presentation: getPresentationContext(assetId),
-			sidebar: getSidebarContext(assetId),
-			supplementaryList: getSupplementaryListContext(assetId)
+			presentation,
+			semanticOverlayStatus: semanticState.overlayStatus,
+			semanticOverlayRevision: semanticState.overlayRevision
+		});
+		const sidebarContext = getSidebarContext(assetId, coreLedger.contextKey);
+		const supplementaryListContext = getSupplementaryListContext(assetId, coreLedger.contextKey);
+		return {
+			...coreLedger,
+			sidebar: sidebarContext,
+			supplementaryList: supplementaryListContext
 		};
 	}
 
-	function buildRealtimeSelectionLine(): string {
-		const ctx = getSelectedNodeContext(assetId);
-		if (ctx.selectedNodes.length > 0) {
-			const summary = ctx.selectedNodes
+	function buildRealtimeSelectionLine(sessionLedger: SessionLedger): string {
+		if (sessionLedger.selectedNodes?.length > 0) {
+			const summary = sessionLedger.selectedNodes
 				.slice(0, 3)
 				.map((s) =>
 					s.targetType === 'part'
@@ -324,14 +342,14 @@
 				.join(', ');
 			return `Selected runtime nodes: ${summary}.`;
 		}
-		if (ctx.selectedNodeId) {
-			return `Selected runtime nodes: ${ctx.selectedNodeName ?? ctx.selectedNodeId}${ctx.selectedNodePath ? ` at ${ctx.selectedNodePath}` : ''}.`;
+		if (sessionLedger.selectedNodeId) {
+			return `Selected runtime nodes: ${sessionLedger.selectedNodeName ?? sessionLedger.selectedNodeId}${sessionLedger.selectedNodePath ? ` at ${sessionLedger.selectedNodePath}` : ''}.`;
 		}
 		return 'Selected runtime nodes: none.';
 	}
 
-	function buildRealtimeHighlightedTargetsLine(): string {
-		const presentation = getPresentationContext(assetId);
+	function buildRealtimeHighlightedTargetsLine(sessionLedger: SessionLedger): string {
+		const presentation = sessionLedger.presentation;
 		const highlightedTargets = presentation?.highlightedTargets ?? [];
 		if (highlightedTargets.length === 0) {
 			return 'Highlighted targets: none.';
@@ -344,20 +362,22 @@
 		return `Highlighted targets: ${summary}.`;
 	}
 
-	function buildRealtimeSemanticEditContextLine(): string {
+	function buildRealtimeSemanticEditContextLine(sessionLedger: SessionLedger): string {
 		if (!assetId) {
 			return 'Semantic edit context: unavailable.';
 		}
 
 		const { overlay } = semanticRuntimeState.getAssetState(assetId);
-		const { selectedGroupId } = getSelectedSemanticGroupContext(assetId);
-		const { selectedNodes } = getSelectedNodeContext(assetId);
-		const diff = diffSelectionAgainstSemanticGroup(overlay, selectedGroupId, selectedNodes);
+		const diff = diffSelectionAgainstSemanticGroup(
+			overlay,
+			sessionLedger.selectedGroupId,
+			sessionLedger.selectedNodes ?? []
+		);
 		if (!diff) {
 			return 'Semantic edit context: unavailable.';
 		}
 
-		const summarize = (selection: (typeof selectedNodes)[number]): string =>
+		const summarize = (selection: NonNullable<SessionLedger['selectedNodes']>[number]): string =>
 			selection.targetType === 'part'
 				? `${selection.targetName ?? selection.nodeName} [${selection.targetId ?? selection.nodeId}]`
 				: `${selection.nodeName} [${selection.nodeId}]`;
@@ -378,8 +398,8 @@
 			: `Semantic edit context: the current selection is already fully accepted by ${diff.groupLabel} [${diff.groupId}].`;
 	}
 
-	function buildRealtimePresentationLine(): string {
-		const presentation = getPresentationContext(assetId);
+	function buildRealtimePresentationLine(sessionLedger: SessionLedger): string {
+		const presentation = sessionLedger.presentation;
 		if (!presentation) {
 			return 'Current presentation: none.';
 		}
@@ -399,10 +419,9 @@
 		return `Current presentation: ${parts || 'none'}.`;
 	}
 
-	function buildRealtimeSelectedGroupLine(): string {
-		const { selectedGroupId } = getSelectedSemanticGroupContext(assetId);
-		return selectedGroupId
-			? `Active semantic group: ${selectedGroupId}. Treat this as the current semantic focus unless the user clearly redirects.`
+	function buildRealtimeSelectedGroupLine(sessionLedger: SessionLedger): string {
+		return sessionLedger.selectedGroupId
+			? `Active semantic group: ${sessionLedger.selectedGroupId}. Treat this as the current semantic focus unless the user clearly redirects.`
 			: 'Active semantic group: none.';
 	}
 
@@ -414,13 +433,15 @@
 		) {
 			return;
 		}
+		const payload = buildCurrentSessionLedger();
 		const updated = realtimeInstructions
-			.replace(/^Active semantic group: .*$/m, buildRealtimeSelectedGroupLine())
-			.replace(/^Semantic edit context: .*$/m, buildRealtimeSemanticEditContextLine())
-			.replace(/^Selected runtime nodes: .*$/m, buildRealtimeSelectionLine())
-			.replace(/^Highlighted targets: .*$/m, buildRealtimeHighlightedTargetsLine())
-			.replace(/^Current presentation: .*$/m, buildRealtimePresentationLine());
+			.replace(/^Active semantic group: .*$/m, buildRealtimeSelectedGroupLine(payload))
+			.replace(/^Semantic edit context: .*$/m, buildRealtimeSemanticEditContextLine(payload))
+			.replace(/^Selected runtime nodes: .*$/m, buildRealtimeSelectionLine(payload))
+			.replace(/^Highlighted targets: .*$/m, buildRealtimeHighlightedTargetsLine(payload))
+			.replace(/^Current presentation: .*$/m, buildRealtimePresentationLine(payload));
 		realtimeInstructions = updated;
+		realtimeLastPushedContextKey = payload.contextKey;
 		sendRealtimeEvent({ type: 'session.update', session: { instructions: updated } });
 	}
 
@@ -444,6 +465,7 @@
 		realtimeSessionAssetId = undefined;
 		realtimeSemanticOverlayStatus = 'unknown';
 		realtimeInstructions = '';
+		realtimeLastPushedContextKey = '';
 		busy = false;
 		resetOrbState();
 	}
@@ -475,21 +497,22 @@
 		realtimeToolAbortController = controller;
 
 		try {
+			const sessionLedger = buildCurrentSessionLedger();
 			await prepareSemanticBootstrapForRequest(requestText, assetId);
-			const payload = buildRealtimeContextPayload();
 			const response = await fetch('/api/chat', {
 				method: 'POST',
 				headers: {
 					'content-type': 'application/json'
 				},
 				body: JSON.stringify({
-					...payload,
+					...sessionLedger,
 					message: requestText
 				}),
 				signal: controller.signal
 			});
 			const chatResponse = await parseChatResponse(response);
-			const approval = await approveBulkApplication(chatResponse);
+			footerActiveTool.setFromTrace(chatResponse.trace);
+			const approval = await approveChatResponseApplication(chatResponse);
 			if (!approval.approved) {
 				sendRealtimeEvent({
 					type: 'conversation.item.create',
@@ -497,18 +520,9 @@
 						type: 'function_call_output',
 						call_id: callId,
 						output: JSON.stringify({
-							...chatResponse,
-							message: {
-								role: 'assistant',
-								content: approval.blockedMessage
-							},
-							vehiclePatchAssetId: undefined,
-							vehiclePatchLabel: undefined,
-							vehiclePatchOperations: undefined,
-							presentationRestore: undefined,
-							selectionUpdate: undefined,
-							sidebar: undefined,
-							supplementaryList: undefined
+							result: approval.blockedMessage,
+							applied: false,
+							blocked: true
 						})
 					}
 				});
@@ -517,37 +531,21 @@
 				});
 				return;
 			}
-			const ingressApproval = await approveSemanticIngressApplication(chatResponse, assetId);
-			if (!ingressApproval.approved) {
-				sendRealtimeEvent({
-					type: 'conversation.item.create',
-					item: {
-						type: 'function_call_output',
-						call_id: callId,
-						output: JSON.stringify({
-							...chatResponse,
-							message: {
-								role: 'assistant',
-								content: ingressApproval.blockedMessage
-							},
-							semanticIngressBindings: undefined
-						})
-					}
-				});
-				sendRealtimeEvent({
-					type: 'response.create'
-				});
-				return;
-			}
-
-			applyChatResponse(chatResponse, assetId);
+			const appliedMessage = applyChatResponse(chatResponse, assetId, sessionLedger.contextKey);
 
 			sendRealtimeEvent({
 				type: 'conversation.item.create',
 				item: {
 					type: 'function_call_output',
 					call_id: callId,
-					output: JSON.stringify(chatResponse)
+					output: JSON.stringify({
+						result: appliedMessage,
+						applied:
+							Boolean(chatResponse.historyAction) ||
+							Boolean(chatResponse.presentationRestore) ||
+							(chatResponse.vehiclePatchOperations?.length ?? 0) > 0,
+						label: chatResponse.vehiclePatchLabel ?? null
+					})
 				}
 			});
 			sendRealtimeEvent({
@@ -666,6 +664,7 @@
 		realtimeSessionAssetId = assetId;
 
 		try {
+			const sessionLedger = buildCurrentSessionLedger();
 			mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			const peerConnection = new RTCPeerConnection();
 			realtimePeerConnection = peerConnection;
@@ -717,7 +716,7 @@
 					'content-type': 'application/json'
 				},
 				body: JSON.stringify({
-					...buildRealtimeContextPayload()
+					...sessionLedger
 				})
 			});
 
@@ -729,13 +728,18 @@
 				clientSecret?: string;
 				semanticOverlayStatus?: 'missing' | 'stale' | 'fresh' | 'unknown';
 				instructions?: string;
+				contextKey?: string;
 				error?: string;
 			};
 			if (!sessionPayload.clientSecret) {
 				throw new Error(sessionPayload.error ?? 'Realtime session secret was missing.');
 			}
+			if (!sessionPayload.contextKey) {
+				throw new Error('Realtime session context key was missing.');
+			}
 			realtimeSemanticOverlayStatus = sessionPayload.semanticOverlayStatus ?? 'unknown';
 			realtimeInstructions = sessionPayload.instructions ?? '';
+			realtimeLastPushedContextKey = sessionPayload.contextKey;
 
 			const offer = await peerConnection.createOffer();
 			await peerConnection.setLocalDescription(offer);
@@ -770,32 +774,30 @@
 
 	async function sendAudioMessage(audioBlob: Blob): Promise<void> {
 		const file = await blobToFile(audioBlob);
-		const selectedNodeContext = getSelectedNodeContext(assetId);
-		const selectedSemanticGroupContext = getSelectedSemanticGroupContext(assetId);
-		const presentation = getPresentationContext(assetId);
-		const sidebarContext = getSidebarContext(assetId);
-		const supplementaryListContext = getSupplementaryListContext(assetId);
+		const sessionLedger = buildCurrentSessionLedger();
+		const sidebarContext = getSidebarContext(assetId, sessionLedger.contextKey);
+		const supplementaryListContext = getSupplementaryListContext(assetId, sessionLedger.contextKey);
 		beginFooterResponseCycle(assetId);
 		const formData = new FormData();
 		formData.set('audio', file);
 		if (assetId) {
 			formData.set('assetId', assetId);
 		}
-		if (selectedSemanticGroupContext.selectedGroupId) {
-			formData.set('selectedGroupId', selectedSemanticGroupContext.selectedGroupId);
+		if (sessionLedger.selectedGroupId) {
+			formData.set('selectedGroupId', sessionLedger.selectedGroupId);
 		}
-		if (selectedNodeContext.selectedNodeId) {
-			formData.set('selectedNodeId', selectedNodeContext.selectedNodeId);
+		if (sessionLedger.selectedNodeId) {
+			formData.set('selectedNodeId', sessionLedger.selectedNodeId);
 		}
-		if (selectedNodeContext.selectedNodeName) {
-			formData.set('selectedNodeName', selectedNodeContext.selectedNodeName);
+		if (sessionLedger.selectedNodeName) {
+			formData.set('selectedNodeName', sessionLedger.selectedNodeName);
 		}
-		if (selectedNodeContext.selectedNodePath) {
-			formData.set('selectedNodePath', selectedNodeContext.selectedNodePath);
+		if (sessionLedger.selectedNodePath) {
+			formData.set('selectedNodePath', sessionLedger.selectedNodePath);
 		}
-		formData.set('selectedNodes', JSON.stringify(selectedNodeContext.selectedNodes));
-		if (presentation) {
-			formData.set('presentation', JSON.stringify(presentation));
+		formData.set('selectedNodes', JSON.stringify(sessionLedger.selectedNodes ?? []));
+		if (sessionLedger.presentation) {
+			formData.set('presentation', JSON.stringify(sessionLedger.presentation));
 		}
 		formData.set('sidebar', JSON.stringify(sidebarContext));
 		formData.set('supplementaryList', JSON.stringify(supplementaryListContext));
@@ -832,7 +834,8 @@
 			);
 		}
 
-		const approval = await approveBulkApplication(payload.chat);
+		const approval = await approveChatResponseApplication(payload.chat);
+		footerActiveTool.setFromTrace(payload.chat.trace);
 		if (!approval.approved) {
 			resetOrbState();
 			toast.error('Request not applied', {
@@ -840,18 +843,9 @@
 			});
 			return;
 		}
-		const ingressApproval = await approveSemanticIngressApplication(payload.chat, assetId);
-		if (!ingressApproval.approved) {
-			resetOrbState();
-			toast.error('Request not applied', {
-				description: ingressApproval.blockedMessage
-			});
-			return;
-		}
-
-		applyChatResponse(payload.chat, assetId);
-		toast.success('Voice request sent', {
-			description: `${payload.transcript} -> ${payload.chat.message.content}`
+		const appliedMessage = applyChatResponse(payload.chat, assetId, sessionLedger.contextKey);
+		toast.success('Voice request applied', {
+			description: `${payload.transcript} -> ${appliedMessage}`
 		});
 		await playReplyAudio(payload);
 	}
@@ -896,7 +890,7 @@
 					}
 
 					if (event.type === 'chat') {
-						const approval = await approveBulkApplication(event.chat);
+						const approval = await approveChatResponseApplication(event.chat);
 						if (!approval.approved) {
 							chatApproved = false;
 							chatPayload = {
@@ -910,30 +904,17 @@
 								description: chatPayload.message.content
 							});
 						} else {
-							const ingressApproval = await approveSemanticIngressApplication(event.chat, assetId);
-							if (!ingressApproval.approved) {
-								chatApproved = false;
-								chatPayload = {
-									...event.chat,
-									message: {
-										role: 'assistant',
-										content:
-											ingressApproval.blockedMessage ??
-											'Ingress approval declined. No semantic ingress changes were applied.'
-									}
-								};
-								toast.error('Request not applied', {
-									description: chatPayload.message.content
-								});
-								newlineIndex = buffer.indexOf('\n');
-								continue;
-							}
 							chatPayload = event.chat;
-							applyChatResponse(event.chat, assetId);
-							toast.success('Voice request sent', {
+							footerActiveTool.setFromTrace(event.chat.trace);
+							const appliedMessage = applyChatResponse(
+								event.chat,
+								assetId,
+								sessionLedger.contextKey
+							);
+							toast.success('Voice request applied', {
 								description: transcript
-									? `${transcript} -> ${event.chat.message.content}`
-									: event.chat.message.content
+									? `${transcript} -> ${appliedMessage}`
+									: appliedMessage
 							});
 						}
 					}

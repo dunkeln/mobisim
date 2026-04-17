@@ -1,7 +1,9 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
-	resolveSemanticProposalsDirectory,
-	resolveSemanticProposalsPath
+	readJsonObject,
+	writeJsonObject
+} from '$lib/server/connectors/vehicle-registry/s3';
+import {
+	resolveSemanticProposalsKey
 } from '$lib/server/connectors/vehicle-registry/storage';
 import { readSemanticGroupDefinitions } from '$lib/server/connectors/semantic-groups';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -84,11 +86,12 @@ export async function readAssetSemanticProposals(
 	structuralGeneratedAt: string
 ): Promise<AssetSemanticProposalsStore> {
 	try {
-		const raw = JSON.parse(
-			await readFile(resolveSemanticProposalsPath(assetId, structuralGeneratedAt), 'utf8')
-		) as {
-			proposals?: unknown[];
-		};
+		const raw = await readJsonObject<{ proposals?: unknown[] }>(
+			resolveSemanticProposalsKey(assetId, structuralGeneratedAt)
+		);
+		if (!raw) {
+			throw new Error('missing');
+		}
 
 		const proposals = Array.isArray(raw.proposals)
 			? raw.proposals
@@ -118,12 +121,7 @@ export async function writeAssetSemanticProposals(
 		structuralGeneratedAt: store.structuralGeneratedAt,
 		proposals: await validateProposals(store.proposals)
 	};
-	await mkdir(resolveSemanticProposalsDirectory(store.assetId), { recursive: true });
-	await writeFile(
-		resolveSemanticProposalsPath(store.assetId, store.structuralGeneratedAt),
-		JSON.stringify(nextStore, null, 2),
-		'utf8'
-	);
+	await writeJsonObject(resolveSemanticProposalsKey(store.assetId, store.structuralGeneratedAt), nextStore);
 	return nextStore;
 }
 

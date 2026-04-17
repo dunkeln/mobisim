@@ -101,6 +101,18 @@ function clonePresentation(presentation: VehiclePresentationState): VehiclePrese
 	};
 }
 
+function isPreservedAppearanceMaterialOperation(
+	operation: VehicleInspectionPatchOperation
+): boolean {
+	return (
+		operation.targetType === 'material' &&
+		(operation.op === 'set_base_color_factor' ||
+			operation.op === 'set_metalness_factor' ||
+			operation.op === 'set_roughness_factor' ||
+			operation.op === 'set_env_map_intensity')
+	);
+}
+
 function deriveOperations(presentation: VehiclePresentationState): VehicleInspectionPatchOperation[] {
 	return [
 		...presentation.nodeVisibilityOperations,
@@ -144,7 +156,16 @@ function applyRestore(
 	restore: FooterChatPresentationRestore
 ): VehiclePresentationState {
 	if (restore.restoreAll) {
-		return clonePresentation(EMPTY_PRESENTATION_STATE);
+		return {
+			...clonePresentation(EMPTY_PRESENTATION_STATE),
+			// "Restore original view" clears presentation drift layers without
+			// discarding stable paint/finish edits. Transient material drift like
+			// alpha, overlay highlights, emissive accents, or double-sided toggles
+			// should not survive an original-view restore.
+			materialOperations: presentation.materialOperations.filter((operation) =>
+				isPreservedAppearanceMaterialOperation(operation)
+			)
+		};
 	}
 
 	const nextPresentation = clonePresentation(presentation);
@@ -320,6 +341,28 @@ type VehiclePresentationChangeKind =
 	| 'visibility'
 	| 'viewer'
 	| 'restore';
+
+function findMatchingChangeIndex(
+	changes: VehiclePresentationChangeEntry[],
+	kind: VehiclePresentationChangeKind,
+	occurrenceFromNewest = 0
+): number {
+	let remaining = occurrenceFromNewest;
+
+	for (let index = changes.length - 1; index >= 0; index -= 1) {
+		if (!inferChangeKinds(changes[index]!).has(kind)) {
+			continue;
+		}
+
+		if (remaining === 0) {
+			return index;
+		}
+
+		remaining -= 1;
+	}
+
+	return -1;
+}
 
 function inferChangeKinds(change: VehiclePresentationChangeEntry): Set<VehiclePresentationChangeKind> {
 	const kinds = new Set<VehiclePresentationChangeKind>();
@@ -588,6 +631,80 @@ function createVehiclePatchStore() {
 			});
 
 			return revertedLabel;
+		},
+		restoreMatching(
+			assetId: VehicleAssetId | undefined,
+			kind: VehiclePresentationChangeKind,
+			occurrenceFromNewest = 0
+		): string | null {
+			if (!assetId || occurrenceFromNewest < 0) {
+				return null;
+			}
+
+			let revertedLabel: string | null = null;
+
+			update((state) => {
+				if (state.assetId !== assetId) {
+					return state;
+				}
+
+				const matchIndex = findMatchingChangeIndex(
+					state.past,
+					kind,
+					occurrenceFromNewest
+				);
+				if (matchIndex < 0) {
+					return state;
+				}
+
+				const removed = state.past[matchIndex];
+				const nextPast = state.past.filter((_, index) => index !== matchIndex);
+				revertedLabel = describeChange(removed);
+				return buildState(state.assetId, nextPast, [], state.revision + 1);
+			});
+
+			return revertedLabel;
+		},
+		restoreMatchingBatch(
+			assetId: VehicleAssetId | undefined,
+			kind: VehiclePresentationChangeKind,
+			count = 1
+		): string[] {
+			if (!assetId || count <= 0) {
+				return [];
+			}
+
+			const revertedLabels: string[] = [];
+
+			update((state) => {
+				if (state.assetId !== assetId) {
+					return state;
+				}
+
+				const nextPast = [...state.past];
+				const removedChanges: VehiclePresentationChangeEntry[] = [];
+
+				for (let occurrence = 0; occurrence < count; occurrence += 1) {
+					const matchIndex = findMatchingChangeIndex(nextPast, kind, 0);
+					if (matchIndex < 0) {
+						break;
+					}
+
+					const removed = nextPast.splice(matchIndex, 1)[0];
+					if (removed) {
+						removedChanges.push(removed);
+						revertedLabels.push(describeChange(removed));
+					}
+				}
+
+				if (removedChanges.length === 0) {
+					return state;
+				}
+
+				return buildState(state.assetId, nextPast, [], state.revision + 1);
+			});
+
+			return revertedLabels;
 		},
 		redo(assetId?: VehicleAssetId): boolean {
 			let didRedo = false;

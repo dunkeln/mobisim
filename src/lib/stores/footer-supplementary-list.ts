@@ -12,6 +12,7 @@ const SUPPLEMENTARY_LIST_TTL_MS = 10 * 60 * 1000;
 type FooterSupplementaryListStoreState = Partial<
 	Record<VehicleAssetId, FooterChatSupplementaryListState>
 >;
+type FooterSupplementaryListLedgerKeys = Partial<Record<VehicleAssetId, string>>;
 
 function sanitizeState(input: FooterChatSupplementaryListState): FooterChatSupplementaryListState {
 	return {
@@ -31,6 +32,7 @@ function sanitizeState(input: FooterChatSupplementaryListState): FooterChatSuppl
 function createFooterSupplementaryListStore() {
 	const { subscribe, set } = writable<FooterSupplementaryListStoreState>({});
 	let currentState: FooterSupplementaryListStoreState = {};
+	let currentLedgerKeyByAsset: FooterSupplementaryListLedgerKeys = {};
 	let updatedAtByAsset: Partial<Record<VehicleAssetId, number>> = {};
 	let expiryTimersByAsset: Partial<Record<VehicleAssetId, ReturnType<typeof setTimeout>>> = {};
 
@@ -77,7 +79,11 @@ function createFooterSupplementaryListStore() {
 
 	return {
 		subscribe,
-		set(assetId: VehicleAssetId, state: FooterChatSupplementaryListState): void {
+		set(assetId: VehicleAssetId, state: FooterChatSupplementaryListState, ledgerKey: string): void {
+			currentLedgerKeyByAsset = {
+				...currentLedgerKeyByAsset,
+				[assetId]: ledgerKey
+			};
 			updatedAtByAsset = {
 				...updatedAtByAsset,
 				[assetId]: Date.now()
@@ -85,13 +91,14 @@ function createFooterSupplementaryListStore() {
 			applyState(assetId, state);
 			scheduleExpiry(assetId);
 		},
-		getContext(assetId?: VehicleAssetId): FooterChatSupplementaryListState {
-			if (!assetId) {
+		getContext(assetId: VehicleAssetId, ledgerKey: string): FooterChatSupplementaryListState {
+			if (currentLedgerKeyByAsset[assetId] !== ledgerKey) {
 				return INITIAL_STATE;
 			}
 
 			if (isExpired(assetId)) {
 				clearExpiryTimer(assetId);
+				delete currentLedgerKeyByAsset[assetId];
 				delete updatedAtByAsset[assetId];
 				applyState(assetId, INITIAL_STATE);
 			}
@@ -101,6 +108,7 @@ function createFooterSupplementaryListStore() {
 		reset(assetId?: VehicleAssetId): void {
 			if (assetId) {
 				clearExpiryTimer(assetId);
+				delete currentLedgerKeyByAsset[assetId];
 				delete updatedAtByAsset[assetId];
 				applyState(assetId, INITIAL_STATE);
 				return;
@@ -109,6 +117,7 @@ function createFooterSupplementaryListStore() {
 			for (const scopedAssetId of Object.keys(expiryTimersByAsset) as VehicleAssetId[]) {
 				clearExpiryTimer(scopedAssetId);
 			}
+			currentLedgerKeyByAsset = {};
 			updatedAtByAsset = {};
 			currentState = {};
 			set(currentState);

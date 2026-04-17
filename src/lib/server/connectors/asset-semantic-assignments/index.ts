@@ -1,9 +1,11 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import {
-	resolveSemanticAssignmentsDirectory,
-	resolveSemanticAssignmentsPath,
-	resolveSemanticAssignmentsRootDirectory
+	listCommonPrefixes,
+	readJsonObject,
+	writeJsonObject
+} from '$lib/server/connectors/vehicle-registry/s3';
+import {
+	resolveSemanticAssignmentsKey,
 } from '$lib/server/connectors/vehicle-registry/storage';
 import { readSemanticGroupDefinitions } from '$lib/server/connectors/semantic-groups';
 import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
@@ -109,13 +111,14 @@ export async function readAssetSemanticAssignments(
 	structuralGeneratedAt: string
 ): Promise<AssetSemanticAssignmentsStore> {
 	try {
-		const raw = JSON.parse(
-			await readFile(resolveSemanticAssignmentsPath(assetId, structuralGeneratedAt), 'utf8')
-		) as {
+		const raw = await readJsonObject<{
 			assetId?: VehicleAssetId;
 			structuralGeneratedAt?: string;
 			assignments?: unknown[];
-		};
+		}>(resolveSemanticAssignmentsKey(assetId, structuralGeneratedAt));
+		if (!raw) {
+			throw new Error('missing');
+		}
 
 		const assignments = Array.isArray(raw.assignments)
 			? raw.assignments
@@ -145,11 +148,9 @@ export async function writeAssetSemanticAssignments(
 		structuralGeneratedAt: store.structuralGeneratedAt,
 		assignments: await validateAssignments(store.assignments)
 	};
-	await mkdir(resolveSemanticAssignmentsDirectory(store.assetId), { recursive: true });
-	await writeFile(
-		resolveSemanticAssignmentsPath(store.assetId, store.structuralGeneratedAt),
-		JSON.stringify(nextStore, null, 2),
-		'utf8'
+	await writeJsonObject(
+		resolveSemanticAssignmentsKey(store.assetId, store.structuralGeneratedAt),
+		nextStore
 	);
 	return nextStore;
 }
@@ -255,12 +256,9 @@ export async function listReviewedSemanticGroupExamples(
 	const knownGroupIds = new Set(definitions.map((definition) => definition.id));
 	const grouped = new Map<string, ReviewedSemanticGroupExample[]>();
 
-	let assetEntries: string[];
-	try {
-		assetEntries = await readdir(resolveSemanticAssignmentsRootDirectory());
-	} catch {
-		return {};
-	}
+	const assetEntries = (await listCommonPrefixes('semantic-assignments/')).map((prefix) =>
+		prefix.replace(/^semantic-assignments\//, '').replace(/\/$/, '')
+	);
 
 	for (const assetEntry of assetEntries) {
 		if (!(assetEntry in VEHICLE_CATALOG)) {

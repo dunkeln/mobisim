@@ -41,12 +41,7 @@ If someone only remembers a few routes, these are the right ones to remember.
 This lists the available vehicle assets.
 
 It is the clean entry point into the system. If you want to know what can be inspected, start here.
-
-### `GET /api/vehicle-assets/:assetId/download`
-
-This returns the actual GLB for the asset.
-
-This is the viewer delivery route. It is intentionally direct: ask for the asset, get the asset.
+The response points the viewer at the S3-backed GLB URL for each asset.
 
 ### `GET /api/vehicle-assets/:assetId/inspection`
 
@@ -91,57 +86,6 @@ This refreshes or regenerates the semantic overlay.
 
 This matters because semantic refresh is not something that should be hidden or smeared across multiple routes. It should stay explicit and easy to reason about.
 
-### `GET /api/vehicle-assets/:assetId/semantic-ingress`
-
-This lists semantic ingress bindings for the asset.
-
-Ingress here means: a live telemetry path is attached to a semantic target like a semantic group or semantic node.
-
-### `POST /api/vehicle-assets/:assetId/semantic-ingress`
-
-This creates or replaces one semantic ingress binding.
-
-Example:
-
-```json
-{
-  "targetType": "semantic_group",
-  "targetId": "body_shell",
-  "targetLabel": "Body Shell",
-  "transport": "rest_sse"
-}
-```
-
-This is not “telemetry for the whole asset.” It is telemetry attached to one semantic target on one asset.
-
-### `GET /api/vehicle-assets/:assetId/semantic-ingress/:ingressId`
-
-This returns the binding and its current sample window.
-
-### `POST /api/vehicle-assets/:assetId/semantic-ingress/:ingressId`
-
-This ingests live numeric telemetry samples into that ingress.
-
-Example:
-
-```json
-{
-  "sample": {
-    "timestamp": "2026-04-10T12:00:00.000Z",
-    "value": 42,
-    "metric": "temperature",
-    "unit": "c",
-    "source": "simulator"
-  }
-}
-```
-
-### `GET /api/vehicle-assets/:assetId/semantic-ingress/:ingressId/events`
-
-This streams the ingress over SSE.
-
-That is the live path the UI can listen to when a semantic group has an active ingress and we want the panel or live window to reflect incoming telemetry in real time.
-
 ## Other live routes
 
 There are a few other live endpoints that are useful, but they are not the ones I would present as the long-term center of the API.
@@ -177,21 +121,18 @@ This API shape supports that because:
 - structural reads stay under inspection
 - semantic truth stays under semantic overlay
 - user-facing deterministic execution can stay centered on intent
-- live telemetry stays under semantic ingress
 - chat transport stays separate from asset state
 
-That separation is important. It keeps the viewer logic, semantic state, telemetry state, and copilot transport from bleeding into each other.
+That separation is important. It keeps the viewer logic, semantic state, and copilot transport from bleeding into each other.
 
 ## The short version
 
 If I had to describe the API in one pass, I would say:
 
-- `vehicle-assets` tells you what exists
-- `download` gives you the model
+- `vehicle-assets` tells you what exists and where the S3 GLB lives
 - `inspection` tells you what the system knows about it
 - `intent` is the main deterministic control surface
 - `semantic-overlay` is the semantic truth layer
-- `semantic-ingress` is the live telemetry layer
 - `/api/chat/...` is the FRIDAY interaction layer
 
 That is the shape worth preserving going forward.

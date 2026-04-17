@@ -1,5 +1,6 @@
 import type { FooterChatRequest } from './types';
 import { OpenAIChatInputError } from './errors';
+import { isVehicleAssetId } from '$lib/vehicles/catalog';
 
 function readStringField(value: FormDataEntryValue | null): string | undefined {
 	return typeof value === 'string' ? value.trim() || undefined : undefined;
@@ -30,7 +31,10 @@ export function parseFooterAudioChatFormData(formData: FormData): {
 		return {
 			audio,
 			payload: {
-				assetId: readStringField(formData.get('assetId')) as FooterChatRequest['assetId'],
+				assetId: (() => {
+					const assetId = readStringField(formData.get('assetId'));
+					return assetId && isVehicleAssetId(assetId) ? assetId : undefined;
+				})(),
 				selectedGroupId: readStringField(formData.get('selectedGroupId')),
 				selectedNodeId: readStringField(formData.get('selectedNodeId')),
 				selectedNodeName: readStringField(formData.get('selectedNodeName')),

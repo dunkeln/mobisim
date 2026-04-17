@@ -8,7 +8,7 @@ export type VehicleRegistryAsset = {
 	fileName: string;
 	lengthMeters: number;
 	downloadUrl: string;
-	storage: 'local-private' | 'remote-public';
+	storage: 'remote-public';
 };
 
 export type VehicleRegistryListResponse = {

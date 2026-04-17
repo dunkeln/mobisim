@@ -10,8 +10,8 @@
 	<link rel="icon" type="image/svg+xml" href={`${favicon}?v=${faviconVersion}`} />
 </svelte:head>
 
-<div class="h-dvh overflow-hidden bg-boundary-background text-boundary-text">
-	<main class="h-full overflow-hidden">
+<div class="relative h-dvh overflow-hidden bg-boundary-background text-boundary-text">
+	<main class="relative z-10 h-full overflow-hidden">
 		{@render children()}
 	</main>
 </div>

@@ -25,11 +25,11 @@ describe('inspectorSidebarState', () => {
 					}
 				}
 			]
-		});
+		}, 'ledger-a');
 
 		vi.advanceTimersByTime(9 * 60 * 1000);
 
-		expect(inspectorSidebarState.getContext(assetId)).toEqual({
+		expect(inspectorSidebarState.getContext(assetId, 'ledger-a')).toEqual({
 			active: true,
 			cards: [
 				{
@@ -53,11 +53,30 @@ describe('inspectorSidebarState', () => {
 					}
 				}
 			]
-		});
+		}, 'ledger-a');
 
 		vi.advanceTimersByTime(10 * 60 * 1000);
 
-		expect(inspectorSidebarState.getContext(assetId)).toEqual({
+		expect(inspectorSidebarState.getContext(assetId, 'ledger-a')).toEqual({
+			active: false,
+			cards: []
+		});
+	});
+
+	it('invalidates when the ledger key changes', () => {
+		inspectorSidebarState.set(assetId, {
+			active: true,
+			cards: [
+				{
+					title: 'Focus',
+					entries: {
+						target: 'Body Shell'
+					}
+				}
+			]
+		}, 'ledger-a');
+
+		expect(inspectorSidebarState.getContext(assetId, 'ledger-b')).toEqual({
 			active: false,
 			cards: []
 		});

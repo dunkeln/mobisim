@@ -1,5 +1,6 @@
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
+import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleInspectionPatchOperation as SharedVehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import {
 	resolveSemanticLightingEdits,
@@ -127,6 +128,39 @@ async function validatePlannedOperations(
 	};
 }
 
+const MUTUALLY_EXCLUSIVE_VIEWER_MODES = ['wireframe', 'xray', 'uv_debug', 'postprocess'] as const;
+
+function buildViewerModeToggleOperations(
+	mode: (typeof MUTUALLY_EXCLUSIVE_VIEWER_MODES)[number],
+	enabled: boolean
+): SharedVehicleInspectionPatchOperation[] {
+	if (!enabled) {
+		return [
+			{
+				targetType: 'viewer',
+				targetId: mode,
+				op: 'set_enabled',
+				value: false
+			}
+		];
+	}
+
+	return [
+		...MUTUALLY_EXCLUSIVE_VIEWER_MODES.filter((candidate) => candidate !== mode).map((candidate) => ({
+			targetType: 'viewer' as const,
+			targetId: candidate,
+			op: 'set_enabled' as const,
+			value: false
+		})),
+		{
+			targetType: 'viewer',
+			targetId: mode,
+			op: 'set_enabled',
+			value: true
+		}
+	];
+}
+
 export async function planVehicleEditOperations(
 	assetId: VehicleAssetId,
 	request: string
@@ -138,21 +172,11 @@ export async function planVehicleEditOperations(
 	const requestedLightingCategories = resolveLightingCategories(requestText);
 
 	if (requestText.includes('wireframe')) {
-		operations.push({
-			targetType: 'viewer',
-			targetId: 'wireframe',
-			op: 'set_enabled',
-			value: !disable
-		});
+		operations.push(...buildViewerModeToggleOperations('wireframe', !disable));
 	}
 
 	if (requestText.includes('xray') || requestText.includes('x-ray')) {
-		operations.push({
-			targetType: 'viewer',
-			targetId: 'xray',
-			op: 'set_enabled',
-			value: !disable
-		});
+		operations.push(...buildViewerModeToggleOperations('xray', !disable));
 	}
 
 	if (
@@ -160,21 +184,11 @@ export async function planVehicleEditOperations(
 		requestText.includes('uv_debug') ||
 		/\buv\b/.test(requestText)
 	) {
-		operations.push({
-			targetType: 'viewer',
-			targetId: 'uv_debug',
-			op: 'set_enabled',
-			value: !disable
-		});
+		operations.push(...buildViewerModeToggleOperations('uv_debug', !disable));
 	}
 
 	if (requestText.includes('postprocess') || requestText.includes('post-processing')) {
-		operations.push({
-			targetType: 'viewer',
-			targetId: 'postprocess',
-			op: 'set_enabled',
-			value: !disable
-		});
+		operations.push(...buildViewerModeToggleOperations('postprocess', !disable));
 	}
 
 	operations.push(...(await resolveSemanticLightingEdits(capabilities, requestText, disable)));
@@ -210,6 +224,8 @@ export async function resolveVehicleIntent(
 	request: string,
 	options?: {
 		presentation?: VehicleIntentPresentationContext;
+		selectedGroupId?: string;
+		selectedNodes?: VehicleNodeSelection[];
 	}
 ): Promise<PlannedVehicleIntentResult> {
 	const trimmedRequest = request.trim();
@@ -251,7 +267,9 @@ export async function resolveVehicleIntent(
 		matchedIntent = true;
 		const query = extractHighlightQuery(trimmedRequest);
 		if (semanticPartMode === 'highlight') {
-			const highlightPlan = await planVehicleHighlightIntent(assetId, query || trimmedRequest);
+			const highlightPlan = await planVehicleHighlightIntent(assetId, query || trimmedRequest, {
+				selectedGroupId: options?.selectedGroupId
+			});
 
 			plannedOperations = mergePatchOperations(plannedOperations, highlightPlan.operations);
 			rejected.push(...highlightPlan.rejected);
@@ -260,7 +278,8 @@ export async function resolveVehicleIntent(
 			const partPlan = await planVehiclePartIntent(
 				assetId,
 				query || trimmedRequest,
-				semanticPartMode
+				semanticPartMode,
+				options
 			);
 			plannedOperations = mergePatchOperations(plannedOperations, partPlan.operations);
 			summaryParts.push(partPlan.summary);

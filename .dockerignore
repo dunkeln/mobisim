@@ -11,7 +11,10 @@ test-results
 .env.*
 !.env.example
 assets
+storage
 docs
 .claude
 .codex
 .vscode
+**/*.test.*
+**/*.spec.*

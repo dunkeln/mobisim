@@ -5,6 +5,7 @@ import { vehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 import { requestGate } from '$lib/stores/request-gate';
+import { summarizeRestoreInstruction } from '$lib/contracts/footer-chat-restore';
 import type {
 	FooterChatPresentationContext,
 	FooterChatSidebarState,
@@ -19,6 +20,7 @@ import type {
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
+import type { VehiclePresentationState } from '$lib/stores/vehicle-patches';
 
 const BULK_MATERIAL_TARGET_THRESHOLD = 8;
 const BULK_NODE_TARGET_THRESHOLD = 12;
@@ -33,6 +35,123 @@ export type AppLayerApprovalResult = {
 	approved: boolean;
 	blockedMessage?: string;
 };
+
+export function getAppliedChatResponseMessage(payload: ChatResponse): string {
+	if (payload.historyAction === 'reset') {
+		return 'All active drift was cleared back to the original GLB state.';
+	}
+
+	if (payload.historyAction === 'clear_highlights') {
+		return 'Active highlight overlays were cleared.';
+	}
+
+	if (payload.historyAction === 'redo') {
+		return 'The most recent reverted change was reapplied.';
+	}
+
+	if (payload.historyAction === 'undo') {
+		return 'The most recent change was reverted.';
+	}
+
+	if (payload.presentationRestore) {
+		return summarizeRestoreInstruction(payload.presentationRestore);
+	}
+
+	return payload.message.content;
+}
+
+function summarizeVerifiedRestore(input: {
+	before: VehiclePresentationState;
+	restore: NonNullable<ChatResponse['presentationRestore']>;
+}): string {
+	if (input.restore.restoreAll) {
+		return input.before.materialOperations.some(
+			(operation) =>
+				operation.op === 'set_base_color_factor' ||
+				operation.op === 'set_metalness_factor' ||
+				operation.op === 'set_roughness_factor' ||
+				operation.op === 'set_env_map_intensity'
+		)
+			? 'Restored the vehicle to its original view while preserving paint and finish edits.'
+			: 'Restored the vehicle to its original rendered state.';
+	}
+
+	const beforeHighlightedIds = new Set(
+		input.before.highlightOperations.map((operation) => operation.targetId)
+	);
+	const beforeMaterialIds = new Set(
+		input.before.materialOperations.map((operation) => operation.targetId)
+	);
+	const beforeHiddenIds = new Set(
+		input.before.nodeVisibilityOperations.map((operation) => operation.targetId)
+	);
+	const beforeViewerModes = new Set(
+		input.before.viewerOperations
+			.filter(
+				(operation) =>
+					operation.op === 'set_enabled' &&
+					operation.value === true &&
+					(operation.targetId === 'wireframe' ||
+						operation.targetId === 'xray' ||
+						operation.targetId === 'uv_debug' ||
+						operation.targetId === 'postprocess')
+			)
+			.map((operation) => operation.targetId)
+	);
+
+	const restored = {
+		highlightedTargetIds: (input.restore.highlightedTargetIds ?? []).filter((targetId) =>
+			beforeHighlightedIds.has(targetId)
+		),
+		hiddenTargetIds: (input.restore.hiddenTargetIds ?? []).filter((targetId) =>
+			beforeHiddenIds.has(targetId)
+		),
+		materialTargetIds: (input.restore.materialTargetIds ?? []).filter((targetId) =>
+			beforeMaterialIds.has(targetId)
+		),
+		viewerModes: (input.restore.viewerModes ?? []).filter((mode) => beforeViewerModes.has(mode)),
+		label: input.restore.label
+	};
+
+	return summarizeRestoreInstruction(restored);
+}
+
+function appendViewerModeNote(
+	message: string,
+	presentation: VehiclePresentationState | undefined
+): string {
+	if (!presentation) {
+		return message;
+	}
+
+	const activeViewerModes = presentation.viewerOperations
+		.filter(
+			(operation) =>
+				operation.op === 'set_enabled' &&
+				operation.value === true &&
+				(operation.targetId === 'wireframe' ||
+					operation.targetId === 'xray' ||
+					operation.targetId === 'uv_debug' ||
+					operation.targetId === 'postprocess')
+		)
+		.map((operation) => operation.targetId);
+
+	if (activeViewerModes.length === 0) {
+		return message;
+	}
+
+	const labels = activeViewerModes.map((mode) =>
+		mode === 'uv_debug' ? 'UV debug' : mode === 'postprocess' ? 'postprocess' : mode
+	);
+	const viewerSummary =
+		labels.length === 1
+			? labels[0]
+			: labels.length === 2
+				? `${labels[0]} and ${labels[1]}`
+				: `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
+
+	return `${message} ${viewerSummary} view remains active.`;
+}
 
 type SemanticOverlaySnapshotResponse = VehicleSemanticOverlaySnapshot & {
 	commandStatus?: string;
@@ -123,16 +242,17 @@ export function getPresentationContext(
 
 export function getSelectedNodeContext(assetId?: VehicleAssetId) {
 	const selectedNodes = get(vehicleNodeSelection).filter((selection) => selection.assetId === assetId);
+	const currentSelection = selectedNodes[selectedNodes.length - 1];
 
 	return {
 		assetId,
-		selectedNodeId: selectedNodes[0]?.nodeId,
-		selectedNodeName: selectedNodes[0]
-			? selectedNodes[0].targetType === 'part'
-				? `${selectedNodes[0].targetName ?? selectedNodes[0].nodeName} part`
-				: selectedNodes[0].nodeName
+		selectedNodeId: currentSelection?.nodeId,
+		selectedNodeName: currentSelection
+			? currentSelection.targetType === 'part'
+				? `${currentSelection.targetName ?? currentSelection.nodeName} part`
+				: currentSelection.nodeName
 			: undefined,
-		selectedNodePath: selectedNodes[0]?.nodePath,
+		selectedNodePath: currentSelection?.nodePath,
 		selectedNodes
 	};
 }
@@ -148,12 +268,18 @@ export function getSelectedSemanticGroupContext(assetId?: VehicleAssetId): {
 	return runtimeState.selectedGroupId ? { selectedGroupId: runtimeState.selectedGroupId } : {};
 }
 
-export function getSidebarContext(assetId?: VehicleAssetId): FooterChatSidebarState {
-	return inspectorSidebarState.getContext(assetId);
+export function getSidebarContext(
+	assetId: VehicleAssetId,
+	contextKey: string
+): FooterChatSidebarState {
+	return inspectorSidebarState.getContext(assetId, contextKey);
 }
 
-export function getSupplementaryListContext(assetId?: VehicleAssetId): FooterChatSupplementaryListState {
-	return footerSupplementaryList.getContext(assetId);
+export function getSupplementaryListContext(
+	assetId: VehicleAssetId,
+	contextKey: string
+): FooterChatSupplementaryListState {
+	return footerSupplementaryList.getContext(assetId, contextKey);
 }
 
 export function beginFooterResponseCycle(assetId?: VehicleAssetId): void {
@@ -281,58 +407,77 @@ export async function approveBulkApplication(payload: ChatResponse): Promise<App
 			};
 }
 
-function buildSemanticIngressRequestVariable(
-	mutation: ChatResponse['semanticIngressMutation'],
-	assetId?: VehicleAssetId
-): string | null {
-	if (!assetId || !mutation) {
+function buildSemanticMutationRequestVariable(payload: ChatResponse): string | null {
+	const trace = payload.trace;
+	if (!trace || trace.executedToolDomain !== 'semantics') {
 		return null;
 	}
 
-	const runtimeState = semanticRuntimeState.getAssetState(assetId);
-	const selectedGroupId = runtimeState.selectedGroupId;
-	if (mutation.targetType === 'semantic_group' && selectedGroupId && mutation.targetId !== selectedGroupId) {
-		return null;
+	if (trace.destructiveScope === 'overlay_delete') {
+		return trace.approvalSummary?.trim() || 'Delete semantic overlay for this asset?';
 	}
-	const targetLabel = mutation.targetLabel?.trim() || mutation.targetId;
-	const transportLabel = mutation.transport === 'rest_sse' ? 'live' : 'stream';
 
-	switch (mutation.action) {
-		case 'create':
-			return `Create ${transportLabel} ingress for ${targetLabel}?`;
-		case 'replace':
-			return `Replace ${transportLabel} ingress for ${targetLabel}?`;
-		case 'delete':
-			return `Delete ${transportLabel} ingress for ${targetLabel}?`;
-		default:
-			return null;
+	if (trace.destructiveScope === 'group_delete') {
+		return trace.approvalSummary?.trim() || 'Delete semantic group?';
 	}
+
+	if (trace.destructiveScope === 'broad_membership_mutation') {
+		if (typeof trace.approvalSummary === 'string' && trace.approvalSummary.trim().length > 0) {
+			return trace.approvalSummary;
+		}
+		if (typeof trace.affectedTargetCount === 'number' && trace.affectedTargetCount > 0) {
+			return `Apply semantic reassignment across ${trace.affectedTargetCount} targets?`;
+		}
+		return 'Apply semantic reassignment?';
+	}
+
+	return null;
 }
 
-export async function approveSemanticIngressApplication(
-	payload: ChatResponse,
-	assetId?: VehicleAssetId
-): Promise<AppLayerApprovalResult> {
-	if (!payload.semanticIngressMutation) {
-		return { approved: true };
-	}
-
-	const requestVariable = buildSemanticIngressRequestVariable(payload.semanticIngressMutation, assetId);
+export async function approveSemanticMutation(payload: ChatResponse): Promise<AppLayerApprovalResult> {
+	const requestVariable = buildSemanticMutationRequestVariable(payload);
 	if (!requestVariable) {
 		return { approved: true };
 	}
 
-	const approved = await requestApproval(requestVariable);
-	return approved
-		? { approved: true }
-		: {
-				approved: false,
-				blockedMessage: 'Ingress approval declined. No semantic ingress changes were applied.'
-			};
+	try {
+		const approved = await requestApproval(requestVariable);
+		return approved
+			? { approved: true }
+			: {
+					approved: false,
+					blockedMessage: 'Approval declined. No changes were applied.'
+				};
+	} catch {
+		return {
+			approved: false,
+			blockedMessage: 'Approval declined. No changes were applied.'
+		};
+	}
 }
 
-export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetId): void {
+export async function approveChatResponseApplication(
+	payload: ChatResponse
+): Promise<AppLayerApprovalResult> {
+	const bulkApproval = await approveBulkApplication(payload);
+	if (!bulkApproval.approved) {
+		return bulkApproval;
+	}
+
+	return approveSemanticMutation(payload);
+}
+
+export function applyChatResponse(
+	payload: ChatResponse,
+	assetId?: VehicleAssetId,
+	contextKey?: string
+): string {
+	const beforePatchState = get(vehiclePatchState);
+	const beforePresentation =
+		beforePatchState.assetId === assetId ? beforePatchState.presentation : undefined;
 	const semanticTargetAssetId = payload.semanticOverlay?.assetId ?? assetId;
+	const selectedGroupPatch =
+		payload.selectedGroupId !== undefined ? { selectedGroupId: payload.selectedGroupId } : {};
 	if (semanticTargetAssetId && payload.semanticOverlay !== undefined) {
 		// Only update the overlay store when a semantic tool explicitly returned an overlay.
 		// semanticOverlayStatus is present on every response (including pure presentation
@@ -344,13 +489,10 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 		};
 		semanticRuntimeState.applyAssetState(semanticTargetAssetId, {
 			overlaySnapshot: snapshot,
-			ingressBindings:
-				assetId && semanticTargetAssetId === assetId ? payload.semanticIngressBindings : undefined
+			...selectedGroupPatch
 		});
-	} else if (assetId && payload.semanticIngressBindings) {
-		semanticRuntimeState.applyAssetState(assetId, {
-			ingressBindings: payload.semanticIngressBindings
-		});
+	} else if (assetId && payload.selectedGroupId !== undefined) {
+		semanticRuntimeState.applyAssetState(assetId, selectedGroupPatch);
 	}
 
 	if (payload.historyAction === 'undo') {
@@ -380,6 +522,12 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 		) {
 			throw new Error('There are no highlight overlays to clear.');
 		}
+
+		if (assetId) {
+			semanticRuntimeState.applyAssetState(assetId, {
+				selectedGroupId: null
+			});
+		}
 	}
 
 	if (payload.vehiclePatchOperations && payload.vehiclePatchOperations.length > 0) {
@@ -405,6 +553,24 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 		if (!didRestore && !payload.vehiclePatchOperations?.length) {
 			throw new Error('No active vehicle presentation matched the restore request.');
 		}
+
+		if (
+			assetId &&
+			(payload.presentationRestore.restoreAll === true ||
+				(payload.presentationRestore.highlightedTargetIds?.length ?? 0) > 0 ||
+				(payload.presentationRestore.hiddenTargetIds?.length ?? 0) > 0)
+		) {
+			const afterPatchState = get(vehiclePatchState);
+			if (
+				afterPatchState.assetId === assetId &&
+				afterPatchState.presentation.highlightOperations.length === 0 &&
+				afterPatchState.presentation.nodeVisibilityOperations.length === 0
+			) {
+				semanticRuntimeState.applyAssetState(assetId, {
+					selectedGroupId: null
+				});
+			}
+		}
 	}
 
 	if (payload.selectionUpdate?.mode === 'replace') {
@@ -416,12 +582,42 @@ export function applyChatResponse(payload: ChatResponse, assetId?: VehicleAssetI
 	}
 
 	if (payload.sidebar && assetId) {
-		inspectorSidebarState.set(assetId, payload.sidebar);
+		if (!contextKey) {
+			throw new Error('Missing session ledger key for sidebar state.');
+		}
+		inspectorSidebarState.set(assetId, payload.sidebar, contextKey);
 	}
 
 	if (assetId && payload.supplementaryList) {
-		footerSupplementaryList.set(assetId, payload.supplementaryList);
+		if (!contextKey) {
+			throw new Error('Missing session ledger key for supplementary list state.');
+		}
+		footerSupplementaryList.set(assetId, payload.supplementaryList, contextKey);
 	} else if (assetId) {
 		footerSupplementaryList.reset(assetId);
 	}
+
+	if (payload.presentationRestore && beforePresentation) {
+		return appendViewerModeNote(
+			summarizeVerifiedRestore({
+				before: beforePresentation,
+				restore: payload.presentationRestore
+			}),
+			get(vehiclePatchState).assetId === assetId ? get(vehiclePatchState).presentation : beforePresentation
+		);
+	}
+
+	if (payload.historyAction === 'clear_highlights' && beforePresentation) {
+		return appendViewerModeNote(
+			summarizeRestoreInstruction({
+				highlightedTargetIds: beforePresentation.highlightOperations.map(
+					(operation) => operation.targetId
+				),
+				label: 'clear highlights'
+			}),
+			get(vehiclePatchState).assetId === assetId ? get(vehiclePatchState).presentation : beforePresentation
+		);
+	}
+
+	return getAppliedChatResponseMessage(payload);
 }

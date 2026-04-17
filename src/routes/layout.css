@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
@@ -33,7 +32,8 @@
 	--color-boundary-primary: var(--boundary-primary);
 	--color-boundary-text: var(--boundary-text);
 	--font-sans:
-		'Open Sans', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+		'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+		'Helvetica Neue', Arial, sans-serif;
 	--font-serif: 'Anthropic Serif', 'Ivar Text', 'Source Serif 4', 'Times New Roman', serif;
 	--font-mono: 'JetBrains Mono', 'SFMono-Regular', 'SF Mono', 'Roboto Mono', monospace;
 }
@@ -108,20 +108,102 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
+
+	.canvas-control {
+		--canvas-control-radius: 9999px;
+		position: relative;
+		display: inline-flex;
+		min-width: 2.75rem;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.canvas-control__button {
+		position: relative;
+		z-index: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		background:
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		backdrop-filter: blur(16px) saturate(106%);
+		-webkit-backdrop-filter: blur(16px) saturate(106%);
+		border-radius: var(--canvas-control-radius);
+		transition:
+			background 180ms ease,
+			border-color 180ms ease,
+			box-shadow 180ms ease,
+			color 180ms ease,
+			transform 180ms ease;
+	}
+
+	.canvas-control__button:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--color-boundary-text) 16%, transparent);
+		background:
+			radial-gradient(
+				44% 38% at 24% 18%,
+				color-mix(in srgb, var(--color-boundary-secondary) 10%, transparent),
+				transparent 72%
+			),
+			radial-gradient(
+				34% 32% at 76% 30%,
+				color-mix(in srgb, var(--color-boundary-secondary) 7%, transparent),
+				transparent 78%
+			),
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 5%, transparent), transparent 26%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-secondary) 6%, transparent),
+				color-mix(in srgb, var(--color-boundary-secondary) 2%, transparent) 55%,
+				color-mix(in srgb, var(--color-boundary-text) 1.25%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+			inset 0 0 20px color-mix(in srgb, var(--color-boundary-secondary) 5%, transparent),
+			0 12px 28px color-mix(in srgb, var(--color-boundary-background) 14%, transparent);
+		color: color-mix(in oklab, var(--boundary-text) 90%, transparent);
+		transform: translateY(-1px);
+	}
+
+	.canvas-glass-panel {
+		position: relative;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 12%, transparent);
+		background:
+			radial-gradient(circle at 20% 8%, color-mix(in srgb, white 4%, transparent), transparent 28%),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--color-boundary-text) 2.5%, transparent),
+				color-mix(in srgb, var(--color-boundary-text) 0.75%, transparent)
+			);
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+			0 10px 24px color-mix(in srgb, var(--color-boundary-background) 12%, transparent);
+		backdrop-filter: blur(16px) saturate(106%);
+		-webkit-backdrop-filter: blur(16px) saturate(106%);
+	}
 }
 
 @layer base {
 	:root {
 		color-scheme: dark;
-		--boundary-background: rgba(20, 20, 20, 1);
+		--boundary-background: rgba(12, 12, 12, 1);
 		--boundary-warning: hsl(8 49% 51%);
 		--boundary-secondary: hsl(34 75% 73%);
 		--boundary-tertiary: hsl(186 52% 67%);
 		--boundary-primary: hsl(246 38% 66%);
 		--boundary-text: hsl(220 39% 92%);
 		--surface-background: var(--boundary-background);
-		--surface-elevated: color-mix(in oklab, var(--boundary-background) 82%, black);
-		--surface-muted: color-mix(in oklab, var(--boundary-background) 68%, var(--boundary-primary));
+		--surface-elevated: color-mix(in oklab, var(--boundary-background) 86%, black);
+		--surface-muted: color-mix(in oklab, var(--boundary-background) 74%, var(--boundary-primary));
 		--surface-border: color-mix(in oklab, var(--boundary-text) 14%, transparent);
 		--surface-foreground: var(--boundary-text);
 		--surface-subtle: color-mix(in oklab, var(--boundary-text) 56%, transparent);
@@ -164,28 +246,7 @@
 	body {
 		min-height: 100dvh;
 		background-color: var(--boundary-background);
-		background:
-			radial-gradient(
-				circle at 18% 18%,
-				color-mix(in oklab, var(--surface-primary) 16%, transparent),
-				transparent 24%
-			),
-			radial-gradient(
-				circle at 82% 12%,
-				color-mix(in oklab, var(--surface-secondary) 12%, transparent),
-				transparent 20%
-			),
-			radial-gradient(
-				circle at top,
-				color-mix(in oklab, var(--boundary-text) 6%, transparent),
-				transparent 32%
-			),
-			linear-gradient(
-				180deg,
-				color-mix(in oklab, var(--color-shell) 84%, var(--boundary-primary)) 0%,
-				var(--color-shell) 38%,
-				color-mix(in oklab, var(--color-shell) 86%, black) 100%
-			);
+		background: var(--boundary-background);
 		color: var(--boundary-text);
 		color: var(--color-shell-foreground);
 		overflow: hidden;

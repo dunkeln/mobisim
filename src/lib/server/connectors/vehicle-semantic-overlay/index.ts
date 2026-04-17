@@ -1,5 +1,4 @@
 import { env } from '$env/dynamic/private';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import OpenAI from 'openai';
 import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 import { deriveVehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess';
@@ -15,18 +14,20 @@ import {
 	readSemanticGroupDefinitions
 } from '$lib/server/connectors/semantic-groups';
 import {
-	resolveSemanticOverlayDirectory,
-	resolveSemanticOverlayPath
+	deleteJsonObject,
+	readJsonObject,
+	writeJsonObject
+} from '$lib/server/connectors/vehicle-registry/s3';
+import {
+	resolveSemanticOverlayKey
 } from '$lib/server/connectors/vehicle-registry/storage';
 import type { VehicleInspectionCapabilities } from '$lib/server/connectors/gltf-preprocess/types';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type {
 	GenerateVehicleSemanticOverlayOptions,
-	SemanticCommandResult,
 	VehicleSemanticActionSupport,
 	VehicleSemanticAssignmentMutation,
 	VehicleSemanticGroup,
-	VehicleSemanticOverlaySnapshot,
 	VehicleSemanticPartCategory,
 	VehicleSemanticPartRegion,
 	VehicleSemanticPartSide,
@@ -43,7 +44,6 @@ const DEFAULT_MODEL = 'gpt-5.2';
 const DEFAULT_MIN_ACCEPTED_CONFIDENCE = 0.7;
 
 let client: OpenAI | null = null;
-const inflightRefreshes = new Map<string, Promise<VehicleSemanticOverlay>>();
 
 export class VehicleSemanticOverlayConfigError extends Error {}
 export class VehicleSemanticOverlayUpstreamError extends Error {}
@@ -109,6 +109,21 @@ const MINIMAL_PROMPT_BUDGET: SemanticPromptBudget = {
 	maxChildIdsPerNode: 2,
 	maxStringLength: 56
 };
+
+export function buildVehicleSemanticOverlaySnapshot(input: {
+	overlay: VehicleSemanticOverlay | null;
+	overlayStatus: VehicleSemanticOverlayStatus;
+	commandStatus?: string;
+	appliedCommand?: string;
+}) {
+	return {
+		overlay: input.overlay,
+		overlayRevision: input.overlay?.revision ?? null,
+		overlayStatus: input.overlayStatus,
+		...(input.commandStatus ? { commandStatus: input.commandStatus } : {}),
+		...(input.appliedCommand ? { appliedCommand: input.appliedCommand } : {})
+	};
+}
 
 function getClient(): OpenAI {
 	if (!env.OPENAI_API_KEY) {
@@ -352,16 +367,44 @@ function normalizeActionSupportArray(value: unknown): VehicleSemanticActionSuppo
 	).sort((left, right) => left.localeCompare(right));
 }
 
+function normalizeOtherCategoryDetail(input: {
+	id: string;
+	humanLabel: string;
+	categoryDetail?: string | undefined;
+}): string {
+	const explicit = input.categoryDetail?.trim();
+	if (explicit && explicit.toLowerCase() !== 'other') {
+		return explicit;
+	}
+
+	if (input.id === 'vehicle' || input.humanLabel.trim().toLowerCase() === 'vehicle') {
+		return 'asset';
+	}
+
+	const label = input.humanLabel.trim();
+	if (label.length > 0 && label.toLowerCase() !== 'other') {
+		return label;
+	}
+
+	return 'misc';
+}
+
 function getCanonicalSemanticGroupId(input: {
 	id: string;
 	category: VehicleSemanticGroup['category'];
 	humanLabel: string;
+	categoryDetail?: string;
 }): string {
 	if (input.category !== 'other') {
 		return input.category;
 	}
 
-	return input.id || slugifyPartId(input.humanLabel) || 'semantic_group';
+	const detail = normalizeOtherCategoryDetail({
+		id: input.id,
+		humanLabel: input.humanLabel,
+		categoryDetail: input.categoryDetail
+	});
+	return slugifyPartId(detail) || 'group';
 }
 
 function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
@@ -372,6 +415,10 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 	const candidate = value as Record<string, unknown>;
 	const humanLabel = typeof candidate.humanLabel === 'string' ? candidate.humanLabel.trim() : '';
 	const idCandidate = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+	const categoryDetail =
+		typeof candidate.categoryDetail === 'string'
+			? candidate.categoryDetail.trim() || undefined
+			: undefined;
 	const aliases = normalizeStringArray(candidate.aliases);
 	const confidence =
 		typeof candidate.confidence === 'number' && Number.isFinite(candidate.confidence)
@@ -400,13 +447,34 @@ function normalizeGroup(value: unknown): VehicleSemanticGroup | null {
 		return null;
 	}
 
+	const normalizedId =
+		category !== 'other' && idCandidate.length > 0
+			? slugifyPartId(idCandidate)
+			: getCanonicalSemanticGroupId({
+					id: idCandidate,
+					category,
+					humanLabel,
+					categoryDetail
+				});
+
 	return {
-		id: getCanonicalSemanticGroupId({
-			id: idCandidate,
-			category,
-			humanLabel
-		}),
-		humanLabel,
+		id: normalizedId,
+		humanLabel:
+			category === 'other'
+				? normalizeOtherCategoryDetail({
+						id: idCandidate,
+						humanLabel,
+						categoryDetail
+					})
+				: humanLabel,
+		categoryDetail:
+			category === 'other'
+				? normalizeOtherCategoryDetail({
+						id: idCandidate,
+						humanLabel,
+						categoryDetail
+					})
+				: undefined,
 		aliases,
 		confidence: Math.min(1, Math.max(0, confidence)),
 		category,
@@ -793,6 +861,7 @@ function validateParts(
 	discardedSuggestions: VehicleSemanticOverlayDiscard[];
 } {
 	const validNodeIds = new Set(structure.nodes.map((node) => node.id));
+	const validMeshIds = new Set(structure.meshes.map((mesh) => mesh.id));
 	const validMaterialIds = new Set(structure.materials.map((material) => material.id));
 	const accepted = new Map<string, VehicleSemanticPartUnit>();
 	const discardedSuggestions: VehicleSemanticOverlayDiscard[] = [];
@@ -1325,8 +1394,8 @@ async function readStoredVehicleSemanticOverlay(
 	assetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
 	try {
-		const raw = await readFile(resolveSemanticOverlayPath(assetId), 'utf8');
-		return normalizeOverlay(JSON.parse(raw));
+		const raw = await readJsonObject<VehicleSemanticOverlay>(resolveSemanticOverlayKey(assetId));
+		return raw ? normalizeOverlay(raw) : null;
 	} catch {
 		return null;
 	}
@@ -1388,6 +1457,7 @@ async function deriveReviewedSemanticGroups(
 		groups.push({
 			id: definition.id,
 			humanLabel: definition.humanLabel,
+			categoryDetail: definition.categoryDetail,
 			aliases: definition.aliases,
 			confidence: 1,
 			category: definition.category,
@@ -1400,41 +1470,6 @@ async function deriveReviewedSemanticGroups(
 	}
 
 	return groups.sort((left, right) => left.id.localeCompare(right.id));
-}
-
-function mergeAgentAndUserGroups(
-	agentGroups: VehicleSemanticGroup[],
-	userGroups: VehicleSemanticGroup[]
-): VehicleSemanticGroup[] {
-	return reduceVisibleSemanticGroups(reduceSemanticGroups([...agentGroups, ...userGroups]));
-}
-
-function haveGroupsChanged(
-	current: VehicleSemanticGroup[],
-	next: VehicleSemanticGroup[]
-): boolean {
-	return JSON.stringify(current) !== JSON.stringify(next);
-}
-
-async function sanitizeOverlayGroups(
-	overlay: Omit<VehicleSemanticOverlay, 'revision'> & { revision?: number }
-): Promise<{
-	acceptedGroups: VehicleSemanticGroup[];
-	discardedSuggestions: VehicleSemanticOverlayDiscard[];
-}> {
-	const structure = await deriveStructuralAssetSnapshot(overlay.assetId);
-	const validation = validateGroups(
-		overlay.acceptedGroups,
-		structure,
-		overlay.acceptedMaterials,
-		overlay.acceptedParts,
-		overlay.minAcceptedConfidence
-	);
-
-	return {
-		acceptedGroups: validation.acceptedGroups,
-		discardedSuggestions: [...overlay.discardedSuggestions, ...validation.discardedSuggestions]
-	};
 }
 
 function resolveGroupNodeIds(
@@ -1491,24 +1526,7 @@ async function persistSemanticGroupProposals(
 export async function readVehicleSemanticOverlay(
 	assetId: VehicleAssetId
 ): Promise<VehicleSemanticOverlay | null> {
-	const overlay = await readStoredVehicleSemanticOverlay(assetId);
-	if (!overlay) return null;
-	const canonicalGroups = reduceSemanticGroups(
-		overlay.acceptedGroups.map((group) => ({
-			...group,
-			meshIds: [],
-			id: getCanonicalSemanticGroupId({
-				id: group.id,
-				category: group.category,
-				humanLabel: group.humanLabel
-			})
-		})).filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
-	);
-	const requiresCanonicalRewrite = haveGroupsChanged(overlay.acceptedGroups, canonicalGroups);
-	if (requiresCanonicalRewrite) {
-		return writeVehicleSemanticOverlay({ ...overlay, acceptedGroups: canonicalGroups });
-	}
-	return overlay;
+	return readStoredVehicleSemanticOverlay(assetId);
 }
 
 export async function writeVehicleSemanticOverlay(
@@ -1516,43 +1534,38 @@ export async function writeVehicleSemanticOverlay(
 ): Promise<VehicleSemanticOverlay> {
 	const current = await readStoredVehicleSemanticOverlay(overlay.assetId);
 	const canonicalGroups = reduceSemanticGroups(
-		overlay.acceptedGroups.map((group) => ({
-			...group,
-			meshIds: [],
-			id: getCanonicalSemanticGroupId({
-				id: group.id,
-				category: group.category,
-				humanLabel: group.humanLabel
-			})
-		})).filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
+		overlay.acceptedGroups
+			.map((group) => ({
+				...group,
+				meshIds: [],
+				id: getCanonicalSemanticGroupId({
+					id: group.id,
+					category: group.category,
+					humanLabel: group.humanLabel,
+					categoryDetail: group.categoryDetail
+				})
+			}))
+			.filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
 	);
 	const nextOverlay: VehicleSemanticOverlay = {
 		...overlay,
 		acceptedGroups: canonicalGroups,
 		revision: (current?.revision ?? 0) + 1
 	};
-	await mkdir(resolveSemanticOverlayDirectory(), { recursive: true });
-	await writeFile(
-		resolveSemanticOverlayPath(overlay.assetId),
-		JSON.stringify(nextOverlay, null, 2),
-		'utf8'
-	);
+	await writeJsonObject(resolveSemanticOverlayKey(overlay.assetId), nextOverlay);
 	return nextOverlay;
 }
 
-export function buildVehicleSemanticOverlaySnapshot(input: {
-	overlay: VehicleSemanticOverlay | null;
-	overlayStatus: VehicleSemanticOverlayStatus;
-	commandStatus?: SemanticCommandResult['commandStatus'];
-	appliedCommand?: SemanticCommandResult['appliedCommand'];
-}): VehicleSemanticOverlaySnapshot {
-	return {
-		overlay: input.overlay,
-		overlayRevision: input.overlay?.revision ?? null,
-		overlayStatus: input.overlayStatus,
-		commandStatus: input.commandStatus,
-		appliedCommand: input.appliedCommand
-	};
+export async function deleteVehicleSemanticOverlay(
+	assetId: VehicleAssetId
+): Promise<boolean> {
+	const existing = await readStoredVehicleSemanticOverlay(assetId);
+	if (!existing) {
+		return false;
+	}
+
+	await deleteJsonObject(resolveSemanticOverlayKey(assetId));
+	return true;
 }
 
 export async function generateVehicleSemanticOverlay(
@@ -1570,15 +1583,25 @@ export async function generateVehicleSemanticOverlay(
 		existing.structuralGeneratedAt === capabilities.generatedAt &&
 		existing.minAcceptedConfidence === minAcceptedConfidence
 	) {
-		const sanitizedExisting = await sanitizeOverlayGroups(existing);
+		const sanitizedStructure = await deriveStructuralAssetSnapshot(existing.assetId);
+		const sanitizedValidation = validateGroups(
+			existing.acceptedGroups,
+			sanitizedStructure,
+			existing.acceptedMaterials,
+			existing.acceptedParts,
+			existing.minAcceptedConfidence
+		);
 		if (
-			haveGroupsChanged(existing.acceptedGroups, sanitizedExisting.acceptedGroups) ||
-			sanitizedExisting.discardedSuggestions.length !== existing.discardedSuggestions.length
+			JSON.stringify(existing.acceptedGroups) !== JSON.stringify(sanitizedValidation.acceptedGroups) ||
+			sanitizedValidation.discardedSuggestions.length !== existing.discardedSuggestions.length
 		) {
 			return writeVehicleSemanticOverlay({
 				...existing,
-				acceptedGroups: sanitizedExisting.acceptedGroups,
-				discardedSuggestions: sanitizedExisting.discardedSuggestions
+				acceptedGroups: sanitizedValidation.acceptedGroups,
+				discardedSuggestions: [
+					...existing.discardedSuggestions,
+					...sanitizedValidation.discardedSuggestions
+				]
 			});
 		}
 
@@ -1607,7 +1630,14 @@ export async function generateVehicleSemanticOverlay(
 		minAcceptedConfidence
 	);
 	const validatedParts = validateParts(normalizedParts, structure, minAcceptedConfidence);
-	const validatedGroups = validateGroups(
+	const validatedModelGroups = validateGroups(
+		normalizedGroups,
+		structure,
+		validatedMaterials.acceptedMaterials,
+		validatedParts.acceptedParts,
+		minAcceptedConfidence
+	);
+	const validatedSynthesizedGroups = validateGroups(
 		synthesizeSemanticGroups(validatedMaterials.acceptedMaterials, validatedParts.acceptedParts),
 		structure,
 		validatedMaterials.acceptedMaterials,
@@ -1619,11 +1649,14 @@ export async function generateVehicleSemanticOverlay(
 	const existingOverlay = await readStoredVehicleSemanticOverlay(assetId);
 	const preservedUserGroups = existingOverlay?.acceptedGroups.filter((g) => g.author === 'user') ?? [];
 
-	// Merge new agent groups with preserved user groups, then revalidate the merged result against
-	// the current executable semantic contract before persisting.
-	const newAgentGroups = validatedGroups.acceptedGroups;
 	const mergedGroupValidation = validateGroups(
-		mergeAgentAndUserGroups(newAgentGroups, preservedUserGroups),
+		reduceVisibleSemanticGroups(
+			reduceSemanticGroups([
+				...validatedModelGroups.acceptedGroups,
+				...validatedSynthesizedGroups.acceptedGroups,
+				...preservedUserGroups
+			])
+		),
 		structure,
 		validatedMaterials.acceptedMaterials,
 		validatedParts.acceptedParts,
@@ -1639,11 +1672,25 @@ export async function generateVehicleSemanticOverlay(
 		minAcceptedConfidence,
 		acceptedMaterials: validatedMaterials.acceptedMaterials,
 		acceptedParts: validatedParts.acceptedParts,
-		acceptedGroups: mergedGroups,
+		acceptedGroups: reduceSemanticGroups(
+			mergedGroups
+				.map((group) => ({
+					...group,
+					meshIds: [],
+					id: getCanonicalSemanticGroupId({
+						id: group.id,
+						category: group.category,
+						humanLabel: group.humanLabel,
+						categoryDetail: group.categoryDetail
+					})
+				}))
+				.filter((group) => group.nodeIds.length > 0 || group.materialIds.length > 0)
+		),
 		discardedSuggestions: [
 			...validatedMaterials.discardedSuggestions,
 			...validatedParts.discardedSuggestions,
-			...validatedGroups.discardedSuggestions,
+			...validatedModelGroups.discardedSuggestions,
+			...validatedSynthesizedGroups.discardedSuggestions,
 			...mergedGroupValidation.discardedSuggestions,
 			...proposalDiscards
 		]
@@ -1711,7 +1758,6 @@ export async function mutateVehicleSemanticAssignment(
 		throw new Error(`Unknown node ID: ${unknownNodeIds.join(', ')}`);
 	}
 
-	// Read current overlay. This will apply any pending migrations from the legacy store.
 	const overlay = await readVehicleSemanticOverlay(assetId);
 	const baseOverlay: VehicleSemanticOverlay =
 		overlay && overlay.structuralGeneratedAt === capabilities.generatedAt
@@ -1760,11 +1806,11 @@ export async function mutateVehicleSemanticAssignment(
 	// Compute the group ID using the same scheme as deriveReviewedSemanticGroups
 	const groupId = definition.id;
 
-	// For REASSIGN: remove the nodeIds/materialIds from any other group in the same exclusive family
+	const targetGroup = baseOverlay.acceptedGroups.find((group) => group.id === groupId);
+
 	if (mutation.action === 'reassign') {
 		const { definitions } = await readSemanticGroupDefinitions();
-		const definitionById = new Map(definitions.map((d) => [d.id, d]));
-
+		const definitionById = new Map(definitions.map((entry) => [entry.id, entry]));
 		for (const group of baseOverlay.acceptedGroups) {
 			const groupDef = definitionById.get(group.id);
 			if (
@@ -1773,20 +1819,20 @@ export async function mutateVehicleSemanticAssignment(
 				groupDef.exclusiveFamily === definition.exclusiveFamily &&
 				groupDef.id !== definition.id
 			) {
-				// Remove these node/material IDs from this group
-				group.nodeIds = group.nodeIds.filter((n) => !annotationNodeIds.includes(n));
-				group.materialIds = group.materialIds.filter((m) => !materialIds.includes(m));
+				group.nodeIds = group.nodeIds.filter((nodeId) => !annotationNodeIds.includes(nodeId));
+				group.materialIds = group.materialIds.filter((materialId) => !materialIds.includes(materialId));
+				group.meshIds = [];
 			}
 		}
 	}
 
-	// For ASSIGN or REASSIGN: find or create the target group and update it
 	if (mutation.action === 'assign' || mutation.action === 'reassign') {
-		let targetGroup = baseOverlay.acceptedGroups.find((g) => g.id === groupId);
-		if (!targetGroup) {
-			targetGroup = {
+		const nextTargetGroup =
+			targetGroup ??
+			({
 				id: groupId,
 				humanLabel: definition.humanLabel,
+				categoryDetail: definition.categoryDetail,
 				aliases: definition.aliases,
 				confidence: 1,
 				category: definition.category,
@@ -1795,83 +1841,33 @@ export async function mutateVehicleSemanticAssignment(
 				meshIds: [],
 				materialIds: [],
 				author: 'user'
-			};
-			baseOverlay.acceptedGroups.push(targetGroup);
-		} else {
-			targetGroup.author = 'user';
+			} as VehicleSemanticGroup);
+
+		nextTargetGroup.author = 'user';
+		nextTargetGroup.nodeIds = Array.from(new Set([...nextTargetGroup.nodeIds, ...annotationNodeIds])).sort(
+			(left, right) => left.localeCompare(right)
+		);
+		nextTargetGroup.materialIds = Array.from(new Set([...nextTargetGroup.materialIds, ...materialIds])).sort(
+			(left, right) => left.localeCompare(right)
+		);
+		nextTargetGroup.meshIds = [];
+
+		if (!targetGroup) {
+			baseOverlay.acceptedGroups.push(nextTargetGroup);
 		}
-
-		// Union the new nodeIds and materialIds
-		targetGroup.nodeIds = Array.from(new Set([...targetGroup.nodeIds, ...annotationNodeIds])).sort(
-			(a, b) => a.localeCompare(b)
-		);
-		targetGroup.materialIds = Array.from(new Set([...targetGroup.materialIds, ...materialIds])).sort(
-			(a, b) => a.localeCompare(b)
-		);
-
-		targetGroup.meshIds = [];
-	} else if (mutation.action === 'unassign') {
-		// For UNASSIGN: find the group and remove the nodeIds/materialIds
-		const targetGroup = baseOverlay.acceptedGroups.find((g) => g.id === groupId);
+	} else {
 		if (targetGroup) {
-			targetGroup.nodeIds = targetGroup.nodeIds.filter((n) => !annotationNodeIds.includes(n));
-			targetGroup.materialIds = targetGroup.materialIds.filter((m) => !materialIds.includes(m));
-
-			// If the group has no coverage left and is user-authored, remove it entirely
-			if (
-				targetGroup.author === 'user' &&
-				targetGroup.nodeIds.length === 0 &&
-				targetGroup.materialIds.length === 0
-			) {
-				baseOverlay.acceptedGroups = baseOverlay.acceptedGroups.filter((g) => g.id !== groupId);
+			targetGroup.nodeIds = targetGroup.nodeIds.filter((nodeId) => !annotationNodeIds.includes(nodeId));
+			targetGroup.materialIds = targetGroup.materialIds.filter((materialId) => !materialIds.includes(materialId));
+			if (targetGroup.author === 'user' && targetGroup.nodeIds.length === 0 && targetGroup.materialIds.length === 0) {
+				baseOverlay.acceptedGroups = baseOverlay.acceptedGroups.filter((group) => group.id !== groupId);
 			} else {
 				targetGroup.meshIds = [];
 			}
 		}
 	}
 
-	// Write the updated overlay directly
 	return writeVehicleSemanticOverlay(baseOverlay);
-}
-
-function createRefreshKey(
-	assetId: VehicleAssetId,
-	options: GenerateVehicleSemanticOverlayOptions
-): string {
-	return JSON.stringify({
-		assetId,
-		force: options.force === true,
-		minAcceptedConfidence: options.minAcceptedConfidence ?? DEFAULT_MIN_ACCEPTED_CONFIDENCE
-	});
-}
-
-export function refreshVehicleSemanticOverlayInBackground(
-	assetId: VehicleAssetId,
-	options: GenerateVehicleSemanticOverlayOptions = {}
-): Promise<VehicleSemanticOverlay> {
-	const refreshKey = createRefreshKey(assetId, options);
-	const existing = inflightRefreshes.get(refreshKey);
-	if (existing) {
-		return existing;
-	}
-
-	const refreshPromise = generateVehicleSemanticOverlay(assetId, options)
-		.catch((error) => {
-			console.error(
-				JSON.stringify({
-					event: 'vehicle_semantic_overlay_refresh_failed',
-					assetId,
-					error: error instanceof Error ? error.message : 'unknown error'
-				})
-			);
-			throw error;
-		})
-		.finally(() => {
-			inflightRefreshes.delete(refreshKey);
-		});
-
-	inflightRefreshes.set(refreshKey, refreshPromise);
-	return refreshPromise;
 }
 
 export async function getVehicleSemanticOverlayStatus(
@@ -1952,6 +1948,7 @@ function groupMatchesQuery(group: VehicleSemanticGroup, query: string): boolean 
 	const haystack = [
 		group.id.replaceAll('_', ' '),
 		group.humanLabel,
+		group.categoryDetail ?? '',
 		group.category,
 		...group.aliases
 	]
@@ -2043,6 +2040,17 @@ function mergeSemanticGroup(
 			left.localeCompare(right)
 		),
 		confidence: Math.max(existing.confidence, incoming.confidence),
+		categoryDetail:
+			existing.category === 'other' || incoming.category === 'other'
+				? normalizeOtherCategoryDetail({
+						id: existing.id,
+						humanLabel:
+							existing.humanLabel.length >= incoming.humanLabel.length
+								? existing.humanLabel
+								: incoming.humanLabel,
+						categoryDetail: existing.categoryDetail ?? incoming.categoryDetail
+					})
+				: undefined,
 		supports: Array.from(new Set([...existing.supports, ...incoming.supports])).sort(
 			(left, right) => left.localeCompare(right)
 		),
@@ -2070,7 +2078,7 @@ function reduceSemanticGroups(groups: VehicleSemanticGroup[]): VehicleSemanticGr
 
 function getSemanticGroupSelectionKey(group: VehicleSemanticGroup): string {
 	return group.category === 'other'
-		? `${group.category}:${slugifyPartId(group.humanLabel)}`
+		? slugifyPartId(group.categoryDetail ?? group.humanLabel)
 		: group.category;
 }
 

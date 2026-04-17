@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { resolveRuntimeSelection } from './runtime-selection';
+import { enableSelectablePickLayer, resolveRuntimeSelection } from './runtime-selection';
 
 function createCanvasRect(width: number, height: number): DOMRect {
 	return {
@@ -44,6 +44,7 @@ describe('runtime selection', () => {
 
 		scene.add(shell);
 		scene.add(engine);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -91,6 +92,7 @@ describe('runtime selection', () => {
 
 		scene.add(shell);
 		scene.add(engine);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -151,6 +153,7 @@ describe('runtime selection', () => {
 
 		scene.add(shell);
 		scene.add(engine);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -200,6 +203,7 @@ describe('runtime selection', () => {
 		]);
 		mesh.name = 'Door Assembly';
 		scene.add(mesh);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -251,6 +255,7 @@ describe('runtime selection', () => {
 		]);
 		mesh.name = 'Door Assembly';
 		scene.add(mesh);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -301,6 +306,7 @@ describe('runtime selection', () => {
 
 		scene.add(outerShell);
 		scene.add(innerCore);
+		enableSelectablePickLayer(scene);
 
 		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 		camera.position.set(0, 0, 4);
@@ -321,62 +327,5 @@ describe('runtime selection', () => {
 		expect(selection?.runtimeNode.name).toBe('Outer Shell');
 		expect(selection?.materialIndex).toBeUndefined();
 		expect(selection?.materialName).toBeUndefined();
-	});
-
-	it('can anchor selection scoring to the center sample to avoid neighboring node drift', () => {
-		const scene = new THREE.Scene();
-		scene.name = 'Scene';
-
-		const centerTarget = new THREE.Mesh(
-			new THREE.PlaneGeometry(0.48, 0.48),
-			new THREE.MeshStandardMaterial({
-				color: new THREE.Color(0.72, 0.72, 0.76),
-				transparent: true,
-				opacity: 1
-			})
-		);
-		centerTarget.name = 'Center Target';
-		centerTarget.position.set(0, 0, 0.24);
-
-		const neighborTarget = new THREE.Mesh(
-			new THREE.PlaneGeometry(0.74, 0.74),
-			new THREE.MeshStandardMaterial({
-				color: new THREE.Color(0.18, 0.32, 0.74),
-				transparent: true,
-				opacity: 1
-			})
-		);
-		neighborTarget.name = 'Neighbor Target';
-		neighborTarget.position.set(0.38, 0, 0);
-
-		scene.add(centerTarget);
-		scene.add(neighborTarget);
-
-		const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-		camera.position.set(0, 0, 4);
-		camera.lookAt(0, 0, 0);
-		camera.updateProjectionMatrix();
-		camera.updateMatrixWorld(true);
-		scene.updateMatrixWorld(true);
-
-		const looseSelection = resolveRuntimeSelection({
-			scene,
-			camera,
-			canvasRect: createCanvasRect(200, 200),
-			clientX: 100,
-			clientY: 100
-		});
-		const anchoredSelection = resolveRuntimeSelection({
-			scene,
-			camera,
-			canvasRect: createCanvasRect(200, 200),
-			clientX: 100,
-			clientY: 100,
-			anchorToCenterSample: true
-		});
-
-		expect(anchoredSelection).not.toBeNull();
-		expect(anchoredSelection?.runtimeNode.name).toBe('Center Target');
-		expect(looseSelection).not.toBeNull();
 	});
 });

@@ -170,46 +170,92 @@ export function normalizeRequest(input: FooterChatRequest): NormalizedFooterChat
 		throw new OpenAIChatInputError('Message is required.');
 	}
 
+	const rawAssetId = typeof input.assetId === 'string' ? input.assetId.trim() || undefined : undefined;
+	if (rawAssetId && !isVehicleAssetId(rawAssetId)) {
+		throw new OpenAIChatInputError('Unknown vehicle asset id.');
+	}
+
+	const normalizedAssetId = rawAssetId;
+	const normalizedPresentation = normalizePresentationContext(input.presentation);
+	const normalizedSidebar = normalizeSidebarState(input.sidebar);
+	const normalizedSupplementaryList = normalizeSupplementaryListState(input.supplementaryList);
+	const normalizedSelectedGroupId =
+		typeof input.selectedGroupId === 'string'
+			? input.selectedGroupId.trim() || undefined
+			: undefined;
+	const normalizedSelectedNodeId =
+		typeof input.selectedNodeId === 'string'
+			? input.selectedNodeId.trim() || undefined
+			: undefined;
+	const normalizedSelectedNodeName =
+		typeof input.selectedNodeName === 'string'
+			? input.selectedNodeName.trim() || undefined
+			: undefined;
+	const normalizedSelectedNodePath =
+		typeof input.selectedNodePath === 'string'
+			? input.selectedNodePath.trim() || undefined
+			: undefined;
+	const normalizedSelectedNodes = Array.isArray(input.selectedNodes)
+		? input.selectedNodes
+				.filter(
+					(entry): entry is VehicleNodeSelection =>
+						!!entry &&
+						typeof entry.assetId === 'string' &&
+						typeof entry.nodeId === 'string' &&
+						typeof entry.nodeName === 'string' &&
+						typeof entry.nodePath === 'string'
+				)
+				.map((entry) => ({
+					...entry,
+					targetType: entry.targetType === 'part' ? 'part' : 'node',
+					targetId: entry.targetId ?? entry.nodeId,
+					targetName: entry.targetName ?? entry.nodeName,
+					nodeIds: Array.isArray(entry.nodeIds) && entry.nodeIds.length > 0 ? entry.nodeIds : [entry.nodeId]
+				}))
+		: [];
+	const effectiveSelectedNodes =
+		normalizedSelectedNodes.length > 0
+			? normalizedSelectedNodes
+			: normalizedAssetId && normalizedSelectedNodeId
+				? [
+						{
+							assetId: normalizedAssetId,
+							targetType: 'node' as const,
+							targetId: normalizedSelectedNodeId,
+							targetName: normalizedSelectedNodeName ?? normalizedSelectedNodeId,
+							nodeIds: [normalizedSelectedNodeId],
+							nodeId: normalizedSelectedNodeId,
+							nodeName: normalizedSelectedNodeName ?? normalizedSelectedNodeId,
+							nodePath: normalizedSelectedNodePath ?? normalizedSelectedNodeId
+						}
+					]
+				: [];
+
+	const hasAssetScopedContext =
+		!!normalizedSelectedGroupId ||
+		!!normalizedSelectedNodeId ||
+		!!normalizedSelectedNodeName ||
+		!!normalizedSelectedNodePath ||
+		effectiveSelectedNodes.length > 0 ||
+		!!normalizedPresentation ||
+		!!normalizedSidebar ||
+		!!normalizedSupplementaryList;
+
+	if (!normalizedAssetId && hasAssetScopedContext) {
+		throw new OpenAIChatInputError('No active vehicle asset is available for this request.');
+	}
+
 	return {
 		message,
-		assetId: input.assetId && isVehicleAssetId(input.assetId) ? input.assetId : undefined,
-		selectedGroupId:
-			typeof input.selectedGroupId === 'string'
-				? input.selectedGroupId.trim() || undefined
-				: undefined,
-		selectedNodeId:
-			typeof input.selectedNodeId === 'string'
-				? input.selectedNodeId.trim() || undefined
-				: undefined,
-		selectedNodeName:
-			typeof input.selectedNodeName === 'string'
-				? input.selectedNodeName.trim() || undefined
-				: undefined,
-		selectedNodePath:
-			typeof input.selectedNodePath === 'string'
-				? input.selectedNodePath.trim() || undefined
-				: undefined,
-		selectedNodes: Array.isArray(input.selectedNodes)
-			? input.selectedNodes
-					.filter(
-						(entry): entry is VehicleNodeSelection =>
-							!!entry &&
-							typeof entry.assetId === 'string' &&
-							typeof entry.nodeId === 'string' &&
-							typeof entry.nodeName === 'string' &&
-							typeof entry.nodePath === 'string'
-					)
-					.map((entry) => ({
-						...entry,
-						targetType: entry.targetType === 'part' ? 'part' : 'node',
-						targetId: entry.targetId ?? entry.nodeId,
-						targetName: entry.targetName ?? entry.nodeName,
-						nodeIds: Array.isArray(entry.nodeIds) && entry.nodeIds.length > 0 ? entry.nodeIds : [entry.nodeId]
-					}))
-			: [],
-		presentation: normalizePresentationContext(input.presentation),
-		sidebar: normalizeSidebarState(input.sidebar),
-		supplementaryList: normalizeSupplementaryListState(input.supplementaryList)
+		assetId: normalizedAssetId,
+		selectedGroupId: normalizedSelectedGroupId,
+		selectedNodeId: normalizedSelectedNodeId,
+		selectedNodeName: normalizedSelectedNodeName,
+		selectedNodePath: normalizedSelectedNodePath,
+		selectedNodes: effectiveSelectedNodes,
+		presentation: normalizedPresentation,
+		sidebar: normalizedSidebar,
+		supplementaryList: normalizedSupplementaryList
 	};
 }
 

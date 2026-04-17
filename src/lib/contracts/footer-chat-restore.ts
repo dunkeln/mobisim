@@ -32,6 +32,18 @@ export function isRestoreAllRequest(message: string): boolean {
 	);
 }
 
+function hasActiveIsolationPresentation(
+	presentation: FooterChatPresentationContext | undefined
+): boolean {
+	return (
+		typeof presentation?.activeIntentLabel === 'string' &&
+		/\b(isolate|show only|only show|show just|just show|show me just|keep only|only keep|concentrate on)\b/i.test(
+			presentation.activeIntentLabel
+		) &&
+		(presentation.hiddenTargets?.length ?? 0) > 0
+	);
+}
+
 function normalizeRestoreTerms(message: string): string[] {
 	return message
 		.toLowerCase()
@@ -169,6 +181,25 @@ export function buildPresentationRestoreFromContext(
 		? getMatchedTargetIdsForRestore(message, presentation.materialTargets)
 		: [];
 	const materialTargetIds = materialRestoreRequested ? materialMatches : [];
+
+	if (
+		hasActiveIsolationPresentation(presentation) &&
+		hiddenRestoreRequested &&
+		!materialRestoreRequested &&
+		viewerModes.length === 0
+	) {
+		return {
+			highlightedTargetIds:
+				(presentation.highlightedTargets?.length ?? 0) > 0
+					? getAllTargetIds(presentation.highlightedTargets)
+					: undefined,
+			hiddenTargetIds:
+				(presentation.hiddenTargets?.length ?? 0) > 0
+					? getAllTargetIds(presentation.hiddenTargets)
+					: undefined,
+			label: 'restore original view'
+		};
+	}
 
 	if (
 		highlightedTargetIds.length === 0 &&

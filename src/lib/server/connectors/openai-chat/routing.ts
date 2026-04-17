@@ -65,6 +65,12 @@ function isSelectionScopedViewerModeRequest(message: string): boolean {
 	);
 }
 
+function isExplicitViewerModeRequest(message: string): boolean {
+	return /\b(wireframe|xray|x-ray|uv|uvs|uv debug|uv_debug|postprocess|post-processing|postprocessing)\b/i.test(
+		message
+	);
+}
+
 function isGlobalAssetTargetRequest(message: string): boolean {
 	return /\b(body|car|vehicle|whole car|whole vehicle|entire car|entire vehicle|all\b|everything\b)\b/i.test(
 		message
@@ -80,6 +86,12 @@ function isTargetableSelectionEditRequest(message: string): boolean {
 export function isSemanticAnnotationRequest(message: string): boolean {
 	return (
 		/\b(belongs to|part of)\b/i.test(message) ||
+		/\b(create|make|turn|promote|lift|group)\b.*\b(new\s+)?(semantic\s+group|group)\b/i.test(
+			message
+		) ||
+		/\b(new\s+semantic\s+group|semantic\s+group\s+from\s+selection|group\s+this\s+selection|group\s+this\s+target|make\s+this\s+a\s+group|turn\s+this\s+into\s+a\s+group)\b/i.test(
+			message
+		) ||
 		/\b(group|classify|mark|assign)\s+(this|these|them|selected(?:\s+nodes?)?|selection|current selection)\s+(as|to)\b/i.test(
 			message
 		) ||
@@ -88,6 +100,38 @@ export function isSemanticAnnotationRequest(message: string): boolean {
 		) ||
 		/\b(move|reassign)\b.*\bto\b/i.test(message) ||
 		/^\s*(this|these|them|selected(?:\s+nodes?)?|selection|current selection)\s+(is|are|should be|should not be)\s+/i.test(message)
+	);
+}
+
+export function isSemanticGroupDeletionRequest(message: string): boolean {
+	return (
+		/\b(delete|remove|destroy|erase)\b.*\bsemantic\s+group\b/i.test(message) ||
+		/\bsemantic\s+group\b.*\b(delete|remove|destroy|erase)\b/i.test(message) ||
+		/\b(delete|remove|destroy|erase)\b.*\bcurrent\s+semantic\s+group\b/i.test(message) ||
+		/\bcurrent\s+semantic\s+group\b.*\b(delete|remove|destroy|erase)\b/i.test(message)
+	);
+}
+
+export function isSemanticGroupPatchRequest(message: string): boolean {
+	return (
+		(/\b(rename|relabel|retitle|rename\s+the\s+name\s+of|change\s+the\s+name\s+of|change\s+name\s+of|change\s+label\s+of|update\s+label\s+of)\b/i.test(
+			message
+		) &&
+			/\b(semantic\s+group|group|semantic|classification|category)\b/i.test(message)) ||
+		/\b(rename|relabel|retitle|change\s+(?:the\s+)?(?:name|label)\s+of|update\s+(?:the\s+)?(?:name|label)\s+of)\b.*(?:->|→|⇒|\bto\b|\bas\b|\binto\b)/i.test(
+			message
+		)
+	);
+}
+
+export function isSemanticGroupCreationRequest(message: string): boolean {
+	return (
+		/\b(create|make|turn|promote|lift|group)\b.*\b(new\s+)?(semantic\s+group|group)\b/i.test(
+			message
+		) ||
+		/\b(new\s+semantic\s+group|semantic\s+group\s+from\s+selection|group\s+this\s+selection|group\s+this\s+target|make\s+this\s+a\s+group|turn\s+this\s+into\s+a\s+group)\b/i.test(
+			message
+		)
 	);
 }
 
@@ -105,6 +149,7 @@ export function shouldAttemptDirectSelectionEdit(input: NormalizedFooterChatRequ
 	if (
 		intentDraft.domain === 'semantics' ||
 		intentDraft.domain === 'selection' ||
+		intentDraft.operation === 'create_group' ||
 		!isVehicleEditRequest(input.message) ||
 		isSemanticRefreshRequest(input.message) ||
 		isSemanticAnnotationRequest(input.message) ||
@@ -128,6 +173,7 @@ export function shouldAttemptDirectVehicleEdit(input: NormalizedFooterChatReques
 		!input.assetId ||
 		intentDraft.domain === 'semantics' ||
 		intentDraft.domain === 'selection' ||
+		intentDraft.operation === 'create_group' ||
 		!isVehicleEditRequest(input.message) ||
 		isSemanticRefreshRequest(input.message)
 	) {
@@ -138,18 +184,34 @@ export function shouldAttemptDirectVehicleEdit(input: NormalizedFooterChatReques
 		return false;
 	}
 
+	if (isExplicitViewerModeRequest(input.message)) {
+		return true;
+	}
+
 	return true;
 }
 
 export function classifyExecutionRoute(
 	input: NormalizedFooterChatRequest
 ): FooterChatExecutionRoute {
+	if (isSemanticGroupDeletionRequest(input.message)) {
+		return 'direct_edit';
+	}
+
+	if (isSemanticGroupPatchRequest(input.message)) {
+		return 'direct_edit';
+	}
+
 	if (
 		/\b(unhighlight|clear\b.*\bhighlights?|restore|reset view|return .* normal|disable .*?(wireframe|xray|uv|postprocess)|remove\b.*\bhighlights?)\b/i.test(
 			input.message
 		)
 	) {
 		return 'presentation_restore';
+	}
+
+	if (input.assetId && isExplicitViewerModeRequest(input.message)) {
+		return 'direct_edit';
 	}
 
 	if (shouldAttemptDirectSelectionEdit(input) || shouldAttemptDirectVehicleEdit(input)) {
@@ -183,7 +245,8 @@ export function getToolChoiceForRequest(
 
 	if (
 		intentDraft.domain === 'semantics' &&
-		(intentDraft.operation === 'assign' ||
+		(intentDraft.operation === 'create_group' ||
+			intentDraft.operation === 'assign' ||
 			intentDraft.operation === 'reassign' ||
 			intentDraft.operation === 'unassign' ||
 			intentDraft.operation === 'refresh')

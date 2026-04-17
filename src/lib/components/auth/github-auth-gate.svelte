@@ -1,17 +1,19 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { signIn } from '@auth/sveltekit/client';
-	import { GitBranch, Globe, LockKeyhole } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { GitBranch, Globe, LockKeyhole, Code } from 'lucide-svelte';
 	import FooterOrb from '$lib/components/ui/footer-orb.svelte';
 
 	type Props = {
 		authConfigured: boolean;
 		githubConfigured: boolean;
 		googleConfigured: boolean;
+		devConfigured?: boolean;
 	};
 
-	let { authConfigured, githubConfigured, googleConfigured }: Props = $props();
-	let pendingProvider = $state<'github' | 'google' | null>(null);
+	let { authConfigured, githubConfigured, googleConfigured, devConfigured = false }: Props = $props();
+	let pendingProvider = $state<'github' | 'google' | 'dev' | null>(null);
 	const authError = $derived(page.url.searchParams.get('error'));
 
 	function describeAuthError(error: string | null): string | null {
@@ -31,9 +33,15 @@
 		}
 	}
 
-	async function handleProviderSignIn(provider: 'github' | 'google'): Promise<void> {
+	async function handleProviderSignIn(provider: 'github' | 'google' | 'dev'): Promise<void> {
 		const providerReady =
-			provider === 'github' ? githubConfigured : provider === 'google' ? googleConfigured : false;
+			provider === 'github'
+				? githubConfigured
+				: provider === 'google'
+					? googleConfigured
+					: provider === 'dev'
+						? devConfigured
+						: false;
 
 		if (!providerReady || pendingProvider) {
 			return;
@@ -41,7 +49,12 @@
 
 		pendingProvider = provider;
 		try {
-			await signIn(provider, { redirectTo: '/app' });
+			if (provider === 'dev') {
+				// Dev auth is handled by the layout — just navigate to /app
+				await goto('/app');
+			} else {
+				await signIn(provider, { redirectTo: '/app' });
+			}
 		} finally {
 			pendingProvider = null;
 		}
@@ -97,6 +110,19 @@
 							>
 								<GitBranch class="h-4 w-4" />
 								<span>{pendingProvider === 'github' ? 'Connecting to GitHub' : 'Login with GitHub'}</span>
+							</button>
+						{/if}
+
+						{#if devConfigured}
+							<button
+								type="button"
+								class="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-yellow-500/25 bg-yellow-500/10 px-4 text-sm font-medium text-yellow-100 transition hover:bg-yellow-500/[0.15] disabled:cursor-not-allowed disabled:opacity-60"
+								disabled={pendingProvider !== null}
+								onclick={() => void handleProviderSignIn('dev')}
+								title="Dev-only auth bypass (DEV_AUTH=mock)"
+							>
+								<Code class="h-4 w-4" />
+								<span>{pendingProvider === 'dev' ? 'Entering as Dev' : 'Login with Dev'}</span>
 							</button>
 						{/if}
 					</div>

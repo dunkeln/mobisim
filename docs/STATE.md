@@ -46,6 +46,7 @@ In `Done`:
 - [ ] T-020 | Add freeform-to-deterministic tool instruction layer | next: document the minimal prompt and executor contract for expressive tool use
 - [ ] T-021 | Add voice agent slice | next: define one end-to-end voice command path that maps to the existing deterministic vehicle intent executor
 - [ ] T-022 | Isolate JARVIS-style components | next: separate the shell, chat, inspector, and viewport chrome into modular component boundaries
+- [ ] T-045 | Trim legacy chat and semantic compatibility paths | next: finish the preserved-behavior catalog and cut the first dead branch safely
 
 ## In Progress
 
@@ -98,6 +99,7 @@ In `Done`:
 
 ## Updates
 
+- 2026-04-11 09:00 PT | Added a preserved-behavior catalog and queued the trim refactor as a dedicated cleanup task
 - 2026-04-04 19:45 PT | Created Kanban structure and seeded starter tasks
 - 2026-04-04 19:45 PT | Added `T-004` to `In Progress`
 - 2026-04-04 20:05 PT | Added anti-bloat cleanup debt tasks `T-007`, `T-008`, and `T-009`

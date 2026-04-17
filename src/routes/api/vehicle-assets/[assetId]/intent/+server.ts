@@ -5,6 +5,7 @@ import { isVehicleAssetId } from '$lib/vehicles/catalog';
 
 type VehicleIntentRequest = {
 	request?: string;
+	selectedGroupId?: string;
 };
 
 export const POST: RequestHandler = async ({ params, request }) => {
@@ -19,5 +20,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		throw error(400, 'Intent request is required');
 	}
 
-	return json(await resolveVehicleIntent(params.assetId, freeformRequest));
+	const selectedGroupId =
+		typeof payload.selectedGroupId === 'string' ? payload.selectedGroupId.trim() : '';
+
+	return json(
+		selectedGroupId.length > 0
+			? await resolveVehicleIntent(params.assetId, freeformRequest, {
+					selectedGroupId
+				})
+			: await resolveVehicleIntent(params.assetId, freeformRequest)
+	);
 };

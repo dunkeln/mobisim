@@ -2,6 +2,7 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
 	buildVehicleSemanticOverlaySnapshot,
+	deleteVehicleSemanticOverlay,
 	generateVehicleSemanticOverlay,
 	readVehicleSemanticOverlay,
 	VehicleSemanticOverlayConfigError,
@@ -72,4 +73,21 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 		throw caughtError;
 	}
+};
+
+export const DELETE: RequestHandler = async ({ params }) => {
+	if (!isVehicleAssetId(params.assetId)) {
+		throw error(404, 'Vehicle asset not found');
+	}
+
+	await deleteVehicleSemanticOverlay(params.assetId);
+
+	return json(
+		buildVehicleSemanticOverlaySnapshot({
+			overlay: null,
+			overlayStatus: 'missing',
+			commandStatus: 'succeeded',
+			appliedCommand: 'delete_overlay'
+		})
+	);
 };

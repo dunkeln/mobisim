@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildInspectionRoute, resolveInspectionAssetId } from './inspection';
+import {
+	buildInspectionRoute,
+	resolveInspectionAssetId,
+	tryResolveInspectionAssetId
+} from './inspection';
 
 describe('inspection routes', () => {
 	it('resolves the asset id from the canonical inspection path', () => {
@@ -10,6 +14,11 @@ describe('inspection routes', () => {
 	it('falls back to the legacy query parameter for old links', () => {
 		const url = new URL('https://mobisim.test/?asset=patria_amv');
 		expect(resolveInspectionAssetId(url)).toBe('patria_amv');
+	});
+
+	it('returns no active inspection asset for unrelated routes', () => {
+		const url = new URL('https://mobisim.test/app');
+		expect(tryResolveInspectionAssetId(url)).toBeUndefined();
 	});
 
 	it('builds canonical inspection paths and strips the legacy asset query param', () => {

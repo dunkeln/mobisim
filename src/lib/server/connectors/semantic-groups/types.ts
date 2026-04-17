@@ -8,6 +8,7 @@ export type SemanticGroupAssignmentMode = 'exclusive' | 'overlay';
 export type SemanticGroupDefinition = {
 	id: string;
 	humanLabel: string;
+	categoryDetail?: string;
 	aliases: string[];
 	category: VehicleSemanticGroup['category'];
 	supports: VehicleSemanticActionSupport[];

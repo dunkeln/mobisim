@@ -14,6 +14,10 @@ import type {
 import type { VehicleInspectionPatchOperation as SharedVehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import {
+	getSelectionConstraintNodeIds,
+	type VehicleNodeSelection
+} from '$lib/stores/vehicle-node-selection';
+import {
 	ISOLATE_CONTEXT_ALPHA,
 	REMOVE_PART_ALPHA
 } from './constants';
@@ -31,6 +35,7 @@ import {
 } from './classifiers';
 import {
 	mapIntentModeToActionSupport,
+	buildRenderableHighlightOperations,
 	collectEntityMatchedNodeIds,
 	collectEntityMatchedPaths,
 	collectNodeTargetsFromMaterials,
@@ -41,6 +46,25 @@ import {
 	flattenSemanticQueries,
 	buildPlannerUnionExpression
 } from './planner';
+
+function selectTopScoringEntities<T extends VehicleSemanticGroup | VehicleSemanticPartUnit>(
+	entities: T[],
+	query: string
+): T[] {
+	if (entities.length <= 1) {
+		return entities;
+	}
+
+	const scored = entities.map((entity) => ({
+		entity,
+		score: scoreSemanticEntityMatch(entity, query)
+	}));
+	const bestScore = Math.max(...scored.map((entry) => entry.score));
+
+	return scored
+		.filter((entry) => entry.score === bestScore)
+		.map((entry) => entry.entity);
+}
 
 async function validatePlannedOperations(
 	assetId: VehicleAssetId,
@@ -72,9 +96,93 @@ async function validatePlannedOperations(
 export async function planVehiclePartIntent(
 	assetId: VehicleAssetId,
 	partQuery: string,
-	mode: VehiclePartIntentMode = 'highlight'
+	mode: VehiclePartIntentMode = 'highlight',
+	options?: {
+		selectedNodes?: VehicleNodeSelection[];
+		presentation?: VehicleIntentPresentationContext;
+	}
 ): Promise<PlannedVehiclePartIntentResult> {
 	const normalizedQuery = normalizePartQuery(partQuery);
+	if (mode === 'remove' && (options?.selectedNodes?.length ?? 0) > 0) {
+		const scopedSelectedNodes = options.selectedNodes!.filter((selection) => selection.assetId === assetId);
+		const removalNodeIds = Array.from(
+			new Set(scopedSelectedNodes.flatMap((selection) => getSelectionConstraintNodeIds(selection)))
+		).sort((left, right) => left.localeCompare(right));
+		if (removalNodeIds.length > 0) {
+			return {
+				assetId,
+				mode,
+				partQuery: normalizedQuery,
+				matchedPartIds: scopedSelectedNodes
+					.filter((selection) => selection.targetType === 'part' && selection.targetId)
+					.map((selection) => selection.targetId!)
+					.sort((left, right) => left.localeCompare(right)),
+				matchedPartLabels: scopedSelectedNodes
+					.map((selection) => selection.targetName ?? selection.nodeName)
+					.sort((left, right) => left.localeCompare(right)),
+				matchedNodeIds: removalNodeIds,
+				matchedMaterialIds: [],
+				matchedPaths: scopedSelectedNodes.map((selection) => selection.nodePath),
+				matchedMaterialNames: [],
+				operations: removalNodeIds.map((nodeId) => ({
+					targetType: 'node' as const,
+					targetId: nodeId,
+					targetName: scopedSelectedNodes.find((selection) =>
+						getSelectionConstraintNodeIds(selection).includes(nodeId)
+					)?.targetName ?? scopedSelectedNodes[0]!.nodeName,
+					op: 'set_alpha' as const,
+					value: REMOVE_PART_ALPHA
+				})),
+				summary: `Removed selected target${removalNodeIds.length === 1 ? '' : 's'}.`
+			};
+		}
+	}
+
+	if (mode === 'remove' && (options?.presentation?.highlightedTargets?.length ?? 0) > 0) {
+		const highlightedTargets = options?.presentation?.highlightedTargets ?? [];
+		const highlightedNodeOperations = highlightedTargets
+			.filter((target) => !target.targetType || target.targetType === 'node')
+			.map((target) => ({
+				targetType: 'node' as const,
+				targetId: target.targetId,
+				targetName: target.targetName ?? target.targetId,
+				op: 'set_alpha' as const,
+				value: REMOVE_PART_ALPHA
+			}));
+		const highlightedMaterialOperations = highlightedTargets
+			.filter((target) => target.targetType === 'material')
+			.map((target) => ({
+				targetType: 'material' as const,
+				targetId: target.targetId,
+				targetName: target.targetName ?? target.targetId,
+				op: 'set_alpha' as const,
+				value: REMOVE_PART_ALPHA
+			}));
+		const highlightedRemovalOperations = [...highlightedNodeOperations, ...highlightedMaterialOperations];
+		if (highlightedRemovalOperations.length > 0) {
+			return {
+				assetId,
+				mode,
+				partQuery: normalizedQuery,
+				matchedPartIds: [],
+				matchedPartLabels: highlightedTargets
+					.map((target) => target.targetName ?? target.targetId)
+					.sort((left, right) => left.localeCompare(right)),
+				matchedNodeIds: highlightedTargets.map((target) => target.targetId).sort((left, right) =>
+					left.localeCompare(right)
+				),
+				matchedMaterialIds: highlightedTargets
+					.filter((target) => target.targetType === 'material')
+					.map((target) => target.targetId)
+					.sort((left, right) => left.localeCompare(right)),
+				matchedPaths: [],
+				matchedMaterialNames: [],
+				operations: highlightedRemovalOperations,
+				summary: `Removed highlighted target${highlightedRemovalOperations.length === 1 ? '' : 's'}.`
+			};
+		}
+	}
+
 	const capabilities = await deriveVehicleInspectionCapabilities(assetId);
 	const structure = await deriveStructuralAssetSnapshot(assetId);
 	const matchedGroups = await listSemanticGroupsByQuery(
@@ -96,9 +204,9 @@ export async function planVehiclePartIntent(
 		: Number.NEGATIVE_INFINITY;
 	const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
 		matchedParts.length > 0 && bestPartScore >= bestGroupScore
-			? matchedParts
+			? selectTopScoringEntities(matchedParts, normalizedQuery)
 			: matchedGroups.length > 0
-				? matchedGroups
+				? selectTopScoringEntities(matchedGroups, normalizedQuery)
 				: matchedParts;
 
 	const semanticNodeIds = Array.from(
@@ -135,13 +243,14 @@ export async function planVehiclePartIntent(
 	let operations: SharedVehicleInspectionPatchOperation[] = [];
 
 	if (mode === 'highlight') {
-		operations = matchedNodeIds.map((nodeId) => ({
-			targetType: 'node' as const,
-			targetId: nodeId,
-			targetName: matchedPartLabels.join(', '),
-			op: 'set_overlay_highlight' as const,
-			value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
-		}));
+		operations = buildRenderableHighlightOperations(
+			structure,
+			capabilities,
+			matchedNodeIds,
+			matchedMaterialIds,
+			matchedPartLabels.join(', '),
+			[0.58, 0.54, 0.86, 1] as [number, number, number, number]
+		);
 	}
 
 	if (mode === 'isolate') {
@@ -175,13 +284,14 @@ export async function planVehiclePartIntent(
 					op: 'set_alpha' as const,
 					value: ISOLATE_CONTEXT_ALPHA
 				})),
-			...matchedNodeIds.map((nodeId) => ({
-				targetType: 'node' as const,
-				targetId: nodeId,
-				targetName: matchedPartLabels.join(', '),
-				op: 'set_overlay_highlight' as const,
-				value: [0.58, 0.54, 0.86, 1] as [number, number, number, number]
-			}))
+			...buildRenderableHighlightOperations(
+				structure,
+				capabilities,
+				matchedNodeIds,
+				matchedMaterialIds,
+				matchedPartLabels.join(', '),
+				[0.58, 0.54, 0.86, 1] as [number, number, number, number]
+			)
 		];
 	}
 
@@ -273,9 +383,9 @@ export async function planVehicleSetLogicIntent(
 				: Number.NEGATIVE_INFINITY;
 			const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
 				matchedParts.length > 0 && bestPartScore >= bestGroupScore
-					? matchedParts
+					? selectTopScoringEntities(matchedParts, expression.query)
 					: matchedGroups.length > 0
-						? matchedGroups
+						? selectTopScoringEntities(matchedGroups, expression.query)
 						: matchedParts;
 			const materialIds = new Set<string>();
 			const labels = new Set<string>();
@@ -296,9 +406,9 @@ export async function planVehicleSetLogicIntent(
 					}
 					for (const materialId of materialIdsByMeshId.get(meshId) ?? []) {
 						materialIds.add(materialId);
-					}
-				}
 			}
+		}
+	}
 			return { materialIds, labels };
 		}
 
@@ -375,9 +485,9 @@ export async function planVehicleSetLogicIntent(
 			: Number.NEGATIVE_INFINITY;
 		const matchedEntities: Array<VehicleSemanticGroup | VehicleSemanticPartUnit> =
 			matchedParts.length > 0 && bestPartScore >= bestGroupScore
-				? matchedParts
+				? selectTopScoringEntities(matchedParts, keepQuery)
 				: matchedGroups.length > 0
-					? matchedGroups
+					? selectTopScoringEntities(matchedGroups, keepQuery)
 					: matchedParts;
 
 		for (const entity of matchedEntities) {

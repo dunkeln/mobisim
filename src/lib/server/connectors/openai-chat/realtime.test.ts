@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OpenAIChatInputError } from './errors';
+import { buildSessionLedger } from '$lib/contracts/session-ledger';
 
 const envMock = {
 	OPENAI_API_KEY: 'test-key',
@@ -52,6 +54,20 @@ describe('realtime session payload', () => {
 
 	it('enables server vad interruption and exposes the vehicle tool bridge', async () => {
 		const { buildRealtimeSessionPayload } = await import('./realtime');
+		const sessionLedger = buildSessionLedger({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: 'structural-1',
+			semanticOverlayStatus: 'missing',
+			semanticOverlayRevision: null,
+			selectedNodeId: 'node-1',
+			selectedNodeName: 'Front Fascia',
+			selectedNodePath: 'Scene/Body/Front',
+			presentation: {
+				highlightedTargets: [
+					{ targetId: 'material-body-shell', targetName: 'Body Shell', targetType: 'material' }
+				]
+			}
+		});
 
 		const payload = await buildRealtimeSessionPayload({
 			userId: 'email:test@example.com',
@@ -64,7 +80,7 @@ describe('realtime session payload', () => {
 					{ targetId: 'material-body-shell', targetName: 'Body Shell', targetType: 'material' }
 				]
 			}
-		});
+		}, sessionLedger);
 
 		expect(payload.model).toBe('gpt-realtime-mini');
 		expect(payload.output_modalities).toEqual(['audio']);
@@ -84,6 +100,13 @@ describe('realtime session payload', () => {
 		expect(payload.instructions).toContain(
 			'Named highlighted targets are secondary presentation context.'
 		);
+		expect(payload.instructions).toContain('Do not produce acknowledgment-only replies.');
+		expect(payload.instructions).toContain('Acknowledge by giving the result or the next needed step.');
+		expect(payload.instructions).toContain('fail closed with a hard no');
+		expect(payload.instructions).toContain('No, I cannot do that here.');
+		expect(payload.instructions).toContain(
+			'When a live selection or highlight exists, treat deictic wording as a direct reference to it'
+		);
 		expect(payload.instructions).toContain('Active asset: audi_r8.');
 		expect(payload.instructions).toContain('Selected runtime nodes: Front Fascia at Scene/Body/Front.');
 		expect(payload.instructions).toContain('Highlighted targets: Body Shell.');
@@ -95,13 +118,30 @@ describe('realtime session payload', () => {
 	it('treats stale semantic overlays as cautionary in realtime instructions', async () => {
 		const { buildRealtimeSessionPayload } = await import('./realtime');
 		getVehicleSemanticOverlayStatusMock.mockResolvedValue('stale');
+		const sessionLedger = buildSessionLedger({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: 'structural-1',
+			semanticOverlayStatus: 'stale',
+			semanticOverlayRevision: null
+		});
 
 		const payload = await buildRealtimeSessionPayload({
 			userId: 'email:test@example.com',
 			assetId: 'audi_r8'
-		});
+		}, sessionLedger);
 
 		expect(payload.instructions).toContain('Semantic overlay status: stale.');
 		expect(payload.instructions).toContain('Treat semantic grouping as provisional');
+	});
+
+	it('rejects invalid asset ids before building a realtime scene dag', async () => {
+		const { createRealtimeClientSecret } = await import('./realtime');
+
+		await expect(
+			createRealtimeClientSecret({
+				userId: 'email:test@example.com',
+				assetId: 'not_a_vehicle' as never
+			})
+		).rejects.toBeInstanceOf(OpenAIChatInputError);
 	});
 });

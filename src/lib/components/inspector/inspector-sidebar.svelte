@@ -6,9 +6,7 @@
 	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 	import type {
-		VehicleSemanticGroup,
 		VehicleSemanticOverlay,
-		VehicleSemanticOverlaySnapshot,
 		VehicleSemanticPartUnit
 	} from '$lib/server/connectors/vehicle-semantic-overlay/types';
 	import {
@@ -16,6 +14,11 @@
 		type VehicleSemanticOverlayRuntimeIndex
 	} from '$lib/semantic-overlay/runtime';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
+	import {
+		buildHighlightTargetsForGroup,
+		buildHighlightTargetsForPart,
+		type HighlightTargetRef
+	} from './semantic-highlight-targets';
 
 	type Props = {
 		assetId: VehicleAssetId;
@@ -44,11 +47,6 @@
 		highlightTargets: HighlightTargetRef[];
 	};
 
-	type HighlightTargetRef = {
-		targetId: string;
-		targetType: 'node';
-	};
-
 	let { assetId, class: className = '' }: Props = $props();
 
 	const NODE_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.502, 0.808, 0.843, 1];
@@ -58,7 +56,6 @@
 			$semanticRuntimeState.byAsset[assetId] ?? {
 				overlay: null,
 				overlayStatus: 'unknown',
-				ingressBindings: [],
 				selectedGroupId: null
 			}
 	);
@@ -85,44 +82,24 @@
 		}
 
 		return currentOverlay.acceptedGroups
-			.map((group: VehicleSemanticGroup) => {
+			.map((group) => {
 				const matchedParts = runtimeIndex.partsByGroupId.get(group.id) ?? [];
 				const parts = matchedParts.map((part: VehicleSemanticPartUnit) => ({
 					id: part.id,
 					label: part.humanLabel,
 					nodes: part.nodeIds.map((nodeId: string) => buildNodeView(nodeId, nodeId)),
-					highlightTargets: Array.from(
-						new Map(
-							part.nodeIds.map((targetId: string) => [
-								targetId,
-								{ targetId, targetType: 'node' as const }
-							])
-						).values()
-					)
+					highlightTargets: buildHighlightTargetsForPart(part)
 				}));
 				const uncoveredNodes = (runtimeIndex.uncoveredNodeIdsByGroupId.get(group.id) ?? []).map(
 					(nodeId: string) => buildNodeView(nodeId, nodeId)
 				);
-				const groupHighlightTargets = [
-					...group.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const })),
-					...matchedParts.flatMap((part: VehicleSemanticPartUnit) =>
-						part.nodeIds.map((targetId: string) => ({ targetId, targetType: 'node' as const }))
-					)
-				];
 				return {
 					id: group.id,
 					label: group.humanLabel,
 					category: group.category,
 					parts,
 					uncoveredNodes,
-					highlightTargets: Array.from(
-						new Map(
-							groupHighlightTargets.map((target) => [
-								`${target.targetType}:${target.targetId}`,
-								target
-							])
-						).values()
-					)
+					highlightTargets: buildHighlightTargetsForGroup(group, runtimeIndex)
 				};
 			})
 			.filter((group: SemanticGroupView) => group.highlightTargets.length > 0)
@@ -276,11 +253,6 @@
 		applySidebarSelection(groupId, targets, label);
 	}
 
-	$effect(() => {
-		assetId;
-		expandedGroupIds = [];
-	});
-
 	function buildSemanticPanelHighlightOperations(
 		targets: HighlightTargetRef[],
 		label: string
@@ -288,7 +260,7 @@
 		return Array.from(
 			new Map(targets.map((target) => [getTargetKey(target), target])).values()
 		).map((target): VehicleInspectionPatchOperation => ({
-			targetType: 'node',
+			targetType: target.targetType,
 			targetId: target.targetId,
 			targetName: label,
 			op: 'set_overlay_highlight',
@@ -298,67 +270,12 @@
 
 	$effect(() => {
 		assetId;
-		let cancelled = false;
-		let nextPoll: ReturnType<typeof setTimeout> | undefined;
-
-		const loadOverlay = async (): Promise<void> => {
-			try {
-				const response = await fetch(`/api/vehicle-assets/${assetId}/semantic-overlay`);
-				if (!response.ok && response.status !== 404) {
-					throw new Error(`Semantic overlay request failed: ${response.status}`);
-				}
-
-				const payload = (await response.json()) as VehicleSemanticOverlaySnapshot;
-				if (cancelled) {
-					return;
-				}
-
-				semanticRuntimeState.applyAssetState(assetId, {
-					overlaySnapshot: payload
-				});
-				if (
-					selectedGroupId &&
-					!(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === selectedGroupId)
-				) {
-					semanticRuntimeState.applyAssetState(assetId, {
-						selectedGroupId: null
-					});
-				}
-				expandedGroupIds = expandedGroupIds.filter((groupId) =>
-					(payload.overlay?.acceptedGroups ?? []).some((group) => group.id === groupId)
-				);
-
-			} catch {
-				if (cancelled) {
-					return;
-				}
-
-				expandedGroupIds = [];
-			} finally {
-				if (cancelled) {
-					return;
-				}
-
-				nextPoll = setTimeout(() => {
-					void loadOverlay();
-				}, 3000);
-			}
-		};
-
 		expandedGroupIds = [];
-		void loadOverlay();
-
-		return () => {
-			cancelled = true;
-			if (nextPoll) {
-				clearTimeout(nextPoll);
-			}
-		};
 	});
 </script>
 
 {#if visible}
-	<aside class={['sidebar', className]} aria-label="Semantic groups">
+	<aside class={['sidebar canvas-glass-panel', className]} aria-label="Semantic groups">
 		<div class="group-stack">
 			{#each semanticGroups as group, groupIndex (group.id)}
 				<section class="group-row" style={`--waterfall-delay:${groupIndex * 50}ms`}>
@@ -471,25 +388,48 @@
 
 <style>
 	.sidebar {
-		width: 14rem;
+		width: 16rem;
 		max-height: 55vh;
 		overflow-y: auto;
 		overflow-x: hidden;
-		padding: 0;
+		padding: 0.95rem 0.95rem 1rem;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		background: transparent;
-		border: 0;
-		box-shadow: none;
+		gap: 0.12rem;
+		border-radius: 1.55rem;
 		scrollbar-width: thin;
 		scrollbar-color: color-mix(in oklab, var(--boundary-primary) 18%, transparent) transparent;
+		isolation: isolate;
+	}
+
+	.sidebar::before {
+		content: '';
+		position: absolute;
+		inset: 1px;
+		border-radius: inherit;
+		border: 1px solid color-mix(in srgb, var(--color-boundary-text) 6%, transparent);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, white 4%, transparent),
+				transparent 18%,
+				transparent 100%
+			),
+			radial-gradient(
+				110% 70% at 18% 0%,
+				color-mix(in srgb, white 3%, transparent),
+				transparent 24%
+			);
+		pointer-events: none;
+		z-index: 0;
 	}
 
 	.group-stack {
+		position: relative;
+		z-index: 1;
 		display: flex;
 		flex-direction: column;
-		gap: 0.7rem;
+		gap: 0.04rem;
 	}
 
 	.group-row,
@@ -498,6 +438,18 @@
 		transform: translateY(0.3rem);
 		animation: waterfall-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 		animation-delay: var(--waterfall-delay, 0ms);
+	}
+
+	.group-row {
+		border: 0;
+		border-radius: 0.9rem;
+		padding: 0.08rem 0.1rem;
+		background: transparent;
+		transition: background 140ms ease;
+	}
+
+	.group-row:has(.group-trigger:hover) {
+		background: color-mix(in oklab, white 1.5%, transparent);
 	}
 
 	.group-trigger {
@@ -518,9 +470,10 @@
 	}
 
 	.group-label {
-		font-size: 0.8rem;
-		line-height: 1.3;
-		color: var(--boundary-text);
+		font-size: 0.84rem;
+		line-height: 1.35;
+		color: color-mix(in oklab, var(--boundary-text) 88%, transparent);
+		letter-spacing: -0.01em;
 	}
 
 	.group-actions {
@@ -534,14 +487,15 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.75rem;
+		padding: 0.16rem 0.22rem;
 	}
 
 	.node-stack {
-		margin-top: 0.45rem;
-		padding-left: 0.75rem;
+		margin-top: 0.14rem;
+		padding-left: 0.08rem;
 		display: flex;
 		flex-direction: column;
-		gap: 0.32rem;
+		gap: 0.02rem;
 	}
 
 	.node-line {
@@ -553,6 +507,13 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.75rem;
+		padding: 0.16rem 0.2rem 0.16rem 0.46rem;
+		border-radius: 0.8rem;
+		transition: background 140ms ease;
+	}
+
+	.node-row:hover {
+		background: color-mix(in oklab, white 1.25%, transparent);
 	}
 
 	.node-copy {
@@ -564,17 +525,19 @@
 	}
 
 	.node-label {
-		font-size: 0.72rem;
+		font-size: 0.74rem;
 		line-height: 1.4;
-		color: color-mix(in oklab, var(--boundary-text) 72%, transparent);
+		color: color-mix(in oklab, var(--boundary-text) 58%, transparent);
+		letter-spacing: 0.005em;
 	}
 
 	.target-kind-indicator {
 		display: inline-flex;
-		width: 1rem;
-		height: 1rem;
-		border-radius: 0.375rem;
+		width: 0.3rem;
+		height: 0.3rem;
+		border-radius: 9999px;
 		flex-shrink: 0;
+		opacity: 0.55;
 	}
 
 	.target-kind-node {
@@ -589,7 +552,7 @@
 		padding: 0;
 		border: 0;
 		background: transparent;
-		color: color-mix(in oklab, var(--boundary-text) 72%, transparent);
+		color: color-mix(in oklab, var(--boundary-text) 38%, transparent);
 		cursor: pointer;
 		flex-shrink: 0;
 		transition:

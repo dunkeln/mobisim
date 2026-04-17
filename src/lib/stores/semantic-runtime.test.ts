@@ -187,7 +187,7 @@ describe('semanticRuntimeState', () => {
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toEqual({
 			overlay: null,
 			overlayStatus: 'stale',
-			ingressBindings: [],
+			overlayRevision: null,
 			selectedGroupId: null
 		});
 	});
@@ -231,34 +231,12 @@ describe('semanticRuntimeState', () => {
 
 		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
 			overlayStatus: 'stale',
+			overlayRevision: 2,
 			overlay: {
 				revision: 2,
 				acceptedGroups: [{ id: 'body_shell' }]
 			}
 		});
-	});
-
-	it('applies ingress bindings through the same semantic runtime entrypoint', () => {
-		semanticRuntimeState.applyAssetState('audi_r8', {
-			ingressBindings: [
-				{
-					ingressId: 'ingress-body-shell',
-					assetId: 'audi_r8',
-					structuralGeneratedAt: 'struct-1',
-					scope: 'global',
-					targetType: 'semantic_group',
-					targetId: 'body_shell',
-					targetLabel: 'Body Shell',
-					transport: 'rest_sse',
-					assignedAt: '2026-04-08T00:00:00.000Z',
-					assignedBy: 'model',
-					restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/ingress-body-shell',
-					ssePath: '/api/vehicle-assets/audi_r8/semantic-ingress/ingress-body-shell/events'
-				}
-			]
-		});
-
-		expect(semanticRuntimeState.getAssetState('audi_r8').ingressBindings).toHaveLength(1);
 	});
 
 	it('tracks the selected semantic group inside the merged semantic runtime store', () => {
@@ -267,6 +245,81 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8').selectedGroupId).toBe('body_shell');
+	});
+
+	it('keeps the selected semantic group when a refreshed overlay still contains it', () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			selectedGroupId: 'body_shell',
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 1,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: 'overlay-1',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'body_shell',
+							humanLabel: 'body shell',
+							author: 'agent',
+							aliases: ['body'],
+							confidence: 1,
+							category: 'body_shell',
+							supports: ['highlight'],
+							nodeIds: ['node-1'],
+							materialIds: [],
+							meshIds: []
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 1,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 2,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: 'overlay-2',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'body_shell',
+							humanLabel: 'body shell',
+							author: 'agent',
+							aliases: ['body'],
+							confidence: 1,
+							category: 'body_shell',
+							supports: ['highlight'],
+							nodeIds: ['node-1', 'node-2'],
+							materialIds: [],
+							meshIds: []
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 2,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
+			selectedGroupId: 'body_shell',
+			overlay: {
+				revision: 2,
+				acceptedGroups: [{ id: 'body_shell' }]
+			}
+		});
 	});
 
 	it('drops selected group ids that are not present in the active overlay', () => {
@@ -307,5 +360,67 @@ describe('semanticRuntimeState', () => {
 		});
 
 		expect(semanticRuntimeState.getAssetState('audi_r8').selectedGroupId).toBeNull();
+	});
+
+	it('merges duplicate accepted group ids before exposing the overlay to the UI', () => {
+		semanticRuntimeState.applyAssetState('audi_r8', {
+			overlaySnapshot: {
+				overlay: {
+					assetId: 'audi_r8',
+					revision: 5,
+					structuralGeneratedAt: 'struct-1',
+					generatedAt: '2026-04-16T08:00:00.000Z',
+					model: 'test-model',
+					minAcceptedConfidence: 0.7,
+					acceptedMaterials: [],
+					acceptedParts: [],
+					acceptedGroups: [
+						{
+							id: 'trim',
+							humanLabel: 'Exterior Trim',
+							author: 'user',
+							aliases: ['brightwork'],
+							confidence: 0.91,
+							category: 'trim',
+							supports: ['highlight'],
+							nodeIds: ['node-a'],
+							materialIds: [],
+							meshIds: []
+						},
+						{
+							id: 'trim',
+							humanLabel: 'Trim',
+							author: 'user',
+							aliases: ['lower trim'],
+							confidence: 0.93,
+							category: 'trim',
+							supports: ['focus', 'isolate'],
+							nodeIds: ['node-b'],
+							materialIds: ['material-a'],
+							meshIds: ['mesh-a']
+						}
+					],
+					discardedSuggestions: []
+				},
+				overlayRevision: 5,
+				overlayStatus: 'fresh'
+			}
+		});
+
+		expect(semanticRuntimeState.getAssetState('audi_r8')).toMatchObject({
+			overlay: {
+				acceptedGroups: [
+					{
+						id: 'trim',
+						humanLabel: 'Trim',
+						aliases: ['brightwork', 'lower trim'],
+						supports: ['highlight', 'focus', 'isolate'],
+						nodeIds: ['node-a', 'node-b'],
+						materialIds: ['material-a'],
+						meshIds: ['mesh-a']
+					}
+				]
+			}
+		});
 	});
 });

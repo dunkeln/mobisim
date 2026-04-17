@@ -17,6 +17,7 @@ export type FooterChatIntentOperation =
 	| 'assign'
 	| 'reassign'
 	| 'unassign'
+	| 'create_group'
 	| 'refresh'
 	| 'expand_selection'
 	| 'inspect'
@@ -77,6 +78,17 @@ function mentionsSemanticFamilyName(message: string): boolean {
 	);
 }
 
+function mentionsSemanticGroupCreation(message: string): boolean {
+	return (
+		/\b(create|make|turn|promote|lift|group)\b.*\b(new\s+)?(semantic\s+group|group)\b/i.test(
+			message
+		) ||
+		/\b(new\s+semantic\s+group|semantic\s+group\s+from\s+selection|group\s+this\s+selection|group\s+this\s+target|make\s+this\s+a\s+group|turn\s+this\s+into\s+a\s+group)\b/i.test(
+			message
+		)
+	);
+}
+
 function mentionsExplicitSemanticMembership(message: string): boolean {
 	return (
 		/\bsemantic\b/i.test(message) ||
@@ -92,6 +104,10 @@ function mentionsVisualEditVerb(message: string): boolean {
 	);
 }
 
+function mentionsViewSurface(message: string): boolean {
+	return /\b(view|viewport|scene|screen|display|canvas|frame|framing|render)\b/i.test(message);
+}
+
 function mentionsSelectionReferent(message: string): boolean {
 	return /\b(this|these|it|that|them|selected(?:\s+nodes?)?|selection|selections|current selection|selected node|selected material)\b/i.test(
 		message
@@ -101,6 +117,10 @@ function mentionsSelectionReferent(message: string): boolean {
 function inferOperation(message: string): FooterChatIntentOperation {
 	if (/\b(refresh|rebuild|regenerate|reanaly[sz]e|enrich)\b.*\b(semantic|semantics|overlay|labels?)\b/i.test(message)) {
 		return 'refresh';
+	}
+
+	if (mentionsSemanticGroupCreation(message)) {
+		return 'create_group';
 	}
 
 	if (/\b(expand|extend|promote|lift)\b.*\b(selection|selected|this|these)\b/i.test(message)) {
@@ -269,6 +289,10 @@ function scoreDomains(
 		scores.semantics += 3;
 		reasons.push('explicit semantic membership language is present');
 	}
+	if (operation === 'create_group') {
+		scores.semantics += 3;
+		reasons.push('semantic group creation language is present');
+	}
 	if (operation === 'assign' || operation === 'reassign' || operation === 'unassign' || operation === 'refresh') {
 		scores.semantics += 3;
 		reasons.push(`operation suggests ${operation} in semantics`);
@@ -314,6 +338,15 @@ function scoreDomains(
 	) {
 		scores.presentation += 3;
 		reasons.push('visual edit verb against a named family favors presentation over semantic membership');
+	}
+	if (
+		hasScopedSelection(input) &&
+		mentionsVisualEditVerb(message) &&
+		mentionsViewSurface(message) &&
+		!mentionsExplicitSemanticMembership(message)
+	) {
+		scores.presentation += 4;
+		reasons.push('selection-backed view removal favors presentation over semantic membership');
 	}
 
 	if (/\b(what tools are available|available tools|what can you do|capabilities)\b/i.test(message)) {

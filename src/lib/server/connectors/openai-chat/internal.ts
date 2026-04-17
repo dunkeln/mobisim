@@ -2,7 +2,6 @@ import type { NormalizedVehiclePaintIntent } from '$lib/server/connectors/vehicl
 import type {
 	FooterChatPresentationContext,
 	FooterChatPresentationRestore,
-	FooterChatSemanticIngressMutation,
 	FooterChatPresentationTarget,
 	FooterChatRequest,
 	FooterChatSidebarCard,
@@ -16,7 +15,7 @@ import type {
 	VehicleSemanticOverlay,
 	VehicleSemanticActionSupport
 } from '$lib/server/connectors/vehicle-semantic-overlay/types';
-import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
+import type { SceneDag } from '$lib/server/scene-dag/types';
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -25,18 +24,7 @@ import type { ResolvedHistoryContext } from '$lib/server/connectors/context-hist
 export const DEFAULT_MODEL = 'gpt-5.2';
 export const MAX_TOOL_ROUNDS = 3;
 
-export const APPLY_VEHICLE_APPEARANCE_INTENT_TOOL_NAME = 'apply_vehicle_appearance_intent';
-export const APPLY_VEHICLE_FOCUS_INTENT_TOOL_NAME = 'apply_vehicle_focus_intent';
-export const SET_VEHICLE_VIEW_MODE_TOOL_NAME = 'set_vehicle_view_mode';
 export const GET_VEHICLE_TOOL_CATALOG_TOOL_NAME = 'get_vehicle_tool_catalog';
-export const RESTORE_VEHICLE_PRESENTATION_TOOL_NAME = 'restore_vehicle_presentation';
-export const EXPAND_VEHICLE_SELECTION_TOOL_NAME = 'expand_vehicle_selection';
-export const MUTATE_VEHICLE_SEMANTIC_ASSIGNMENT_TOOL_NAME = 'mutate_vehicle_semantic_assignment';
-export const MANAGE_VEHICLE_SEMANTIC_GROUP_TOOL_NAME = 'manage_vehicle_semantic_group';
-export const REFRESH_VEHICLE_SEMANTICS_TOOL_NAME = 'refresh_vehicle_semantics';
-export const SET_INTENT_SIDEBAR_TOOL_NAME = 'set_intent_sidebar';
-export const SET_SUPPLEMENTARY_REFERENCE_LIST_TOOL_NAME = 'set_supplementary_reference_list';
-export const ASSIGN_SEMANTIC_INGRESS_TOOL_NAME = 'assign_semantic_ingress';
 export const EDIT_VEHICLE_PRESENTATION_TOOL_NAME = 'edit_vehicle_presentation';
 export const EDIT_VEHICLE_SELECTION_TOOL_NAME = 'edit_vehicle_selection';
 export const EDIT_VEHICLE_SEMANTICS_TOOL_NAME = 'edit_vehicle_semantics';
@@ -116,11 +104,10 @@ export type MutateVehicleSemanticAssignmentToolArgs = {
 
 export type ManageVehicleSemanticGroupToolArgs = {
 	action: 'create' | 'patch' | 'delete' | 'get';
-	targetType?: 'semantic_group' | 'semantic_node';
 	scope?: 'selected' | 'highlighted' | 'hidden';
 	query?: string;
+	semanticGroup?: string;
 	groupId?: string;
-	nodeId?: string;
 	nodeIds?: string[];
 	humanLabel?: string;
 	aliases?: string[];
@@ -144,13 +131,6 @@ export type SetSupplementaryReferenceListToolArgs = {
 	entries: Record<string, string>;
 };
 
-export type AssignSemanticIngressToolArgs = {
-	targetType: 'semantic_group' | 'semantic_node';
-	targetId: string;
-	targetLabel?: string;
-	transport: 'rest_sse' | 'stream';
-};
-
 export type EditVehiclePresentationToolArgs =
 	| ({
 			action: 'appearance';
@@ -171,20 +151,6 @@ export type EditVehicleSelectionToolArgs = {
 	query?: string;
 };
 
-export type EditVehicleSemanticsToolArgs =
-	| ({
-			action: 'assign' | 'reassign' | 'unassign';
-	  } & Omit<MutateVehicleSemanticAssignmentToolArgs, 'action'>)
-	| ({
-			action: 'create_group' | 'patch_group' | 'delete_group' | 'get_group' | 'get_node';
-	  } & Omit<ManageVehicleSemanticGroupToolArgs, 'action' | 'targetType'>)
-	| ({
-			action: 'refresh';
-	  } & RefreshVehicleSemanticsToolArgs)
-	| ({
-			action: 'assign_ingress';
-	  } & AssignSemanticIngressToolArgs);
-
 export type SetAssistantUiToolArgs =
 	| ({
 			action: 'sidebar';
@@ -203,13 +169,18 @@ export type ExecutedToolResult = {
 	sidebar?: FooterChatSidebarState;
 	supplementaryList?: FooterChatSupplementaryListState;
 	semanticOverlay?: VehicleSemanticOverlay | null;
-	semanticIngressBindings?: SemanticIngressBinding[];
-	semanticIngressMutation?: FooterChatSemanticIngressMutation;
+	sceneDag?: SceneDag | null;
+	selectedGroupId?: string | null;
+	trace?: Pick<
+		FooterChatTrace,
+		'executedToolDomain' | 'executedAction' | 'affectedTargetCount' | 'destructiveScope' | 'approvalSummary'
+	>;
 };
 
 export type PromptBuilderInput = {
 	input: NormalizedFooterChatRequest;
 	semanticOverlay: SemanticOverlayPromptContext;
+	sceneDag: SceneDag | null;
 	historyContext: ResolvedHistoryContext;
 	policySummary: string;
 	intentSummary: string;

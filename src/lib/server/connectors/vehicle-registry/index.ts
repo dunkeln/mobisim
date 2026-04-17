@@ -1,20 +1,23 @@
 import { env } from '$env/dynamic/private';
-import { VEHICLE_CATALOG, VEHICLE_CATALOG_LIST, type VehicleAssetId } from '$lib/vehicles/catalog';
+import {
+	VEHICLE_CATALOG,
+	VEHICLE_CATALOG_LIST,
+	type VehicleAssetId
+} from '$lib/vehicles/catalog';
+import { resolveVehicleAssetDownloadUrl } from './storage';
 import type { VehicleRegistryAsset, VehicleRegistryListResponse } from './types';
 
-function stripTrailingSlash(value: string): string {
-	return value.endsWith('/') ? value.slice(0, -1) : value;
-}
+export function resolveAssetBaseUrl(): string | null {
+	const baseUrl = env.ASSET_REGISTRY_PUBLIC_BASE_URL?.trim();
+	if (!baseUrl) {
+		throw new Error('ASSET_REGISTRY_PUBLIC_BASE_URL is required.');
+	}
 
-function resolveAssetBaseUrl(): string | null {
-	return env.ASSET_REGISTRY_PUBLIC_BASE_URL
-		? stripTrailingSlash(env.ASSET_REGISTRY_PUBLIC_BASE_URL)
-		: null;
+	return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
 }
 
 function toRegistryAsset(assetId: VehicleAssetId): VehicleRegistryAsset {
 	const asset = VEHICLE_CATALOG[assetId];
-	const baseUrl = resolveAssetBaseUrl();
 
 	return {
 		id: asset.id,
@@ -23,10 +26,8 @@ function toRegistryAsset(assetId: VehicleAssetId): VehicleRegistryAsset {
 		description: asset.description,
 		fileName: asset.fileName,
 		lengthMeters: asset.lengthMeters,
-		downloadUrl: baseUrl
-			? `${baseUrl}/${asset.fileName}`
-			: `/api/vehicle-assets/${asset.id}/download`,
-		storage: baseUrl ? 'remote-public' : 'local-private'
+		downloadUrl: resolveVehicleAssetDownloadUrl(assetId),
+		storage: 'remote-public'
 	};
 }
 

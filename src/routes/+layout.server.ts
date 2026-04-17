@@ -20,8 +20,9 @@ export const load: LayoutServerLoad = async (event) => {
 
 	return {
 		session,
-		authConfigured: hasGitHubAuthConfig() || hasGoogleAuthConfig(),
+		authConfigured: hasGitHubAuthConfig() || hasGoogleAuthConfig() || env.DEV_AUTH === 'mock',
 		githubAuthConfigured: hasGitHubAuthConfig(),
-		googleAuthConfigured: hasGoogleAuthConfig()
+		googleAuthConfigured: hasGoogleAuthConfig(),
+		devAuthConfigured: env.DEV_AUTH === 'mock'
 	};
 };

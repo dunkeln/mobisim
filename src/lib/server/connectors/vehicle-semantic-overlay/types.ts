@@ -60,6 +60,7 @@ export type VehicleSemanticPartUnit = {
 export type VehicleSemanticGroup = {
 	id: string;
 	humanLabel: string;
+	categoryDetail?: string;
 	aliases: string[];
 	confidence: number;
 	category:
@@ -101,32 +102,6 @@ export type VehicleSemanticOverlay = {
 	discardedSuggestions: VehicleSemanticOverlayDiscard[];
 };
 
-export type SemanticCommand =
-	| { type: 'assign'; assetId: VehicleAssetId }
-	| { type: 'reassign'; assetId: VehicleAssetId }
-	| { type: 'unassign'; assetId: VehicleAssetId }
-	| { type: 'create_group'; assetId: VehicleAssetId }
-	| { type: 'patch_group'; assetId: VehicleAssetId }
-	| { type: 'delete_group'; assetId: VehicleAssetId }
-	| { type: 'refresh_overlay'; assetId: VehicleAssetId }
-	| { type: 'assign_ingress'; assetId: VehicleAssetId };
-
-export type SemanticCommandResult = {
-	commandStatus: 'succeeded' | 'failed';
-	appliedCommand?: SemanticCommand['type'];
-	overlay: VehicleSemanticOverlay | null;
-	overlayRevision: number | null;
-	overlayStatus: VehicleSemanticOverlayStatus;
-};
-
-export type VehicleSemanticOverlaySnapshot = {
-	overlay: VehicleSemanticOverlay | null;
-	overlayRevision: number | null;
-	overlayStatus: VehicleSemanticOverlayStatus;
-	commandStatus?: SemanticCommandResult['commandStatus'];
-	appliedCommand?: SemanticCommandResult['appliedCommand'];
-};
-
 export type GenerateVehicleSemanticOverlayOptions = {
 	force?: boolean;
 	minAcceptedConfidence?: number;
@@ -149,15 +124,7 @@ export function partMatchesGroup(
 	part: VehicleSemanticPartUnit,
 	group: VehicleSemanticGroup
 ): boolean {
-	if (group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId))) {
-		return true;
-	}
-
-	if (group.materialIds.some((materialId) => part.materialIds.includes(materialId))) {
-		return true;
-	}
-
-	return false;
+	return group.nodeIds.some((nodeId) => part.nodeIds.includes(nodeId));
 }
 
 export type VehicleSemanticOverlayRuntimeIndex = {

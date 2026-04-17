@@ -6,6 +6,9 @@ import {
 } from './internal';
 import {
 	isSemanticAnnotationRequest,
+	isSemanticGroupCreationRequest,
+	isSemanticGroupDeletionRequest,
+	isSemanticGroupPatchRequest,
 	isSemanticRefreshRequest,
 	shouldAttemptDirectSelectionEdit,
 	shouldAttemptDirectVehicleEdit
@@ -46,6 +49,12 @@ function wantsStructuredAssistantUi(message: string): boolean {
 	);
 }
 
+function isExplicitViewerModeRequest(message: string): boolean {
+	return /\b(wireframe|xray|x-ray|uv|uvs|uv debug|uv_debug|postprocess|post-processing|postprocessing)\b/i.test(
+		message
+	);
+}
+
 function wantsStructuredUiForAction(
 	message: string,
 	intentDraft: FooterChatIntentDraft
@@ -78,12 +87,12 @@ function buildClarificationMessage(input: NormalizedFooterChatRequest): string |
 		(selection) => typeof selection.materialIndex === 'number' || !!selection.materialName
 	);
 
-	if (highlightedKinds.has('node') && highlightedKinds.has('material')) {
-		return 'Do you want me to remove the node-backed member, the material-backed member, or the whole mixed group?';
+	if (selectionHasNode || selectionHasMaterial) {
+		return undefined;
 	}
 
-	if (selectionHasNode && selectionHasMaterial) {
-		return 'Do you want me to change the whole node, the selected material region, or the whole mixed group?';
+	if (highlightedKinds.has('node') && highlightedKinds.has('material')) {
+		return 'Do you want me to remove the node-backed member, the material-backed member, or the whole mixed group?';
 	}
 
 	return undefined;
@@ -100,6 +109,33 @@ export function deriveFooterChatPolicy(
 			mode: 'clarification',
 			toolBudget: 0,
 			clarificationMessage
+		};
+	}
+
+	if (isSemanticGroupCreationRequest(input.message)) {
+		return {
+			mode: 'single_tool',
+			toolBudget: defaultToolBudget,
+			toolChoice: {
+				type: 'function',
+				function: {
+					name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME
+				}
+			}
+		};
+	}
+
+	if (isSemanticGroupDeletionRequest(input.message)) {
+		return {
+			mode: 'direct',
+			toolBudget: defaultToolBudget
+		};
+	}
+
+	if (isSemanticGroupPatchRequest(input.message)) {
+		return {
+			mode: 'direct',
+			toolBudget: defaultToolBudget
 		};
 	}
 
@@ -195,6 +231,13 @@ export function deriveFooterChatPolicy(
 					name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME
 				}
 			}
+		};
+	}
+
+	if (input.assetId && isExplicitViewerModeRequest(input.message)) {
+		return {
+			mode: 'direct',
+			toolBudget: defaultToolBudget
 		};
 	}
 

@@ -9,6 +9,7 @@ const INITIAL_STATE: FooterChatSidebarState = {
 const SIDEBAR_TTL_MS = 10 * 60 * 1000;
 
 type InspectorSidebarStoreState = Partial<Record<VehicleAssetId, FooterChatSidebarState>>;
+type InspectorSidebarLedgerKeys = Partial<Record<VehicleAssetId, string>>;
 
 function sanitizeSidebarState(input: FooterChatSidebarState): FooterChatSidebarState {
 	return {
@@ -40,6 +41,7 @@ function sanitizeSidebarState(input: FooterChatSidebarState): FooterChatSidebarS
 function createInspectorSidebarStore() {
 	const { subscribe, set } = writable<InspectorSidebarStoreState>({});
 	let currentState: InspectorSidebarStoreState = {};
+	let currentLedgerKeyByAsset: InspectorSidebarLedgerKeys = {};
 	let updatedAtByAsset: Partial<Record<VehicleAssetId, number>> = {};
 	let expiryTimersByAsset: Partial<Record<VehicleAssetId, ReturnType<typeof setTimeout>>> = {};
 
@@ -84,7 +86,11 @@ function createInspectorSidebarStore() {
 
 	return {
 		subscribe,
-		set(assetId: VehicleAssetId, state: FooterChatSidebarState): void {
+		set(assetId: VehicleAssetId, state: FooterChatSidebarState, ledgerKey: string): void {
+			currentLedgerKeyByAsset = {
+				...currentLedgerKeyByAsset,
+				[assetId]: ledgerKey
+			};
 			updatedAtByAsset = {
 				...updatedAtByAsset,
 				[assetId]: Date.now()
@@ -92,13 +98,14 @@ function createInspectorSidebarStore() {
 			applyState(assetId, state);
 			scheduleExpiry(assetId);
 		},
-		getContext(assetId?: VehicleAssetId): FooterChatSidebarState {
-			if (!assetId) {
+		getContext(assetId: VehicleAssetId, ledgerKey: string): FooterChatSidebarState {
+			if (currentLedgerKeyByAsset[assetId] !== ledgerKey) {
 				return INITIAL_STATE;
 			}
 
 			if (isExpired(assetId)) {
 				clearExpiryTimer(assetId);
+				delete currentLedgerKeyByAsset[assetId];
 				delete updatedAtByAsset[assetId];
 				applyState(assetId, INITIAL_STATE);
 			}
@@ -108,6 +115,7 @@ function createInspectorSidebarStore() {
 		reset(assetId?: VehicleAssetId): void {
 			if (assetId) {
 				clearExpiryTimer(assetId);
+				delete currentLedgerKeyByAsset[assetId];
 				delete updatedAtByAsset[assetId];
 				applyState(assetId, INITIAL_STATE);
 				return;
@@ -116,6 +124,7 @@ function createInspectorSidebarStore() {
 			for (const scopedAssetId of Object.keys(expiryTimersByAsset) as VehicleAssetId[]) {
 				clearExpiryTimer(scopedAssetId);
 			}
+			currentLedgerKeyByAsset = {};
 			updatedAtByAsset = {};
 			currentState = {};
 			set(currentState);

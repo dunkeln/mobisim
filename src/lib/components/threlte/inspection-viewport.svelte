@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { Canvas, T } from '@threlte/core';
 	import type { ThrelteGltf } from '@threlte/extras';
-	import { GLTF, OrbitControls } from '@threlte/extras';
+	import { GLTF, OrbitControls, useMeshopt } from '@threlte/extras';
+	import { Info } from 'lucide-svelte';
 	import * as THREE from 'three';
 	import type { OrbitControls as ThreeOrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 	import AssetSelectionDropdown from '$lib/components/inspector/asset-selection-dropdown.svelte';
 	import CameraConfigReadout from '$lib/components/inspector/camera-config-readout.svelte';
 	import InspectorSidebar from '$lib/components/inspector/inspector-sidebar.svelte';
 	import LightingControl from '$lib/components/inspector/lighting-control.svelte';
+	import SemanticOverlayControl from '$lib/components/inspector/semantic-overlay-control.svelte';
+	import VehicleLightToggle from '$lib/components/inspector/vehicle-light-toggle.svelte';
+	import ViewerModeSwitcher from '$lib/components/inspector/viewer-mode-switcher.svelte';
 	import type { CameraConfig, Vec3Tuple } from '$lib/components/inspector/types';
 	import ViewportRenderInvalidator from '$lib/components/threlte/viewport-render-invalidator.svelte';
 	import ViewportFooterBlueprint from '$lib/components/ui/viewport-footer-blueprint.svelte';
@@ -15,24 +19,28 @@
 	import {
 		buildRuntimeNodeLookup,
 		buildRuntimeNodePath,
+		enableSelectablePickLayer,
 		resolveRuntimeSelection
 	} from '$lib/components/threlte/runtime-selection';
 	import { resolveRuntimeMaterialTargets } from '$lib/components/threlte/runtime-material-targets';
+	import {
+		isLowAlphaMaterial,
+		resolvePersistentAlpha
+	} from '$lib/components/threlte/persistent-alpha';
+	import { mapMaterialsPreservingLowAlpha } from '$lib/components/threlte/viewer-mode-materials';
 	import { normalizeVehicleScene } from '$lib/components/threlte/vehicle-asset';
 	import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
 	import type {
 		VehicleInspectionCapabilities,
 		VehicleInspectionMaterialSummary
 	} from '$lib/server/connectors/gltf-preprocess/types';
-	import type {
-		VehicleSemanticOverlayStatus,
-		VehicleSemanticPartUnit
-	} from '$lib/server/connectors/vehicle-semantic-overlay/types';
-	import {
-		buildVehicleSemanticOverlayRuntimeIndex
-	} from '$lib/semantic-overlay/runtime';
+	import type { VehicleSemanticOverlayStatus } from '$lib/server/connectors/vehicle-semantic-overlay/types';
 	import { chatRequestState } from '$lib/stores/chat-request-state';
-	import { vehicleNodeSelection, type VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
+	import {
+		getSelectionConstraintNodeIds,
+		vehicleNodeSelection,
+		type VehicleNodeSelection
+	} from '$lib/stores/vehicle-node-selection';
 	import { vehiclePatchState } from '$lib/stores/vehicle-patches';
 	import { semanticRuntimeState } from '$lib/stores/semantic-runtime';
 	import type { VehicleAssetId } from '$lib/vehicles/catalog';
@@ -51,6 +59,8 @@
 	const CAMERA_DISTANCE = 12.7;
 	const DEFAULT_CAMERA_FOV = 34;
 	const XRAY_OPACITY = 0.18;
+	// Temporary visual aid for confirming normalized asset placement.
+	const TEMP_VEHICLE_BOUNDS_COLOR = new THREE.Color('#80CED7');
 	const SELECTION_CLICK_DRAG_THRESHOLD = 8;
 	const SELECTION_HIGHLIGHT_FACTOR: [number, number, number, number] = [0.95, 0.79, 0.42, 0.94];
 
@@ -69,7 +79,9 @@
 	let viewportLightIntensity = $state(1);
 	let cameraConfig = $state<CameraConfig | null>(null);
 	let loadedScene = $state<THREE.Object3D | undefined>();
+	let vehicleBoundsHelper = $state<THREE.BoxHelper | undefined>();
 	let materialSummaryById = $state<Map<string, VehicleInspectionMaterialSummary>>(new Map());
+	const meshoptDecoder = useMeshopt();
 	const originalNodeState = new WeakMap<
 		THREE.Object3D,
 		{
@@ -96,6 +108,7 @@
 			envMapIntensity?: number;
 		}
 	>();
+	const persistentMaterialAlphaState = new WeakMap<THREE.Material, number>();
 	const floorDotMaterial = new THREE.ShaderMaterial({
 		transparent: true,
 		depthWrite: false,
@@ -133,7 +146,7 @@
 				float distToDot = length(centeredUv);
 				float aa = max(fwidth(distToDot), 0.0018);
 				float dotMask = 1.0 - smoothstep(dotRadius - aa, dotRadius + aa, distToDot);
-				float alpha = dotMask * fade * 0.42;
+				float alpha = dotMask * fade * 0.62;
 
 				if (alpha <= 0.001) discard;
 
@@ -187,7 +200,6 @@
 			$semanticRuntimeState.byAsset[assetId] ?? {
 				overlay: null,
 				overlayStatus: 'unknown' as VehicleSemanticOverlayStatus,
-				ingressBindings: [],
 				selectedGroupId: null
 			}
 	);
@@ -234,9 +246,12 @@
 					selection.targetId,
 					selection.targetName,
 					selection.nodeId,
-					(selection.nodeIds ?? [selection.nodeId]).join(','),
+					getSelectionConstraintNodeIds(selection).join(','),
+					selection.pickedNodeId ?? '',
 					typeof selection.materialIndex === 'number' ? selection.materialIndex : 'none',
-					selection.materialName ?? ''
+					selection.materialName ?? '',
+					typeof selection.pickedMaterialIndex === 'number' ? selection.pickedMaterialIndex : 'none',
+					selection.pickedMaterialName ?? ''
 				].join(':')
 			)
 			.sort((left, right) => left.localeCompare(right))
@@ -258,40 +273,6 @@
 				: [];
 	}
 
-	function resolveClickedMaterialId(
-		nodePath: string,
-		materialIndex?: number,
-		materialName?: string
-	): string | undefined {
-		const candidates = Array.from(materialSummaryById.values()).filter((material) => {
-			if (!material.nodePaths.includes(nodePath)) {
-				return false;
-			}
-
-			if (typeof materialIndex === 'number') {
-				return material.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex));
-			}
-
-			if (materialName) {
-				return material.name === materialName;
-			}
-
-			return true;
-		});
-
-		const ranked = candidates.sort((left, right) => {
-			const leftScore =
-				(left.name === materialName ? 2 : 0) +
-				(left.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex ?? -1)) ? 4 : 0);
-			const rightScore =
-				(right.name === materialName ? 2 : 0) +
-				(right.meshMaterialSlots.some((slot) => slot.slotIndices.includes(materialIndex ?? -1)) ? 4 : 0);
-			return rightScore - leftScore || left.id.localeCompare(right.id);
-		});
-
-		return ranked[0]?.id;
-	}
-
 	function buildNodeSelection(
 		resolvedHit: NonNullable<ReturnType<typeof resolveRuntimeSelection>>,
 		nodePath: string
@@ -301,6 +282,11 @@
 			targetType: 'node',
 			targetId: resolvedHit.nodeId,
 			targetName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
+			pickedNodeId: resolvedHit.nodeId,
+			pickedNodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
+			pickedNodePath: nodePath,
+			pickedMaterialIndex: resolvedHit.materialIndex,
+			pickedMaterialName: resolvedHit.materialName,
 			nodeIds: [resolvedHit.nodeId],
 			nodeId: resolvedHit.nodeId,
 			nodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
@@ -308,110 +294,6 @@
 			materialIndex: resolvedHit.materialIndex,
 			materialName: resolvedHit.materialName
 		};
-	}
-
-	function buildPartSelection(
-		part: VehicleSemanticPartUnit,
-		hit: {
-			nodeId: string;
-			nodeName: string;
-			nodePath: string;
-			materialIndex?: number;
-			materialName?: string;
-		},
-		nodeLookup: Map<string, THREE.Object3D>,
-		scene: THREE.Object3D
-	): VehicleNodeSelection {
-		const anchorNodeId = part.anchorNodeId ?? (part.nodeIds.includes(hit.nodeId) ? hit.nodeId : part.nodeIds[0]!);
-		const anchorRuntimeNode = nodeLookup.get(anchorNodeId);
-		const anchorNodeName = anchorRuntimeNode?.name.trim() || hit.nodeName || part.humanLabel;
-		const anchorNodePath = anchorRuntimeNode
-			? buildRuntimeNodePath(anchorRuntimeNode, scene)
-			: hit.nodePath;
-
-		return {
-			assetId,
-			targetType: 'part',
-			targetId: part.id,
-			targetName: part.humanLabel,
-			nodeIds: [...part.nodeIds],
-			anchorNodeId,
-			nodeId: anchorNodeId,
-			nodeName: anchorNodeName,
-			nodePath: anchorNodePath,
-			materialIndex: hit.materialIndex,
-			materialName: hit.materialName
-		};
-	}
-
-	function resolveSemanticSelectionFromHit(
-		resolvedHit: NonNullable<ReturnType<typeof resolveRuntimeSelection>>,
-		scene: THREE.Object3D
-	): VehicleNodeSelection {
-		const nodePath = buildRuntimeNodePath(resolvedHit.runtimeNode, scene);
-		const fallbackSelection = buildNodeSelection(resolvedHit, nodePath);
-		const overlay = semanticRuntimeAsset.overlay;
-		if (!overlay) {
-			return fallbackSelection;
-		}
-
-		const overlayIndex = buildVehicleSemanticOverlayRuntimeIndex(overlay);
-		const hitMaterialId = resolveClickedMaterialId(
-			nodePath,
-			resolvedHit.materialIndex,
-			resolvedHit.materialName
-		);
-		const candidateParts = Array.from(
-			new Set([
-				...(overlayIndex.partsByNodeId.get(resolvedHit.nodeId) ?? []),
-				...(hitMaterialId ? (overlayIndex.partsByMaterialId.get(hitMaterialId) ?? []) : [])
-			])
-		);
-		if (candidateParts.length === 0) {
-			return fallbackSelection;
-		}
-
-		const nodeLookup = buildRuntimeNodeLookup(scene).nodeById;
-		const bestPart = candidateParts.sort((left, right) => {
-			const leftMaterialMatch = hitMaterialId ? left.materialIds.includes(hitMaterialId) : false;
-			const rightMaterialMatch = hitMaterialId ? right.materialIds.includes(hitMaterialId) : false;
-			if (leftMaterialMatch !== rightMaterialMatch) {
-				return leftMaterialMatch ? -1 : 1;
-			}
-
-			if (left.nodeIds.length !== right.nodeIds.length) {
-				return left.nodeIds.length - right.nodeIds.length;
-			}
-
-			if (left.confidence !== right.confidence) {
-				return right.confidence - left.confidence;
-			}
-
-			const leftAnchorMatch = left.anchorNodeId === resolvedHit.nodeId;
-			const rightAnchorMatch = right.anchorNodeId === resolvedHit.nodeId;
-			if (leftAnchorMatch !== rightAnchorMatch) {
-				return leftAnchorMatch ? -1 : 1;
-			}
-
-			return left.humanLabel.localeCompare(right.humanLabel);
-		})[0];
-
-		if (!bestPart) {
-			return fallbackSelection;
-		}
-
-		return buildPartSelection(
-			bestPart,
-			{
-				nodeId: resolvedHit.nodeId,
-				nodeName: resolvedHit.runtimeNode.name.trim() || resolvedHit.runtimeNode.type,
-				nodePath,
-				materialIndex: resolvedHit.materialIndex,
-				materialName: resolvedHit.materialName
-			},
-			nodeLookup,
-			scene
-		);
 	}
 
 	function hasWireframeProperty(
@@ -460,6 +342,17 @@
 		envMapIntensity: number;
 	} {
 		return 'roughness' in material && 'metalness' in material && 'envMapIntensity' in material;
+	}
+
+	function applyPersistentMaterialAlpha(material: THREE.Material): void {
+		const persistentOpacity = persistentMaterialAlphaState.get(material);
+		if (typeof persistentOpacity !== 'number' || !hasOpacityProperty(material)) {
+			return;
+		}
+
+		const nextOpacity = resolvePersistentAlpha(material.opacity, persistentOpacity);
+		material.opacity = nextOpacity;
+		material.transparent = nextOpacity < 1;
 	}
 
 	function snapshotSceneState(scene: THREE.Object3D): void {
@@ -553,6 +446,8 @@
 					}
 				}
 
+				applyPersistentMaterialAlpha(material);
+
 				if (hasColorProperty(material) && originalMaterial.color) {
 					material.color.copy(originalMaterial.color);
 				}
@@ -603,7 +498,12 @@
 
 	function setSceneWireframe(scene: THREE.Object3D, enabled: boolean): void {
 		scene.traverse((node) => {
-			for (const material of listNodeMaterials(node)) {
+			if (!node.visible) {
+				return;
+			}
+
+			const nodeMaterials = listNodeMaterials(node);
+			for (const material of nodeMaterials.filter((material) => !isLowAlphaMaterial(material))) {
 				if (!hasWireframeProperty(material)) {
 					continue;
 				}
@@ -616,8 +516,31 @@
 
 	function setSceneXray(scene: THREE.Object3D, enabled: boolean): void {
 		scene.traverse((node) => {
-			for (const material of listNodeMaterials(node)) {
-				if (!hasOpacityProperty(material) || !enabled) {
+			if (!node.visible) {
+				return;
+			}
+
+			for (const material of listNodeMaterials(node).filter((material) => !isLowAlphaMaterial(material))) {
+				if (!hasOpacityProperty(material)) {
+					continue;
+				}
+
+				if (!enabled) {
+					const originalMaterial = originalMaterialState.get(material);
+					if (originalMaterial?.opacity !== undefined) {
+						material.opacity = originalMaterial.opacity;
+					}
+					if (originalMaterial?.transparent !== undefined) {
+						material.transparent = originalMaterial.transparent;
+					}
+					if (originalMaterial?.side !== undefined) {
+						material.side = originalMaterial.side;
+					}
+					if (originalMaterial?.depthWrite !== undefined && 'depthWrite' in material) {
+						material.depthWrite = originalMaterial.depthWrite;
+					}
+					applyPersistentMaterialAlpha(material);
+					material.needsUpdate = true;
 					continue;
 				}
 
@@ -675,7 +598,7 @@
 
 	function setSceneUvDebug(scene: THREE.Object3D, enabled: boolean): void {
 		scene.traverse((node) => {
-			if (!(node instanceof THREE.Mesh)) {
+			if (!(node instanceof THREE.Mesh) || !node.visible) {
 				return;
 			}
 
@@ -686,17 +609,19 @@
 			}
 
 			if (!node.geometry.getAttribute('uv')) {
-				node.material = new THREE.MeshBasicMaterial({
-					color: new THREE.Color(0.92, 0.24, 0.56),
-					wireframe: true,
-					toneMapped: false
-				});
+				node.material = mapMaterialsPreservingLowAlpha(originalMeshMaterial, () =>
+					new THREE.MeshBasicMaterial({
+						color: new THREE.Color(0.92, 0.24, 0.56),
+						wireframe: true,
+						toneMapped: false
+					})
+				);
 				return;
 			}
 
-			node.material = Array.isArray(originalMeshMaterial)
-				? originalMeshMaterial.map((material) => createUvDebugMaterial(material))
-				: createUvDebugMaterial(originalMeshMaterial);
+			node.material = mapMaterialsPreservingLowAlpha(originalMeshMaterial, (material) =>
+				createUvDebugMaterial(material)
+			);
 		});
 	}
 
@@ -847,6 +772,12 @@
 			return;
 		}
 
+		const eventTarget = event.target;
+		if (eventTarget instanceof HTMLElement && eventTarget.closest('[data-viewport-ui="true"]')) {
+			selectionPointerDown = null;
+			return;
+		}
+
 		selectionPointerDown = {
 			x: event.clientX,
 			y: event.clientY,
@@ -902,8 +833,7 @@
 			camera,
 			canvasRect: rect,
 			clientX: event.clientX,
-			clientY: event.clientY,
-			anchorToCenterSample: additiveSelection
+			clientY: event.clientY
 		});
 
 		if (!resolvedHit) {
@@ -913,8 +843,8 @@
 			return;
 		}
 
-		vehicleNodeSelection.select(
-			resolveSemanticSelectionFromHit(resolvedHit, loadedScene),
+		vehicleNodeSelection.toggle(
+			buildNodeSelection(resolvedHit, buildRuntimeNodePath(resolvedHit.runtimeNode, loadedScene)),
 			additiveSelection
 		);
 	}
@@ -1104,8 +1034,10 @@
 					break;
 				case 'set_alpha':
 					if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
-						material.opacity = operation.value;
-						material.transparent = operation.value < 1;
+						const nextOpacity = resolvePersistentAlpha(material.opacity, operation.value);
+						material.opacity = nextOpacity;
+						material.transparent = nextOpacity < 1;
+						persistentMaterialAlphaState.set(material, nextOpacity);
 					}
 					break;
 				case 'set_double_sided':
@@ -1215,8 +1147,10 @@
 					break;
 				case 'set_alpha':
 					if (typeof operation.value === 'number' && hasOpacityProperty(material)) {
-						material.opacity = operation.value;
-						material.transparent = operation.value < 1;
+						const nextOpacity = resolvePersistentAlpha(material.opacity, operation.value);
+						material.opacity = nextOpacity;
+						material.transparent = nextOpacity < 1;
+						persistentMaterialAlphaState.set(material, nextOpacity);
 					}
 					break;
 				case 'set_double_sided':
@@ -1305,6 +1239,7 @@
 
 	function frameVehicle(gltf: ThrelteGltf): void {
 		loadedScene = gltf.scene;
+		enableSelectablePickLayer(gltf.scene);
 
 		const { size, center } = normalizeVehicleScene(gltf.scene);
 
@@ -1353,29 +1288,54 @@
 			return;
 		}
 
+		// Build the lookup BEFORE clearing overlays so that the sequential node IDs
+		// match the IDs captured at click time (clearing selection overlays shifts
+		// subsequent nodes' indices in depth-first traversal order).
+		const nodeLookup = buildRuntimeNodeLookup(loadedScene).nodeById;
 		clearSelectionOverlays(loadedScene);
+
 		const selections = $vehicleNodeSelection.filter((selection) => selection.assetId === assetId);
 		if (selections.length === 0) {
 			return;
 		}
 
-		const nodeLookup = buildRuntimeNodeLookup(loadedScene).nodeById;
 		for (const selection of selections) {
-			for (const nodeId of selection.nodeIds ?? [selection.nodeId]) {
+			const highlightNodeIds = selection.pickedNodeId
+				? [selection.pickedNodeId]
+				: selection.nodeIds ?? [selection.nodeId];
+
+			for (const nodeId of highlightNodeIds) {
 				const runtimeNode = nodeLookup.get(nodeId);
 				if (!runtimeNode) {
 					continue;
 				}
 
+				const materialIndex =
+					selection.targetType === 'node' ? selection.materialIndex : undefined;
+
 				addHighlightOverlay(
 					runtimeNode,
 					SELECTION_HIGHLIGHT_FACTOR,
 					SELECTION_OVERLAY_NAME,
-					selection.targetType === 'node' ? selection.materialIndex : undefined,
+					materialIndex,
 					20
 				);
 			}
 		}
+	});
+
+	$effect(() => {
+		if (!vehicleBoundsHelper) {
+			return;
+		}
+
+		vehicleBoundsHelper.material.color.set(TEMP_VEHICLE_BOUNDS_COLOR);
+		vehicleBoundsHelper.material.transparent = true;
+		vehicleBoundsHelper.material.opacity = 0.18;
+		vehicleBoundsHelper.material.depthWrite = false;
+		vehicleBoundsHelper.material.depthTest = false;
+		vehicleBoundsHelper.material.toneMapped = false;
+		vehicleBoundsHelper.material.needsUpdate = true;
 	});
 
 	$effect(() => {
@@ -1418,6 +1378,7 @@
 		};
 
 		loadedScene = undefined;
+		vehicleBoundsHelper = undefined;
 		materialSummaryById = new Map();
 		vehicleNodeSelection.clear(assetId);
 		void loadSemanticOverlayStatus();
@@ -1434,16 +1395,22 @@
 <div
 	class={[
 		'relative h-full min-h-0 w-full overflow-visible rounded-4xl',
-		'drop-shadow-[0_18px_30px_color-mix(in_oklab,var(--color-boundary-background)_16%,black)]',
-		'drop-shadow-[0_4px_10px_color-mix(in_oklab,var(--color-boundary-background)_10%,black)]',
+		'drop-shadow-[0_12px_20px_color-mix(in_oklab,var(--color-boundary-background)_10%,black)]',
+		'drop-shadow-[0_2px_6px_color-mix(in_oklab,var(--color-boundary-background)_7%,black)]',
 		className
 	]}
 >
 	<div
-		class="relative h-full min-h-0 w-full overflow-hidden rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_9%,transparent)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_6%,transparent)]"
+		class="relative h-full min-h-0 w-full overflow-hidden rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_2.6%,transparent)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-background)_74%,black),color-mix(in_oklab,var(--color-boundary-background)_94%,black)_100%)] shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_2.4%,transparent),0_10px_24px_color-mix(in_oklab,var(--color-boundary-background)_14%,black)]"
 	>
 		<div
-			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_100%)]"
+			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-boundary-text)_1.4%,transparent),transparent_22%,transparent_100%)] opacity-16"
+		></div>
+		<div
+			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] bg-[radial-gradient(circle_at_50%_18%,color-mix(in_oklab,var(--color-boundary-text)_1.2%,transparent),transparent_42%)] opacity-12"
+		></div>
+		<div
+			class="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] border border-[color:color-mix(in_oklab,var(--color-boundary-text)_2.4%,transparent)]"
 		></div>
 		<div
 			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_40%,color-mix(in_oklab,var(--color-boundary-text)_3%,transparent),transparent_18%,transparent_50%)]"
@@ -1451,34 +1418,52 @@
 		<div
 			class="pointer-events-none absolute inset-0 rounded-[inherit] bg-[radial-gradient(circle_at_50%_100%,color-mix(in_oklab,var(--color-boundary-background)_22%,black),transparent_34%)]"
 		></div>
-		<div class="pointer-events-none absolute inset-0 z-20" data-viewport-ui="true">
-			<div
-				class="pointer-events-auto absolute top-4 left-4 flex flex-col items-start gap-2 sm:top-5 sm:left-6"
-			>
-				<AssetSelectionDropdown class="origin-top-left scale-[0.8] xl:scale-100" />
+			<div class="pointer-events-none absolute inset-0 z-20" data-viewport-ui="true">
+			<div class="pointer-events-auto absolute top-3 left-3 flex items-center gap-1.5 sm:top-4 sm:left-4">
+				<div class="canvas-control shrink-0">
+					<button
+						type="button"
+						class="flex h-7 min-w-[2.05rem] items-center justify-center rounded-full border border-[color:color-mix(in_oklab,var(--color-boundary-text)_14%,transparent)] bg-boundary-text px-2.25 text-boundary-background transition-colors duration-150 hover:bg-boundary-text/92"
+						aria-label="Open FAQ"
+						aria-haspopup="dialog"
+						title="Open FAQ"
+						onclick={() => {
+							window.dispatchEvent(new CustomEvent('mobisim:open-faq'));
+						}}
+					>
+						<Info class="relative z-10 h-[14px] w-[14px] text-boundary-background" />
+					</button>
+				</div>
+				<AssetSelectionDropdown class="shrink-0" />
+				<ViewerModeSwitcher class="shrink-0" {assetId} />
 			</div>
 			<div
-				class="pointer-events-auto absolute top-4 right-4 flex flex-col items-end gap-4 sm:top-5 sm:right-6"
+				class="pointer-events-auto absolute top-3 right-3 flex flex-col items-end gap-3 sm:top-4 sm:right-4"
 			>
-				<CameraConfigReadout
-					config={cameraConfig}
-					moving={false}
-					class="origin-top-right scale-[0.8] xl:scale-100"
-				/>
+				<div class="flex items-center gap-1.5">
+					<SemanticOverlayControl assetId={assetId} />
+					<CameraConfigReadout
+						config={cameraConfig}
+						moving={false}
+						class="shrink-0"
+					/>
+				</div>
 				<InspectorSidebar {assetId} />
 			</div>
 			<div
-				class="pointer-events-auto absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-2 sm:top-5"
+				class="pointer-events-auto absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 sm:top-4"
 			>
+				<VehicleLightToggle {assetId} categories={['front_lighting']} />
 				<LightingControl bind:value={viewportLightIntensity} />
 				<span
 					class={[
-						'h-1.5 w-1.5 self-center rounded-full transition-[background-color,box-shadow,opacity] duration-300',
+						'-ml-1 mr-0.5 h-1.5 w-1.5 self-center rounded-full transition-[background-color,box-shadow,opacity] duration-300',
 						semanticDotClasses
 					]}
 					aria-label={semanticOverlayLabel}
 					title={semanticOverlayLabel}
 				></span>
+				<VehicleLightToggle {assetId} categories={['rear_lighting']} />
 			</div>
 			<ViewportFooterBlueprint {assetId} />
 		</div>
@@ -1501,13 +1486,13 @@
 					position={cameraPosition}
 					fov={DEFAULT_CAMERA_FOV}
 				>
-					<OrbitControls
-						bind:ref={controls}
-						enablePan={false}
-						enableDamping
-						minDistance={4}
-						maxDistance={200}
-					/>
+						<OrbitControls
+							bind:ref={controls}
+							enablePan={false}
+							enableDamping
+							minDistance={0}
+							maxDistance={200}
+						/>
 				</T.PerspectiveCamera>
 				<T.AmbientLight intensity={1.15 * viewportLightIntensity} />
 				<T.HemisphereLight args={['#e8ecf3', '#08090c', 1.2 * viewportLightIntensity]} />
@@ -1519,7 +1504,15 @@
 				</T.Mesh>
 				{#key assetUrl}
 					<T.Group position={modelPosition}>
-						<GLTF url={assetUrl} onload={frameVehicle} />
+						{#if loadedScene}
+							<T.BoxHelper
+								bind:ref={vehicleBoundsHelper}
+								args={[loadedScene, TEMP_VEHICLE_BOUNDS_COLOR]}
+								renderOrder={30}
+								frustumCulled={false}
+							/>
+						{/if}
+						<GLTF url={assetUrl} meshoptDecoder={meshoptDecoder} onload={frameVehicle} />
 					</T.Group>
 				{/key}
 			</Canvas>

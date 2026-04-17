@@ -1,0 +1,21 @@
+# Copy this to terraform.tfvars and fill in real values.
+# NEVER commit terraform.tfvars — it contains secrets.
+
+aws_region   = "us-west-2"
+environment  = "prod"
+app_name     = "mobisim"
+
+# S3
+asset_bucket_name  = "mobisim-assets-prod-<your-unique-suffix>"
+asset_cors_origins = ["https://your-domain.com"]
+
+# Lightsail
+lightsail_power = "micro"   # nano ($7/mo) | micro ($10/mo) | small ($25/mo)
+lightsail_scale = 1
+webapp_image    = "123456789.dkr.ecr.us-west-2.amazonaws.com/mobisim:latest"
+
+# Secrets — prefer TF_VAR_* environment variables over storing here
+auth_secret        = "change-me-generate-with-openssl-rand-base64-32"
+auth_github_id     = ""
+auth_github_secret = ""
+openai_api_key     = "sk-..."

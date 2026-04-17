@@ -1,6 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { resolveSemanticGroupDefinitionsPath } from '$lib/server/connectors/vehicle-registry/storage';
+import {
+	readJsonObject,
+	writeJsonObject
+} from '$lib/server/connectors/vehicle-registry/s3';
+import { resolveSemanticGroupDefinitionsKey } from '$lib/server/connectors/vehicle-registry/storage';
 import type {
 	VehicleSemanticActionSupport,
 	VehicleSemanticGroup
@@ -68,7 +70,20 @@ const DEFAULT_DEFINITIONS: SemanticGroupDefinition[] = [
 	{
 		id: 'body_shell',
 		humanLabel: 'body shell',
-		aliases: ['body', 'paint'],
+		aliases: [
+			'body',
+			'bodywork',
+			'body shell',
+			'body paint',
+			'chassis',
+			'hull',
+			'fuselage',
+			'airframe',
+			'deck',
+			'exterior',
+			'outer shell',
+			'paint'
+		],
 		category: 'body_shell',
 		supports: ['focus', 'highlight', 'isolate', 'paint'],
 		assignmentMode: 'overlay'
@@ -99,6 +114,36 @@ const DEFAULT_DEFINITIONS: SemanticGroupDefinition[] = [
 	}
 ];
 
+const PAINTABLE_SURFACE_REFERENCE_KEYS = new Set([
+	'body',
+	'body_shell',
+	'bodywork',
+	'body_paint',
+	'body_painting',
+	'body_surface',
+	'body_panels',
+	'chassis',
+	'deck',
+	'exterior',
+	'outer_shell',
+	'shell',
+	'hull',
+	'fuselage',
+	'airframe'
+]);
+
+const PAINTABLE_SURFACE_REFERENCE_TOKENS = new Set([
+	'body',
+	'bodywork',
+	'shell',
+	'chassis',
+	'hull',
+	'fuselage',
+	'airframe',
+	'deck',
+	'exterior'
+]);
+
 function normalizeStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) {
 		return [];
@@ -111,6 +156,28 @@ function normalizeStringArray(value: unknown): string[] {
 				.filter((entry) => entry.length > 0)
 		)
 	).sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeOtherCategoryDetail(input: {
+	id: string;
+	humanLabel: string;
+	categoryDetail?: string | undefined;
+}): string {
+	const explicit = input.categoryDetail?.trim();
+	if (explicit && explicit.toLowerCase() !== 'other') {
+		return explicit;
+	}
+
+	if (input.id === 'vehicle' || input.humanLabel.trim().toLowerCase() === 'vehicle') {
+		return 'asset';
+	}
+
+	const label = input.humanLabel.trim();
+	if (label.length > 0 && label.toLowerCase() !== 'other') {
+		return label;
+	}
+
+	return 'misc';
 }
 
 function isGroupCategory(value: unknown): value is VehicleSemanticGroup['category'] {
@@ -150,6 +217,10 @@ function normalizeDefinition(value: unknown): SemanticGroupDefinition | null {
 	const candidate = value as Record<string, unknown>;
 	const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
 	const humanLabel = typeof candidate.humanLabel === 'string' ? candidate.humanLabel.trim() : '';
+	const categoryDetail =
+		typeof candidate.categoryDetail === 'string'
+			? candidate.categoryDetail.trim() || undefined
+			: undefined;
 	const aliases = normalizeStringArray(candidate.aliases);
 	const category = isGroupCategory(candidate.category) ? candidate.category : null;
 	const supports = Array.isArray(candidate.supports)
@@ -172,6 +243,10 @@ function normalizeDefinition(value: unknown): SemanticGroupDefinition | null {
 	return {
 		id,
 		humanLabel,
+		categoryDetail:
+			category === 'other'
+				? normalizeOtherCategoryDetail({ id, humanLabel, categoryDetail })
+				: undefined,
 		aliases,
 		category,
 		supports,
@@ -200,6 +275,22 @@ function slugify(input: string): string {
 
 function normalizeLookupKey(value: string): string {
 	return slugify(value);
+}
+
+export function isPaintableSurfaceReference(value: string | undefined): boolean {
+	const lookupKey = normalizeLookupKey(value ?? '');
+	if (lookupKey.length === 0) {
+		return false;
+	}
+
+	if (PAINTABLE_SURFACE_REFERENCE_KEYS.has(lookupKey)) {
+		return true;
+	}
+
+	return lookupKey
+		.split('_')
+		.filter((token) => token.length > 0)
+		.some((token) => PAINTABLE_SURFACE_REFERENCE_TOKENS.has(token));
 }
 
 function inferCanonicalCategoryFromReference(
@@ -236,6 +327,10 @@ function inferCanonicalCategoryFromReference(
 		return 'rear_lighting';
 	}
 
+	if (isPaintableSurfaceReference(lookupKey)) {
+		return 'body_shell';
+	}
+
 	return null;
 }
 
@@ -259,6 +354,7 @@ function resolveDefinitionReference(
 		id?: string;
 		semanticGroup?: string;
 		category?: VehicleSemanticGroup['category'];
+		categoryDetail?: string;
 	}
 ): SemanticGroupDefinition | null {
 	if (input.id?.trim()) {
@@ -266,7 +362,26 @@ function resolveDefinitionReference(
 	}
 
 	if (input.category) {
-		return store.definitions.find((definition) => definition.category === input.category) ?? null;
+		if (input.category === 'other') {
+			const detail = input.categoryDetail?.trim();
+			if (detail) {
+				const lookupKey = normalizeLookupKey(detail);
+				return (
+					store.definitions.find((definition) => {
+						if (definition.category !== 'other') {
+							return false;
+						}
+
+						const keys = [definition.id, definition.humanLabel, definition.categoryDetail ?? '', ...definition.aliases].map(
+							(value) => normalizeLookupKey(value)
+						);
+						return keys.includes(lookupKey);
+					}) ?? null
+				);
+			}
+		} else {
+			return store.definitions.find((definition) => definition.category === input.category) ?? null;
+		}
 	}
 
 	const semanticGroup = input.semanticGroup?.trim();
@@ -282,9 +397,12 @@ function resolveDefinitionReference(
 	const lookupKey = normalizeLookupKey(semanticGroup);
 	return (
 		store.definitions.find((definition) => {
-			const keys = [definition.id, definition.humanLabel, ...definition.aliases].map((value) =>
-				normalizeLookupKey(value)
-			);
+			const keys = [
+				definition.id,
+				definition.humanLabel,
+				definition.categoryDetail ?? '',
+				...definition.aliases
+			].map((value) => normalizeLookupKey(value));
 			return keys.includes(lookupKey);
 		}) ?? null
 	);
@@ -292,9 +410,12 @@ function resolveDefinitionReference(
 
 export async function readSemanticGroupDefinitions(): Promise<SemanticGroupDefinitionsStore> {
 	try {
-		const raw = JSON.parse(await readFile(resolveSemanticGroupDefinitionsPath(), 'utf8')) as {
-			definitions?: unknown[];
-		};
+		const raw = await readJsonObject<{ definitions?: unknown[] }>(
+			resolveSemanticGroupDefinitionsKey()
+		);
+		if (!raw) {
+			throw new Error('missing');
+		}
 		const normalized = Array.isArray(raw.definitions)
 			? raw.definitions
 					.map((entry) => normalizeDefinition(entry))
@@ -316,9 +437,7 @@ export async function writeSemanticGroupDefinitions(
 	const nextStore = {
 		definitions: validateDefinitions(store.definitions)
 	};
-	const targetPath = resolveSemanticGroupDefinitionsPath();
-	await mkdir(path.dirname(targetPath), { recursive: true });
-	await writeFile(targetPath, JSON.stringify(nextStore, null, 2), 'utf8');
+	await writeJsonObject(resolveSemanticGroupDefinitionsKey(), nextStore);
 	return nextStore;
 }
 
@@ -326,6 +445,7 @@ export async function ensureSemanticGroupDefinition(input: {
 	category: VehicleSemanticGroup['category'];
 	humanLabel?: string;
 	aliases?: string[];
+	categoryDetail?: string;
 }): Promise<SemanticGroupDefinition> {
 	const store = await readSemanticGroupDefinitions();
 
@@ -337,8 +457,18 @@ export async function ensureSemanticGroupDefinition(input: {
 	}
 
 	const humanLabel = input.humanLabel?.trim() || input.category.replaceAll('_', ' ');
+	const categoryDetail =
+		input.category === 'other'
+			? normalizeOtherCategoryDetail({
+					id: '',
+					humanLabel,
+					categoryDetail: input.categoryDetail
+				})
+			: undefined;
 	const id =
-		input.category === 'other' ? `other_${slugify(humanLabel) || 'group'}` : input.category;
+		input.category === 'other'
+			? slugify(categoryDetail) || 'group'
+			: input.category;
 	const existingById = store.definitions.find((definition) => definition.id === id);
 	if (existingById) {
 		return existingById;
@@ -347,6 +477,7 @@ export async function ensureSemanticGroupDefinition(input: {
 	const definition: SemanticGroupDefinition = {
 		id,
 		humanLabel,
+		categoryDetail,
 		aliases: normalizeStringArray(input.aliases),
 		category: input.category,
 		supports: defaultSupportsForCategory(input.category),
@@ -365,12 +496,14 @@ export async function resolveSemanticGroupDefinition(input: {
 	category?: VehicleSemanticGroup['category'];
 	humanLabel?: string;
 	aliases?: string[];
+	categoryDetail?: string;
 }): Promise<SemanticGroupDefinition> {
 	if (input.category) {
 		return ensureSemanticGroupDefinition({
 			category: input.category,
 			humanLabel: input.humanLabel,
-			aliases: input.aliases
+			aliases: input.aliases,
+			categoryDetail: input.categoryDetail
 		});
 	}
 
@@ -404,7 +537,8 @@ export async function resolveSemanticGroupDefinition(input: {
 	return ensureSemanticGroupDefinition({
 		category: 'other',
 		humanLabel: input.humanLabel?.trim() || semanticGroup,
-		aliases: Array.from(new Set([semanticGroup, ...(input.aliases ?? [])]))
+		aliases: Array.from(new Set([semanticGroup, ...(input.aliases ?? [])])),
+		categoryDetail: input.categoryDetail
 	});
 }
 
@@ -422,6 +556,7 @@ export async function createSemanticGroupDefinition(input: {
 	humanLabel: string;
 	aliases?: string[];
 	category: VehicleSemanticGroup['category'];
+	categoryDetail?: string;
 	supports?: VehicleSemanticActionSupport[];
 	assignmentMode?: SemanticGroupAssignmentMode;
 	exclusiveFamily?: string;
@@ -432,7 +567,16 @@ export async function createSemanticGroupDefinition(input: {
 	}
 
 	const store = await readSemanticGroupDefinitions();
-	const id = input.id?.trim() || slugify(humanLabel) || 'semantic_group';
+	const id =
+		input.category === 'other'
+			? slugify(
+					normalizeOtherCategoryDetail({
+						id: input.id?.trim() ?? '',
+						humanLabel,
+						categoryDetail: input.categoryDetail
+					})
+				) || 'group'
+			: input.id?.trim() || slugify(humanLabel) || 'semantic_group';
 	if (store.definitions.some((definition) => definition.id === id)) {
 		throw new Error(`Semantic group ${id} already exists.`);
 	}
@@ -440,6 +584,14 @@ export async function createSemanticGroupDefinition(input: {
 	const definition: SemanticGroupDefinition = {
 		id,
 		humanLabel,
+		categoryDetail:
+			input.category === 'other'
+				? normalizeOtherCategoryDetail({
+						id,
+						humanLabel,
+						categoryDetail: input.categoryDetail
+					})
+				: undefined,
 		aliases: normalizeStringArray(input.aliases),
 		category: input.category,
 		supports:
@@ -465,6 +617,7 @@ export async function patchSemanticGroupDefinition(input: {
 	semanticGroup?: string;
 	category?: VehicleSemanticGroup['category'];
 	humanLabel?: string;
+	categoryDetail?: string;
 	aliases?: string[];
 	supports?: VehicleSemanticActionSupport[];
 	assignmentMode?: SemanticGroupAssignmentMode;
@@ -482,6 +635,17 @@ export async function patchSemanticGroupDefinition(input: {
 			typeof input.humanLabel === 'string' && input.humanLabel.trim().length > 0
 				? input.humanLabel.trim()
 				: existing.humanLabel,
+		categoryDetail:
+			input.category === 'other' || existing.category === 'other'
+				? normalizeOtherCategoryDetail({
+						id: existing.id,
+						humanLabel:
+							typeof input.humanLabel === 'string' && input.humanLabel.trim().length > 0
+								? input.humanLabel.trim()
+								: existing.humanLabel,
+						categoryDetail: input.categoryDetail ?? existing.categoryDetail
+					})
+				: undefined,
 		aliases: input.aliases ? normalizeStringArray(input.aliases) : existing.aliases,
 		category: input.category ?? existing.category,
 		supports:

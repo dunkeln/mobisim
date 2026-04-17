@@ -7,6 +7,39 @@ const defaultHistoryContext = {
 	sourceUsed: 'none' as const
 };
 
+const baseSceneDag = {
+	assetId: 'audi_r8',
+	structuralGeneratedAt: 'structural-1',
+	semanticOverlayStatus: 'missing',
+	structure: {
+		assetId: 'audi_r8',
+		assetPath: '/assets/audi_r8.glb',
+		generatedAt: 'structural-1',
+		scenes: [],
+		nodes: [],
+		meshes: [],
+		materials: []
+	},
+	structureIndex: {
+		nodesById: {},
+		meshesById: {},
+		materialsById: {}
+	},
+	semanticOverlay: null,
+	semanticIndex: {
+		groupsById: {},
+		partsById: {},
+		materialsById: {}
+	},
+	selection: {
+		selectedGroupId: null,
+		selectedNodes: [],
+		selectedNodeIds: [],
+		selectedMaterialIds: []
+	},
+	presentation: undefined
+} as const;
+
 describe('toOpenAIMessages', () => {
 	it('sets the FRIDAY identity and narrow inspection scope in the developer prompt', () => {
 		const messages = toOpenAIMessages({
@@ -18,6 +51,7 @@ describe('toOpenAIMessages', () => {
 				status: 'unknown',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
 			intentSummary: 'Intent draft: domain=identity; operation=describe; referent=self; targetScope=none; outputMode=spoken; confidence=0.92.',
@@ -45,8 +79,17 @@ describe('toOpenAIMessages', () => {
 		expect(String(developerMessage?.content)).toContain(
 			'Use dry irony sparingly and only when the comedic timing is obvious.'
 		);
+		expect(String(developerMessage?.content)).toContain('Do not produce acknowledgment-only replies.');
+		expect(String(developerMessage?.content)).toContain(
+			'Acknowledge by acting, not by narrating that you will act.'
+		);
+		expect(String(developerMessage?.content)).toContain('fail closed');
+		expect(String(developerMessage?.content)).toContain('No. I cannot do that here.');
 		expect(String(developerMessage?.content)).toContain(
 			'Treat server-backed asset and semantic data as canonical.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'When a live selection or highlight exists, treat deictic wording as a direct reference to it'
 		);
 	});
 
@@ -60,6 +103,7 @@ describe('toOpenAIMessages', () => {
 				status: 'unknown',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is multi_tool. Prefer inspect, then act, then present for compound requests.',
 			intentSummary: 'Intent draft: domain=inspection; operation=inspect; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.88.',
@@ -73,6 +117,38 @@ describe('toOpenAIMessages', () => {
 		);
 	});
 
+	it('constrains suggested next steps to the supported tool surface', () => {
+		const messages = toOpenAIMessages({
+			input: {
+				message: 'what can I do next?',
+				selectedNodes: []
+			},
+			semanticOverlay: {
+				status: 'unknown',
+				sidebarCadence: 'stable'
+			},
+			sceneDag: baseSceneDag,
+			historyContext: defaultHistoryContext,
+			policySummary:
+				'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary:
+				'Intent draft: domain=inspection; operation=suggest; referent=unknown; targetScope=unknown; outputMode=spoken; confidence=0.82.',
+			describePresentationTargets: () => null
+		});
+
+		const developerMessage = messages.find((message) => message.role === 'developer');
+		expect(developerMessage).toBeDefined();
+		expect(String(developerMessage?.content)).toContain(
+			'When you suggest next steps, example asks, recovery guidance, or alternatives, keep every suggestion inside the current tool surface.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'Do not suggest capabilities that are not present in the tool catalog.'
+		);
+		expect(String(developerMessage?.content)).toContain(
+			'prefer one or two concrete supported asks the user could make next'
+		);
+	});
+
 	it('instructs the model to offload low-value list narration into the supplementary footer list', () => {
 		const messages = toOpenAIMessages({
 			input: {
@@ -83,6 +159,7 @@ describe('toOpenAIMessages', () => {
 				status: 'unknown',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
 			intentSummary: 'Intent draft: domain=inspection; operation=summarize; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.84.',
@@ -133,6 +210,7 @@ describe('toOpenAIMessages', () => {
 					discardedSuggestions: []
 				}
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is clarification. Prefer a short disambiguation question before any mutation.',
 			intentSummary: 'Intent draft: domain=semantics; operation=unassign; referent=selected; targetScope=unknown; outputMode=spoken; confidence=0.78.',
@@ -152,6 +230,34 @@ describe('toOpenAIMessages', () => {
 		);
 	});
 
+	it('limits failure recovery suggestions to supported next steps', () => {
+		const messages = toOpenAIMessages({
+			input: {
+				message: 'do something impossible',
+				selectedNodes: []
+			},
+			semanticOverlay: {
+				status: 'missing',
+				sidebarCadence: 'stable'
+			},
+			sceneDag: baseSceneDag,
+			historyContext: defaultHistoryContext,
+			policySummary:
+				'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
+			intentSummary:
+				'Intent draft: domain=unknown; operation=mutate; referent=unknown; targetScope=unknown; outputMode=spoken; confidence=0.21.',
+			describePresentationTargets: () => null
+		});
+
+		const developerMessage = messages.find((message) => message.role === 'developer');
+		expect(developerMessage).toBeDefined();
+		expect(String(developerMessage?.content)).toContain(
+			'suggest the most likely supported next step'
+		);
+		expect(String(developerMessage?.content)).toContain('highlighting the target first');
+		expect(String(developerMessage?.content)).toContain('showing the available tools');
+	});
+
 	it('instructs the model to compose tools in inspect, act, and present phases', () => {
 		const messages = toOpenAIMessages({
 			input: {
@@ -162,6 +268,7 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is multi_tool. Prefer inspect, then act, then present for compound requests.',
 			intentSummary: 'Intent draft: domain=presentation; operation=focus; referent=unknown; targetScope=unknown; outputMode=supplementary; confidence=0.76.',
@@ -191,6 +298,7 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary: 'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
 			intentSummary:
@@ -216,6 +324,7 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary:
 				'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
@@ -252,6 +361,7 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary:
 				'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
@@ -344,6 +454,7 @@ describe('toOpenAIMessages', () => {
 					discardedSuggestions: []
 				}
 			},
+			sceneDag: baseSceneDag,
 			historyContext: defaultHistoryContext,
 			policySummary:
 				'Planning mode is single_tool. Prefer one clear domain action unless the turn proves it needs composition.',
@@ -354,7 +465,7 @@ describe('toOpenAIMessages', () => {
 
 		const developerMessage = String(messages.find((message) => message.role === 'developer')?.content);
 		expect(developerMessage).toContain(
-			'Semantic edit context: already accepted in the active group: Trunk [trunk]; candidate additions relative to the active group: Spoiler [spoiler].'
+			'Semantic edit context: candidate additions relative to the active group: Trunk [trunk], Spoiler [spoiler].'
 		);
 	});
 
@@ -372,6 +483,7 @@ describe('toOpenAIMessages', () => {
 				status: 'fresh',
 				sidebarCadence: 'stable'
 			},
+			sceneDag: baseSceneDag,
 			historyContext: {
 				currentAssetSummary: 'Stored active-asset context: goal inspect front wheel.',
 				userGlobalSummary: 'Stored user-global context: recent assets audi_r8.',

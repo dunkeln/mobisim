@@ -10,5 +10,6 @@
 		authConfigured={data.authConfigured}
 		githubConfigured={data.githubAuthConfigured}
 		googleConfigured={data.googleAuthConfigured}
+		devConfigured={data.devAuthConfigured}
 	/>
 </div>

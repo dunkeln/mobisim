@@ -10,6 +10,8 @@ import {
 	validateVehicleInspectionPatchManifest
 } from './index';
 import { writeVehicleSemanticOverlay } from '$lib/server/connectors/vehicle-semantic-overlay';
+import { VEHICLE_CATALOG } from '$lib/vehicles/catalog';
+import { deriveStructuralAssetSnapshot } from '$lib/server/connectors/gltf-structure';
 
 const semanticDirs: string[] = [];
 
@@ -133,12 +135,26 @@ describe('deriveVehicleInspectionCapabilities', () => {
 
 	it('resolves body paint from a reviewed body-shell semantic group even without paint-tagged materials', async () => {
 		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const structure = await deriveStructuralAssetSnapshot('audi_r8');
 		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
-		const bodyMaterial = capabilities.materials[0];
-		const distractorMaterial = capabilities.materials[1];
+		const bodyMaterialName = VEHICLE_CATALOG.audi_r8.bodyPaintMaterialNames?.[0];
+		const bodyMaterial =
+			capabilities.materials.find((material) => material.name === bodyMaterialName) ??
+			capabilities.materials.find((material) => material.meshIds.length > 0);
+		const structuralBodyMaterial =
+			structure.materials.find((material) => material.name === bodyMaterialName) ??
+			structure.materials.find((material) => material.name === bodyMaterial?.name);
+		const targetNode = structuralBodyMaterial?.nodeIds
+			.map((nodeId) => structure.nodes.find((node) => node.id === nodeId))
+			.find((node): node is NonNullable<typeof node> => node !== undefined) ??
+			structure.nodes.find((node) => node.meshId !== null);
+		const distractorMaterial = capabilities.materials.find(
+			(material) => material.id !== bodyMaterial?.id
+		);
 
 		expect(bodyMaterial).toBeDefined();
 		expect(distractorMaterial).toBeDefined();
+		expect(targetNode).toBeDefined();
 
 		semanticDirs.push(semanticDir);
 		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
@@ -159,9 +175,9 @@ describe('deriveVehicleInspectionCapabilities', () => {
 					confidence: 1,
 					category: 'body_shell',
 					supports: ['focus', 'highlight', 'isolate', 'paint'],
-					nodeIds: [],
-					meshIds: bodyMaterial!.meshIds.slice(0, 1),
-					materialIds: [bodyMaterial!.id],
+					nodeIds: [targetNode!.id],
+					meshIds: [],
+					materialIds: [],
 					author: 'user'
 				}
 			],
@@ -169,6 +185,69 @@ describe('deriveVehicleInspectionCapabilities', () => {
 		});
 
 		const plan = await planVehicleBodyPaint('audi_r8', [0.85, 0.08, 0.12, 1]);
+		const paintedMaterialIds = new Set(
+			plan.operations
+				.filter((operation) => operation.op === 'set_base_color_factor')
+				.map((operation) => operation.targetId)
+		);
+
+		expect(plan.matchedMaterialNames).toContain(bodyMaterial!.name);
+		expect(paintedMaterialIds.has(bodyMaterial!.id)).toBe(true);
+		expect(paintedMaterialIds.has(distractorMaterial!.id)).toBe(false);
+	});
+
+	it('resolves body paint from generic shell vocabulary on node-backed exterior groups', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const structure = await deriveStructuralAssetSnapshot('audi_r8');
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+		const bodyMaterialName = VEHICLE_CATALOG.audi_r8.bodyPaintMaterialNames?.[0];
+		const bodyMaterial =
+			capabilities.materials.find((material) => material.name === bodyMaterialName) ??
+			capabilities.materials.find((material) => material.meshIds.length > 0);
+		const structuralBodyMaterial =
+			structure.materials.find((material) => material.name === bodyMaterialName) ??
+			structure.materials.find((material) => material.name === bodyMaterial?.name);
+		const targetNode = structuralBodyMaterial?.nodeIds
+			.map((nodeId) => structure.nodes.find((node) => node.id === nodeId))
+			.find((node): node is NonNullable<typeof node> => node !== undefined) ??
+			structure.nodes.find((node) => node.meshId !== null);
+		const distractorMaterial = capabilities.materials.find(
+			(material) => material.id !== bodyMaterial?.id
+		);
+
+		expect(bodyMaterial).toBeDefined();
+		expect(distractorMaterial).toBeDefined();
+		expect(targetNode).toBeDefined();
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'hull',
+					humanLabel: 'hull',
+					aliases: ['boat hull', 'outer shell'],
+					confidence: 1,
+					category: 'other',
+					supports: ['focus', 'highlight', 'isolate', 'paint'],
+					nodeIds: [targetNode!.id],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleBodyPaint('audi_r8', [0.22, 0.12, 0.34, 1]);
 		const paintedMaterialIds = new Set(
 			plan.operations
 				.filter((operation) => operation.op === 'set_base_color_factor')
@@ -196,5 +275,54 @@ describe('deriveVehicleInspectionCapabilities', () => {
 					operation.value[3] === 0.94
 			)
 		).toBe(true);
+	});
+
+	it('uses node-backed glasshouse semantics to tint window materials smoothly', async () => {
+		const capabilities = await deriveVehicleInspectionCapabilities('audi_r8');
+		const structure = await deriveStructuralAssetSnapshot('audi_r8');
+		const glassMaterial = capabilities.materials.find((material) =>
+			/\b(glass|window|windshield|screen)\b/i.test(material.name)
+		);
+		const glassNode = glassMaterial
+			? structure.nodes.find((node) => node.meshId === glassMaterial.meshIds[0])
+			: undefined;
+		const semanticDir = await mkdtemp(path.join(os.tmpdir(), 'mobisim-semantic-'));
+
+		expect(glassMaterial).toBeDefined();
+		expect(glassNode).toBeDefined();
+
+		semanticDirs.push(semanticDir);
+		process.env.SEMANTIC_MANIFEST_LOCAL_DIR = semanticDir;
+
+		await writeVehicleSemanticOverlay({
+			assetId: 'audi_r8',
+			structuralGeneratedAt: capabilities.generatedAt,
+			generatedAt: new Date().toISOString(),
+			model: 'test-model',
+			minAcceptedConfidence: 0.7,
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'glasshouse',
+					humanLabel: 'glasshouse',
+					aliases: ['glass', 'window tint'],
+					confidence: 0.95,
+					category: 'glasshouse',
+					supports: ['highlight', 'focus', 'isolate', 'tint'],
+					nodeIds: [glassNode!.id],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const plan = await planVehicleWindowTint('audi_r8', 'smoke tint', [0.1, 0.1, 0.1, 0.7]);
+
+		expect(plan.matchedMaterialNames).toEqual([glassMaterial!.name]);
+		expect(plan.operations.length).toBeGreaterThan(0);
+		expect(plan.operations.every((operation) => operation.targetType === 'material')).toBe(true);
 	});
 });

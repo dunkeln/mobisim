@@ -32,6 +32,24 @@ describe('footer chat presentation restore', () => {
 		});
 	});
 
+	it('restores active isolation from the exact applied hidden and highlight targets', () => {
+		const restore = buildPresentationRestoreFromContext('bring it back', {
+			activeIntentLabel: 'isolate wheels',
+			highlightedTargets: [{ targetId: 'material-wheel', targetName: 'Wheel' }],
+			hiddenTargets: [
+				{ targetId: 'node-door-left', targetName: 'Left Door' },
+				{ targetId: 'node-door-right', targetName: 'Right Door' }
+			],
+			materialTargets: [{ targetId: 'material-body', targetName: 'Body Paint' }]
+		});
+
+		expect(restore).toEqual({
+			highlightedTargetIds: ['material-wheel'],
+			hiddenTargetIds: ['node-door-left', 'node-door-right'],
+			label: 'restore original view'
+		});
+	});
+
 	it('keeps matching-scope presentation restores constrained to the requested highlight subset', () => {
 		const restore = buildPresentationRestoreFromInstruction(
 			{

@@ -263,6 +263,119 @@ describe('vehiclePatchState highlight behavior', () => {
 		expect(state.future).toHaveLength(1);
 	});
 
+	it('can restore the most recent removal by kind without disturbing older removals', () => {
+		vehiclePatchState.reset();
+
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'remove left shell',
+			operations: [
+				{
+					targetType: 'node',
+					targetId: 'shell-left',
+					targetName: 'Left Shell',
+					op: 'set_alpha',
+					value: 0.08
+				}
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint body',
+			operations: [
+				{
+					targetType: 'material',
+					targetId: 'material-body',
+					targetName: 'Body',
+					op: 'set_base_color_factor',
+					value: [0.2, 0.1, 0.4, 1]
+				}
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'remove right shell',
+			operations: [
+				{
+					targetType: 'node',
+					targetId: 'shell-right',
+					targetName: 'Right Shell',
+					op: 'set_alpha',
+					value: 0.08
+				}
+			]
+		});
+
+		const revertedLabel = vehiclePatchState.restoreMatching('audi_r8', 'visibility');
+		const state = get(vehiclePatchState);
+
+		expect(revertedLabel).toBe('remove right shell');
+		expect(state.presentation.nodeVisibilityOperations.map((operation) => operation.targetId)).toEqual([
+			'shell-left'
+		]);
+		expect(state.presentation.materialOperations).toHaveLength(1);
+		expect(state.intentLabel).toBe('paint body');
+		expect(state.canRedo).toBe(false);
+	});
+
+	it('can restore earlier removals by kind ordinal and batch count', () => {
+		vehiclePatchState.reset();
+
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'remove hood',
+			operations: [
+				{
+					targetType: 'node',
+					targetId: 'hood',
+					targetName: 'Hood',
+					op: 'set_alpha',
+					value: 0.08
+				}
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'remove door trim',
+			operations: [
+				{
+					targetType: 'node',
+					targetId: 'door-trim',
+					targetName: 'Door Trim',
+					op: 'set_alpha',
+					value: 0.08
+				}
+			]
+		});
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'highlight wheels',
+			operations: [
+				{
+					targetType: 'material',
+					targetId: 'wheel-material',
+					targetName: 'Wheel',
+					op: 'set_overlay_highlight',
+					value: [0.5, 0.5, 0.8, 0.48]
+				}
+			]
+		});
+
+		const previousLabel = vehiclePatchState.restoreMatching('audi_r8', 'visibility', 1);
+		expect(previousLabel).toBe('remove hood');
+		expect(get(vehiclePatchState).presentation.nodeVisibilityOperations.map((operation) => operation.targetId)).toEqual([
+			'door-trim'
+		]);
+
+		const restoredLabels = vehiclePatchState.restoreMatchingBatch('audi_r8', 'visibility', 1);
+		const state = get(vehiclePatchState);
+
+		expect(restoredLabels).toEqual(['remove door trim']);
+		expect(state.presentation.nodeVisibilityOperations).toHaveLength(0);
+		expect(state.presentation.highlightOperations).toHaveLength(1);
+		expect(state.canRedo).toBe(false);
+	});
+
 	it('does not treat broad requests like revert all as selective undo queries', () => {
 		expect(vehiclePatchState.extractSelectiveUndoQuery('revert all')).toBeNull();
 		expect(vehiclePatchState.extractSelectiveUndoQuery('undo everything')).toBeNull();
@@ -397,5 +510,74 @@ describe('vehiclePatchState highlight behavior', () => {
 		expect(state.presentation.materialOperations).toHaveLength(1);
 		expect(state.presentation.highlightOperations).toHaveLength(1);
 		expect(state.intentLabel).toBe('restore original view');
+	});
+
+	it('preserves material operations when restoring the original view', () => {
+		vehiclePatchState.reset();
+
+		vehiclePatchState.apply('audi_r8', {
+			kind: 'operations',
+			intentLabel: 'paint and isolate',
+			operations: [
+				{
+					targetType: 'material',
+					targetId: 'material-body',
+					targetName: 'Body',
+					op: 'set_base_color_factor',
+					value: [0.2, 0.1, 0.4, 1]
+				},
+				{
+					targetType: 'node',
+					targetId: 'node-door-left',
+					targetName: 'Left Door',
+					op: 'set_alpha',
+					value: 0.08
+				},
+				{
+					targetType: 'material',
+					targetId: 'material-glass',
+					targetName: 'Glass',
+					op: 'set_alpha',
+					value: 0.12
+				},
+				{
+					targetType: 'viewer',
+					targetId: 'wireframe',
+					op: 'set_enabled',
+					value: true
+				},
+				{
+					targetType: 'material',
+					targetId: 'material-wheel',
+					targetName: 'Wheel',
+					op: 'set_overlay_highlight',
+					value: [0.5, 0.5, 0.8, 0.48]
+				}
+			]
+		});
+
+		const didRestore = vehiclePatchState.apply('audi_r8', {
+			kind: 'restore',
+			intentLabel: 'restore original view',
+			restore: {
+				restoreAll: true,
+				label: 'restore original view'
+			}
+		});
+		const state = get(vehiclePatchState);
+
+		expect(didRestore).toBe(true);
+		expect(state.presentation.materialOperations).toEqual([
+			{
+				targetType: 'material',
+				targetId: 'material-body',
+				targetName: 'Body',
+				op: 'set_base_color_factor',
+				value: [0.2, 0.1, 0.4, 1]
+			}
+		]);
+		expect(state.presentation.nodeVisibilityOperations).toHaveLength(0);
+		expect(state.presentation.viewerOperations).toHaveLength(0);
+		expect(state.presentation.highlightOperations).toHaveLength(0);
 	});
 });

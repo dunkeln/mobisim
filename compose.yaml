@@ -7,5 +7,30 @@ services:
       - 8000:8000
     volumes:
       - dynamodb_data:/home/dynamodblocal/data
+
+  webapp:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      - dynamodb-local
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DEV_AUTH: ${DEV_AUTH:-mock}
+      AUTH_SECRET: ${AUTH_SECRET:-dev-secret}
+      AUTH_TRUST_HOST: "true"
+      CONTEXT_HISTORY_STORE: dynamodb
+      CONTEXT_HISTORY_TABLE: ${CONTEXT_HISTORY_TABLE:-mobisim-context-history}
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      ASSET_BUCKET_NAME: ${ASSET_BUCKET_NAME:-mobisim-dunkeln-470165263451-us-west-1-an}
+      ASSET_REGISTRY_PUBLIC_BASE_URL: ${ASSET_REGISTRY_PUBLIC_BASE_URL:-https://mobisim-dunkeln-470165263451-us-west-1-an.s3.us-west-1.amazonaws.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - 3000:3000
 volumes:
   dynamodb_data:

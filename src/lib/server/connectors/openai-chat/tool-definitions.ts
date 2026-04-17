@@ -34,7 +34,7 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 		function: {
 			name: EDIT_VEHICLE_PRESENTATION_TOOL_NAME,
 			description:
-				'Presentation-domain tool. Use this for appearance edits, focus or highlight changes, restoring active visual state, and viewer mode toggles.',
+				'Presentation-domain tool. Use this for appearance edits, focus or highlight changes, restoring active visual state, and deterministic viewer mode toggles such as wireframe, xray, uv debug, postprocess, and original view.',
 			parameters: {
 				type: 'object',
 				additionalProperties: false,
@@ -103,7 +103,7 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 		function: {
 			name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME,
 			description:
-				'Semantics-domain tool. Use this for semantic assign or unassign, semantic group create or patch or delete or get, semantic refresh, and semantic ingress binding.',
+				'Semantics-domain tool. Use this for semantic assign or unassign, semantic group create or patch or delete or get, and semantic refresh or delete overlay.',
 			parameters: {
 				type: 'object',
 				additionalProperties: false,
@@ -118,9 +118,8 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 							'patch_group',
 							'delete_group',
 							'get_group',
-							'get_node',
 							'refresh',
-							'assign_ingress'
+							'delete_overlay'
 						]
 					},
 					scope: {
@@ -139,7 +138,6 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 					materialIds: { type: 'array', items: { type: 'string' } },
 					semanticGroup: { type: 'string' },
 					groupId: { type: 'string' },
-					nodeId: { type: 'string' },
 					humanLabel: { type: 'string' },
 					aliases: { type: 'array', items: { type: 'string' } },
 					category: {
@@ -166,11 +164,7 @@ export const CHAT_TOOLS: ChatCompletionTool[] = [
 					},
 					assignmentMode: { type: 'string', enum: ['exclusive', 'overlay'] },
 					exclusiveFamily: { type: ['string', 'null'] },
-					force: { type: 'boolean' },
-					targetType: { type: 'string', enum: ['semantic_group', 'semantic_node'] },
-					targetId: { type: 'string' },
-					targetLabel: { type: 'string' },
-					transport: { type: 'string', enum: ['rest_sse', 'stream'] }
+					force: { type: 'boolean' }
 				},
 				required: ['action']
 			}
@@ -231,19 +225,31 @@ export function buildVehicleToolCatalog(
 			purpose: 'appearance, focus, restore, and viewer mode changes',
 			useWhen: 'the user is changing how things look or what is visually emphasized',
 			actions: ['appearance', 'focus', 'restore', 'view_mode'],
-			examples: ['make this matte black', 'highlight the wheels', 'highlight everything except the doors', 'clear highlights', 'turn on xray', 'add the bumper to the current highlight']
+			examples: [
+				'make this matte black',
+				'highlight the wheels',
+				'highlight everything except the doors',
+				'restore the current highlights',
+				'turn on xray',
+				'add the bumper to the current highlight'
+			]
 		},
 		{
 			name: EDIT_VEHICLE_SELECTION_TOOL_NAME,
 			purpose: 'selection expansion',
 			useWhen: 'the current selection should be lifted to a node, part, or semantic group',
 			actions: ['expand'],
-			examples: ['expand this to the whole node', 'lift this selection to the wheel group']
+			examples: [
+				'expand this to the whole node',
+				'expand this selection to the part',
+				'expand this selection to the semantic group'
+			]
 		},
 		{
 			name: EDIT_VEHICLE_SEMANTICS_TOOL_NAME,
-			purpose: 'semantic assignments, group CRUD, refresh, and ingress binding',
-			useWhen: 'the user is talking about what something is semantically, semantic groups, overlay refresh, or semantic endpoints',
+			purpose: 'semantic assignments, group CRUD, and overlay refresh and deletion',
+			useWhen:
+				'the user is talking about what something is semantically, semantic groups, overlay refresh or deletion, or semantic endpoints',
 			actions: [
 				'assign',
 				'reassign',
@@ -252,9 +258,8 @@ export function buildVehicleToolCatalog(
 				'patch_group',
 				'delete_group',
 				'get_group',
-				'get_node',
 				'refresh',
-				'assign_ingress'
+				'delete_overlay'
 			],
 			examples: [
 				'remove node-41 from body shell',
@@ -262,7 +267,9 @@ export function buildVehicleToolCatalog(
 				'remove everything except the glass from the glasshouse group',
 				'get the wheels semantic group',
 				'refresh semantics',
-				'create a new roof_rack group',
+				'delete the current semantic overlay',
+				'create a new semantic group from this selection',
+				'create a new semantic group called roof rack from this selection',
 				'rename the body shell group to exterior shell'
 			]
 		},
@@ -280,13 +287,19 @@ export function buildVehicleToolCatalog(
 		recommendations.push('Select an active asset before using mutating presentation, selection, or semantics actions.');
 	}
 	if (scopedSelections.length > 0) {
-		recommendations.push('Current selection is available, so selection-scoped presentation and expand actions are valid.');
+		recommendations.push(
+			'Current selection is available, so supported next asks include "highlight this", "make this matte black", or "expand this selection to the semantic group".'
+		);
 	}
 	if ((presentation?.highlightedTargets?.length ?? 0) > 0 || (presentation?.hiddenTargets?.length ?? 0) > 0) {
-		recommendations.push('Active presentation context is available, so restore and semantics actions can target highlighted or hidden regions.');
+		recommendations.push(
+			'Active presentation context is available, so supported next asks include "restore the current highlights", "restore hidden regions", or "remove the highlighted region from body shell".'
+		);
 	}
 	if (args.goal) {
-		recommendations.push(`Current goal for tool choice: ${args.goal}. Choose the domain first, then the action.`);
+		recommendations.push(
+			`Current goal for tool choice: ${args.goal}. Choose the domain first, then the action, and only suggest asks that map to the listed tool actions.`
+		);
 	}
 
 	return {

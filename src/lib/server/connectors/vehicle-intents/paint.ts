@@ -134,6 +134,15 @@ function parsePaintFinish(input: string): VehiclePaintFinish | null {
 		};
 	}
 
+	if (/\bsolid\b/.test(normalized)) {
+		return {
+			label: 'solid',
+			metalness: 0.12,
+			roughness: 0.3,
+			envMapIntensity: 1
+		};
+	}
+
 	return null;
 }
 

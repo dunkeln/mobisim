@@ -1,81 +1,67 @@
 import { env } from '$env/dynamic/private';
-import path from 'node:path';
-import { VEHICLE_CATALOG, type VehicleAssetId } from '$lib/vehicles/catalog';
+import { requireVehicleCatalogEntry, type VehicleAssetId } from '$lib/vehicles/catalog';
 
-export function resolveLocalAssetDirectory(): string {
-	return env.ASSET_REGISTRY_LOCAL_DIR
-		? path.resolve(env.ASSET_REGISTRY_LOCAL_DIR)
-		: path.resolve(process.cwd(), 'storage/vehicle-assets');
+const ASSET_PREFIX = 'vehicle-assets';
+
+function stripTrailingSlash(value: string): string {
+	return value.endsWith('/') ? value.slice(0, -1) : value;
 }
 
-export function resolveLocalAssetPath(assetId: VehicleAssetId): string {
-	return path.join(resolveLocalAssetDirectory(), VEHICLE_CATALOG[assetId].fileName);
+export function resolveAssetBaseUrl(): string {
+	const baseUrl = env.ASSET_REGISTRY_PUBLIC_BASE_URL?.trim();
+	if (!baseUrl) {
+		throw new Error('ASSET_REGISTRY_PUBLIC_BASE_URL is required.');
+	}
+
+	return stripTrailingSlash(baseUrl);
 }
 
-export function resolveSemanticOverlayDirectory(): string {
-	return env.SEMANTIC_MANIFEST_LOCAL_DIR
-		? path.resolve(env.SEMANTIC_MANIFEST_LOCAL_DIR)
-		: path.resolve(resolveSemanticStorageRoot(), 'vehicle-semantic-overlays');
+export function resolveVehicleAssetDownloadUrl(assetId: VehicleAssetId): string {
+	return `${resolveAssetBaseUrl()}/${ASSET_PREFIX}/${requireVehicleCatalogEntry(assetId, 'vehicle asset').fileName}`;
 }
 
-export function resolveSemanticOverlayPath(assetId: VehicleAssetId): string {
-	return path.join(resolveSemanticOverlayDirectory(), `${assetId}.semantic-overlay.json`);
+export function resolveStorageBucketName(): string {
+	const bucketName = env.ASSET_BUCKET_NAME?.trim();
+	if (!bucketName) {
+		throw new Error('ASSET_BUCKET_NAME is required.');
+	}
+
+	return bucketName;
 }
 
-export function resolveSemanticGroupDefinitionsPath(): string {
-	return path.resolve(resolveSemanticStorageRoot(), 'semantic-group-definitions.json');
+export function resolveSemanticGroupDefinitionsKey(): string {
+	return 'semantic-group-definitions.json';
 }
 
-export function resolveSemanticAssignmentsDirectory(assetId: VehicleAssetId): string {
-	return path.resolve(resolveSemanticAssignmentsRootDirectory(), assetId);
+export function resolveSemanticOverlayKey(assetId: VehicleAssetId): string {
+	return `vehicle-semantic-overlays/${assetId}.semantic-overlay.json`;
 }
 
-export function resolveSemanticAssignmentsRootDirectory(): string {
-	return path.resolve(resolveSemanticStorageRoot(), 'semantic-assignments');
-}
-
-export function resolveSemanticAssignmentsPath(
+export function resolveVersionedSemanticOverlayKey(
 	assetId: VehicleAssetId,
 	structuralGeneratedAt: string
 ): string {
-	return path.join(resolveSemanticAssignmentsDirectory(assetId), `${structuralGeneratedAt}.json`);
+	return `vehicle-semantic-overlays/${assetId}.${structuralGeneratedAt}.json`;
 }
 
-export function resolveSemanticProposalsDirectory(assetId: VehicleAssetId): string {
-	return path.resolve(resolveSemanticStorageRoot(), 'semantic-proposals', assetId);
+export function resolveSemanticAssignmentsPrefix(assetId: VehicleAssetId): string {
+	return `semantic-assignments/${assetId}/`;
 }
 
-export function resolveSemanticProposalsPath(
+export function resolveSemanticAssignmentsKey(
 	assetId: VehicleAssetId,
 	structuralGeneratedAt: string
 ): string {
-	return path.join(resolveSemanticProposalsDirectory(assetId), `${structuralGeneratedAt}.json`);
+	return `${resolveSemanticAssignmentsPrefix(assetId)}${structuralGeneratedAt}.json`;
 }
 
-export function resolveSemanticIngressDirectory(assetId: VehicleAssetId): string {
-	return path.resolve(resolveSemanticIngressRootDirectory(), assetId);
+export function resolveSemanticProposalsPrefix(assetId: VehicleAssetId): string {
+	return `semantic-proposals/${assetId}/`;
 }
 
-export function resolveSemanticIngressRootDirectory(): string {
-	return path.resolve(resolveSemanticStorageRoot(), 'semantic-ingress');
-}
-
-export function resolveSemanticIngressPath(
+export function resolveSemanticProposalsKey(
 	assetId: VehicleAssetId,
 	structuralGeneratedAt: string
 ): string {
-	return path.join(resolveSemanticIngressDirectory(assetId), `${structuralGeneratedAt}.json`);
-}
-
-export function resolveVersionedSemanticOverlayPath(
-	assetId: VehicleAssetId,
-	structuralGeneratedAt: string
-): string {
-	return path.join(resolveSemanticOverlayDirectory(), `${assetId}.${structuralGeneratedAt}.json`);
-}
-
-function resolveSemanticStorageRoot(): string {
-	return env.SEMANTIC_MANIFEST_LOCAL_DIR
-		? path.resolve(env.SEMANTIC_MANIFEST_LOCAL_DIR)
-		: path.resolve(process.cwd(), 'storage');
+	return `${resolveSemanticProposalsPrefix(assetId)}${structuralGeneratedAt}.json`;
 }

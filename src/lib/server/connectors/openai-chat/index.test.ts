@@ -14,17 +14,92 @@ const deriveVehicleInspectionCapabilitiesMock = vi.fn();
 const deriveStructuralAssetSnapshotMock = vi.fn();
 const readVehicleSemanticOverlayMock = vi.fn();
 const generateVehicleSemanticOverlayMock = vi.fn();
+const deleteVehicleSemanticOverlayMock = vi.fn();
 const getVehicleSemanticOverlayStatusMock = vi.fn();
-const assignSemanticIngressMock = vi.fn();
-const listSemanticIngressBindingsMock = vi.fn();
 const mutateVehicleSemanticAssignmentMock = vi.fn();
 const createSemanticGroupDefinitionMock = vi.fn();
 const findSemanticGroupDefinitionMock = vi.fn();
 const patchSemanticGroupDefinitionMock = vi.fn();
 const deleteSemanticGroupDefinitionMock = vi.fn();
+const resolveSemanticGroupDefinitionMock = vi.fn();
 const writeVehicleSemanticOverlayMock = vi.fn();
 const resolveContextHistoryMock = vi.fn();
 const persistContextHistoryMock = vi.fn();
+const baseStructuralSnapshot = {
+	assetId: 'audi_r8',
+	assetPath: 'vehicle-assets/audi_r8.glb',
+	generatedAt: 'structural-default',
+	scenes: [
+		{
+			id: 'scene-1',
+			name: 'Scene',
+			rootNodeNames: ['Root'],
+			bounds: {
+				min: [0, 0, 0],
+				max: [1, 1, 1]
+			}
+		}
+	],
+	nodes: [
+		{
+			id: 'node-1',
+			name: 'Root',
+			path: 'Root',
+			parentId: null,
+			childIds: ['node-2'],
+			childCount: 1,
+			meshId: null,
+			translation: [0, 0, 0],
+			worldTranslation: [0, 0, 0],
+			rotation: [0, 0, 0, 1],
+			scale: [1, 1, 1]
+		},
+		{
+			id: 'node-2',
+			name: 'Body',
+			path: 'Root/Body',
+			parentId: 'node-1',
+			childIds: [],
+			childCount: 0,
+			meshId: 'mesh-1',
+			translation: [0, 0, 0],
+			worldTranslation: [0, 0, 0],
+			rotation: [0, 0, 0, 1],
+			scale: [1, 1, 1]
+		}
+	],
+	meshes: [
+		{
+			id: 'mesh-1',
+			name: 'Body Mesh',
+			primitiveCount: 1,
+			attributeSemantics: [],
+			materialIds: ['material-1'],
+			materialNames: ['Body Material'],
+			hasTexcoord0: false,
+			hasTexcoord1: false
+		}
+	],
+	materials: [
+		{
+			id: 'material-1',
+			name: 'Body Material',
+			alphaMode: 'OPAQUE',
+			doubleSided: false,
+			textureSlots: [],
+			meshIds: ['mesh-1'],
+			meshNames: ['Body Mesh'],
+			meshMaterialSlots: [
+				{
+					meshId: 'mesh-1',
+					slotIndices: [0]
+				}
+			],
+			nodeIds: ['node-2'],
+			nodePaths: ['Root/Body']
+		}
+	]
+};
 
 vi.mock('$env/dynamic/private', () => ({
 	env: envMock
@@ -67,6 +142,7 @@ vi.mock('$lib/server/connectors/vehicle-semantic-overlay', () => ({
 	readVehicleSemanticOverlay: readVehicleSemanticOverlayMock,
 	writeVehicleSemanticOverlay: writeVehicleSemanticOverlayMock,
 	generateVehicleSemanticOverlay: generateVehicleSemanticOverlayMock,
+	deleteVehicleSemanticOverlay: deleteVehicleSemanticOverlayMock,
 	mutateVehicleSemanticAssignment: mutateVehicleSemanticAssignmentMock,
 	refreshVehicleSemanticOverlayInBackground: vi.fn()
 }));
@@ -75,12 +151,8 @@ vi.mock('$lib/server/connectors/semantic-groups', () => ({
 	createSemanticGroupDefinition: createSemanticGroupDefinitionMock,
 	findSemanticGroupDefinition: findSemanticGroupDefinitionMock,
 	patchSemanticGroupDefinition: patchSemanticGroupDefinitionMock,
-	deleteSemanticGroupDefinition: deleteSemanticGroupDefinitionMock
-}));
-
-vi.mock('$lib/server/connectors/semantic-ingress', () => ({
-	assignSemanticIngress: assignSemanticIngressMock,
-	listSemanticIngressBindings: listSemanticIngressBindingsMock
+	deleteSemanticGroupDefinition: deleteSemanticGroupDefinitionMock,
+	resolveSemanticGroupDefinition: resolveSemanticGroupDefinitionMock
 }));
 
 vi.mock('$lib/server/connectors/context-history', () => ({
@@ -107,23 +179,50 @@ describe('createFooterChatResponse', () => {
 		deriveStructuralAssetSnapshotMock.mockReset();
 		readVehicleSemanticOverlayMock.mockReset();
 		generateVehicleSemanticOverlayMock.mockReset();
+		deleteVehicleSemanticOverlayMock.mockReset();
 		getVehicleSemanticOverlayStatusMock.mockReset();
-		assignSemanticIngressMock.mockReset();
-		listSemanticIngressBindingsMock.mockReset();
 		mutateVehicleSemanticAssignmentMock.mockReset();
 		createSemanticGroupDefinitionMock.mockReset();
 		findSemanticGroupDefinitionMock.mockReset();
 		patchSemanticGroupDefinitionMock.mockReset();
 		deleteSemanticGroupDefinitionMock.mockReset();
+		resolveSemanticGroupDefinitionMock.mockReset();
 		writeVehicleSemanticOverlayMock.mockReset();
 		resolveContextHistoryMock.mockReset();
 		persistContextHistoryMock.mockReset();
+		deriveStructuralAssetSnapshotMock.mockResolvedValue(baseStructuralSnapshot);
+		resolveSemanticGroupDefinitionMock.mockImplementation(async (input: {
+			semanticGroup?: string;
+			category?: string;
+			humanLabel?: string;
+			aliases?: string[];
+		}) => {
+			const canonicalId =
+				typeof input.semanticGroup === 'string' && input.semanticGroup.trim().length > 0
+					? input.semanticGroup.trim().replace(/\s+/g, '_')
+					: typeof input.category === 'string' && input.category.trim().length > 0
+						? input.category.trim()
+						: typeof input.humanLabel === 'string' && input.humanLabel.trim().length > 0
+							? input.humanLabel.trim().replace(/\s+/g, '_')
+							: 'semantic_group';
+
+			return {
+				id: canonicalId,
+				humanLabel:
+					typeof input.humanLabel === 'string' && input.humanLabel.trim().length > 0
+						? input.humanLabel.trim()
+						: canonicalId.replaceAll('_', ' '),
+				aliases: input.aliases ?? [],
+				category: (input.category as 'wheels' | 'doors' | 'front_lighting' | 'rear_lighting' | 'glasshouse' | 'body_shell' | 'front_face' | 'trim' | 'interior' | 'other') ?? 'other',
+				supports: ['highlight', 'focus', 'isolate'],
+				assignmentMode: 'overlay'
+			};
+		});
 		resolveContextHistoryMock.mockResolvedValue({
 			historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
 			compactionApplied: false,
 			sourceUsed: 'none'
 		});
-		listSemanticIngressBindingsMock.mockResolvedValue({ bindings: [] });
 	});
 
 	it('refreshes semantic overlays through the chat tool loop', async () => {
@@ -398,7 +497,7 @@ describe('createFooterChatResponse', () => {
 		expect(response.trace?.composedToolChain).toBe(true);
 	});
 
-	it('backfills the supplementary footer list from the tool catalog when the model forgets the ui tool', async () => {
+	it('leaves the supplementary footer list unset when the model omits the ui tool', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
 		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
@@ -447,21 +546,12 @@ describe('createFooterChatResponse', () => {
 		});
 
 		expect(response.message.content).toBe('The available controls are in the footer.');
-		expect(response.supplementaryList).toEqual({
-			active: true,
-			entries: expect.objectContaining({
-				edit_vehicle_presentation: 'appearance, focus, restore, and viewer mode changes',
-				edit_vehicle_selection: 'selection expansion',
-				edit_vehicle_semantics:
-					'semantic assignments, group CRUD, refresh, and ingress binding',
-				set_assistant_ui: 'assistant sidebar and supplementary list updates'
-			})
-		});
-		expect(response.trace?.supplementaryListAction).toBe('updated');
+		expect(response.supplementaryList).toBeUndefined();
+		expect(response.trace?.supplementaryListAction).toBe('unchanged');
 		expect(response.trace?.toolCalls).toEqual(['get_vehicle_tool_catalog']);
 	});
 
-	it('backfills changed-target footer detail when a footer request omits the ui tool call', async () => {
+	it('leaves changed-target footer detail unset when a footer request omits the ui tool call', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
 		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
@@ -600,14 +690,8 @@ describe('createFooterChatResponse', () => {
 				value: true
 			}
 		]);
-		expect(response.supplementaryList).toEqual({
-			active: true,
-			entries: {
-				Action: 'Highlighted the wheels.',
-				Targets: 'Wheels'
-			}
-		});
-		expect(response.trace?.supplementaryListAction).toBe('updated');
+		expect(response.supplementaryList).toBeUndefined();
+		expect(response.trace?.supplementaryListAction).toBe('unchanged');
 		expect(response.trace?.planningMode).toBe('multi_tool');
 	});
 
@@ -643,7 +727,7 @@ describe('createFooterChatResponse', () => {
 		expect(resolveVehicleIntentMock).toHaveBeenCalledWith(
 			'audi_r8',
 			'paint the body midnight purple',
-			{ presentation: undefined }
+			{ presentation: undefined, selectedNodes: [] }
 		);
 		expect(response.vehiclePatchLabel).toBe('Applied body paint.');
 		expect(response.vehiclePatchOperations).toHaveLength(1);
@@ -689,6 +773,102 @@ describe('createFooterChatResponse', () => {
 		).toEqual({
 			highlightedTargetIds: ['material-wheel'],
 			label: 'restore original view'
+		});
+	});
+
+	it('fails fast when asset-scoped chat context is provided without an active asset', async () => {
+		const { createFooterChatResponse, OpenAIChatInputError } = await import('./index');
+
+		await expect(
+			createFooterChatResponse({
+				message: 'highlight this',
+				selectedGroupId: 'wheels',
+				presentation: {
+					highlightedTargets: [{ targetId: 'material-wheel', targetType: 'material' }]
+				}
+			})
+		).rejects.toBeInstanceOf(OpenAIChatInputError);
+		await expect(
+			createFooterChatResponse({
+				message: 'highlight this',
+				selectedGroupId: 'wheels',
+				presentation: {
+					highlightedTargets: [{ targetId: 'material-wheel', targetType: 'material' }]
+				}
+			})
+		).rejects.toThrow('No active vehicle asset is available for this request.');
+	});
+
+	it('preserves input-class failures instead of reclassifying them as upstream chat errors', async () => {
+		const { createFooterChatResponse, OpenAIChatInputError } = await import('./index');
+
+		resolveContextHistoryMock.mockRejectedValue(
+			new OpenAIChatInputError('No semantic group matched the current request.')
+		);
+
+		await expect(
+			createFooterChatResponse({
+				message: 'add this selection to wheels',
+				assetId: 'audi_r8',
+				selectedNodes: [
+					{
+						assetId: 'audi_r8',
+						nodeId: 'node-2',
+						nodeName: 'Body',
+						nodePath: 'Root/Body'
+					}
+				]
+			})
+		).rejects.toBeInstanceOf(OpenAIChatInputError);
+		await expect(
+			createFooterChatResponse({
+				message: 'add this selection to wheels',
+				assetId: 'audi_r8',
+				selectedNodes: [
+					{
+						assetId: 'audi_r8',
+						nodeId: 'node-2',
+						nodeName: 'Body',
+						nodePath: 'Root/Body'
+					}
+				]
+			})
+		).rejects.toThrow('No semantic group matched the current request.');
+	});
+
+	it('does not fail the chat response when context history persistence fails after execution', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		resolveContextHistoryMock.mockResolvedValue({
+			historySourceOrder: ['current_request', 'current_asset_snapshot', 'current_asset_recent', 'user_global'],
+			compactionApplied: false,
+			sourceUsed: 'none'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('unknown');
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-exec-1'
+		});
+		createMock.mockResolvedValue({
+			choices: [
+				{
+					message: {
+						content: 'Done.'
+					}
+				}
+			]
+		});
+		persistContextHistoryMock.mockRejectedValue(new Error('Local context history failed.'));
+
+		await expect(
+			createFooterChatResponse({
+				message: 'describe this',
+				assetId: 'audi_r8'
+			})
+		).resolves.toMatchObject({
+			message: {
+				content: 'Done.'
+			}
 		});
 	});
 
@@ -874,7 +1054,21 @@ describe('createFooterChatResponse', () => {
 		});
 
 		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'highlight these', {
-			presentation: undefined
+			presentation: undefined,
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-12',
+					targetName: 'Glass',
+					nodeIds: ['node-12'],
+					nodeId: 'node-12',
+					nodeName: 'Glass',
+					nodePath: 'Scene/Glass',
+					materialIndex: 0,
+					materialName: 'Glass'
+				}
+			]
 		});
 		expect(response.vehiclePatchOperations).toEqual([
 			{
@@ -965,12 +1159,65 @@ describe('createFooterChatResponse', () => {
 
 		expect(createMock).not.toHaveBeenCalled();
 		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'turn on xray', {
-			presentation: undefined
+			presentation: undefined,
+			selectedNodes: []
 		});
 		expect(response.vehiclePatchOperations).toEqual([
 			{
 				targetType: 'viewer',
 				targetId: 'xray',
+				op: 'set_enabled',
+				value: true
+			}
+		]);
+	});
+
+	it('applies uv debug requests directly without asking the llm to improvise tools', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-view-uv-1'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('unknown');
+		resolveVehicleIntentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			operations: [
+				{
+					targetType: 'viewer',
+					targetId: 'uv_debug',
+					op: 'set_enabled',
+					value: true
+				}
+			],
+			rejected: [],
+			summary: 'Enabled uv debug view.'
+		});
+		createMock.mockResolvedValueOnce({
+			choices: [
+				{
+					message: {
+						role: 'assistant',
+						content: 'You may need a dedicated UV tool for this.'
+					}
+				}
+			]
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'show uv debug'
+		});
+
+		expect(createMock).not.toHaveBeenCalled();
+		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', 'show uv debug', {
+			presentation: undefined,
+			selectedNodes: []
+		});
+		expect(response.vehiclePatchOperations).toEqual([
+			{
+				targetType: 'viewer',
+				targetId: 'uv_debug',
 				op: 'set_enabled',
 				value: true
 			}
@@ -1157,10 +1404,10 @@ describe('createFooterChatResponse', () => {
 		const developerPrompt = firstRequest?.messages?.[0]?.content;
 		expect(developerPrompt).toContain('Semantic overlay status for the active asset: fresh.');
 		expect(developerPrompt).toContain(
-			'Latest semantic overlay summary: generated semantic-1; structural basis structural-semantic-1; accepted materials 1; accepted parts 1; accepted groups 1; top groups Body Shell; top material tags body_paint_candidate (1).'
+			'Canonical scene DAG summary: asset audi_r8; structure structural-default; nodes 2; meshes 1; materials 1; groups 1; selected group none; selected nodes 0; selected materials 0; viewer modes none.'
 		);
 		expect(developerPrompt).toContain(
-			'Semantic panel inventory available for tool grounding: Body Shell [body_shell] {nodes 1, materials 1} -> Body Shell [part-shell]. Group and node labels from this inventory are valid grounding terms for semantic tool calls, semantic ingress targets, and freeform semantic requests.'
+			'Scene DAG inventory available for tool grounding: Body Shell [body_shell] {nodes 1, materials 1} -> Body Shell [part-shell]. Group and node labels from this inventory are valid grounding terms for semantic tool calls and freeform semantic requests.'
 		);
 		expect(developerPrompt).toContain(
 			'Semantic sidebar cadence: semantic grounding is central right now and a single concise Semantics summary card may help if it reduces ambiguity.'
@@ -1332,104 +1579,6 @@ describe('createFooterChatResponse', () => {
 				Finish: 'Bronze paint applied',
 				View: 'Front quarter focus'
 			}
-		});
-	});
-
-	it('assigns semantic ingress through the chat tool loop', async () => {
-		const { createFooterChatResponse } = await import('./index');
-
-		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
-			assetId: 'audi_r8',
-			generatedAt: 'structural-ingress-1'
-		});
-		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
-		readVehicleSemanticOverlayMock.mockResolvedValue({
-			assetId: 'audi_r8',
-			generatedAt: 'semantic-1',
-			structuralGeneratedAt: 'structural-ingress-1',
-			model: 'gpt-5.2',
-			minAcceptedConfidence: 0.7,
-			acceptedMaterials: [],
-			acceptedParts: [],
-			acceptedGroups: [],
-			discardedSuggestions: []
-		});
-		assignSemanticIngressMock.mockResolvedValue({
-			ingressId: 'semantic_group-body_shell-rest_sse',
-			assetId: 'audi_r8',
-			structuralGeneratedAt: 'structural-ingress-1',
-			scope: 'global',
-			targetType: 'semantic_group',
-			targetId: 'body_shell',
-			targetLabel: 'Body Shell',
-			transport: 'rest_sse',
-			assignedAt: '2026-04-07T00:00:00.000Z',
-			assignedBy: 'model',
-			restPath: '/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body_shell-rest_sse',
-			ssePath:
-				'/api/vehicle-assets/audi_r8/semantic-ingress/semantic_group-body_shell-rest_sse/events'
-		});
-		createMock
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: null,
-							tool_calls: [
-								{
-									id: 'tool-ingress-1',
-									type: 'function',
-									function: {
-										name: 'edit_vehicle_semantics',
-										arguments: JSON.stringify({
-											action: 'assign_ingress',
-											targetType: 'semantic_group',
-											targetId: 'body_shell',
-											targetLabel: 'Body Shell',
-											transport: 'rest_sse'
-										})
-									}
-								}
-							]
-						}
-					}
-				]
-			})
-			.mockResolvedValueOnce({
-				choices: [
-					{
-						message: {
-							role: 'assistant',
-							content: 'Ingress assigned for Body Shell.'
-						}
-					}
-				]
-			});
-
-		const response = await createFooterChatResponse({
-			assetId: 'audi_r8',
-			message: 'assign a rest and sse ingress for the body shell semantic group'
-		});
-
-		expect(assignSemanticIngressMock).toHaveBeenCalledWith({
-			assetId: 'audi_r8',
-			targetType: 'semantic_group',
-			targetId: 'body_shell',
-			targetLabel: 'Body Shell',
-			transport: 'rest_sse',
-			assignedBy: 'model'
-		});
-		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_semantics']);
-		expect(response.message.content).toBe('Ingress assigned for Body Shell.');
-		expect(response.semanticIngressMutation).toEqual({
-			action: 'create',
-			targetType: 'semantic_group',
-			targetId: 'body_shell',
-			targetLabel: 'Body Shell',
-			transport: 'rest_sse',
-			ingressId: 'semantic_group-body_shell-rest_sse',
-			replacedIngressId: undefined
 		});
 	});
 
@@ -1761,7 +1910,21 @@ describe('createFooterChatResponse', () => {
 
 		expect(createMock).not.toHaveBeenCalled();
 		expect(resolveVehicleIntentMock).toHaveBeenCalledWith('audi_r8', '5% black tint', {
-			presentation: undefined
+			presentation: undefined,
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-12',
+					targetName: 'Windshield',
+					nodeIds: ['node-12'],
+					nodeId: 'node-12',
+					nodeName: 'Windshield',
+					nodePath: 'Scene/Windshield',
+					materialIndex: 0,
+					materialName: 'Glass'
+				}
+			]
 		});
 		expect(response.message.content).toBe('Applied 5% dark tint. Scoped to selection.');
 		expect(response.vehiclePatchOperations).toEqual([
@@ -2030,6 +2193,105 @@ describe('createFooterChatResponse', () => {
 		expect(response.trace?.toolCalls).toEqual(['edit_vehicle_semantics']);
 	});
 
+	it('creates a new semantic group from the current selection through the chat tool loop', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-create-group'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		createSemanticGroupDefinitionMock.mockResolvedValue({
+			id: 'wheel_cover',
+			humanLabel: 'Wheel Cover',
+			aliases: [],
+			category: 'other',
+			supports: ['highlight'],
+			assignmentMode: 'overlay',
+			exclusiveFamily: undefined
+		});
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'wheel_cover' }]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-create-group',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'create_group',
+											scope: 'selected',
+											humanLabel: 'Wheel Cover'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Created the Wheel Cover semantic group.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'create a new semantic group from this selection',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					nodeId: 'node-41',
+					nodeName: 'Wheel Cover',
+					nodePath: 'Scene/Wheel Cover'
+				}
+			]
+		});
+
+		expect(createSemanticGroupDefinitionMock).toHaveBeenCalledWith({
+			id: undefined,
+			humanLabel: 'Wheel Cover',
+			aliases: undefined,
+			category: 'other',
+			supports: undefined,
+			assignmentMode: undefined,
+			exclusiveFamily: undefined
+		});
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: ['node-41'],
+			materialIds: [],
+			semanticGroup: 'wheel_cover',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-41',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+		expect(response.selectedGroupId).toBe('wheel_cover');
+		expect(response.message.content).toBe('Created the Wheel Cover semantic group.');
+	});
+
 	it('accepts freeform semantic assignment phrases like "these are headlights"', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
@@ -2255,6 +2517,75 @@ describe('createFooterChatResponse', () => {
 			]
 		});
 		expect(response.message.content).toBe('Reassigned the selected nodes to doors.');
+		expect(response.trace?.executedToolDomain).toBe('semantics');
+		expect(response.trace?.executedAction).toBe('reassign');
+		expect(response.trace?.destructiveScope).toBe('none');
+	});
+
+	it('classifies broad semantic reassignment in trace metadata', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-5c'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: [{ id: 'doors' }]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-5c',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'reassign',
+											scope: 'selected',
+											category: 'doors'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Reassigned the selected nodes to doors.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'these are doors instead',
+			selectedNodes: Array.from({ length: 13 }, (_, index) => ({
+				assetId: 'audi_r8',
+				nodeId: `node-${index + 1}`,
+				nodeName: `Node ${index + 1}`,
+				nodePath: `Scene/Node ${index + 1}`
+			}))
+		});
+
+		expect(response.trace?.executedToolDomain).toBe('semantics');
+		expect(response.trace?.executedAction).toBe('reassign');
+		expect(response.trace?.affectedTargetCount).toBe(13);
+		expect(response.trace?.destructiveScope).toBe('broad_membership_mutation');
+		expect(response.trace?.approvalSummary).toBe('Apply semantic reassignment across 13 targets?');
 	});
 
 	it('keeps explicit node-id semantic mutation scoped to node-backed membership', async () => {
@@ -2614,6 +2945,57 @@ describe('createFooterChatResponse', () => {
 		expect(response.message.content).toBe('Removed the highlighted regions from headlights.');
 	});
 
+	it('unassigns a selected member from the active semantic group even when the group is not named again', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-5c-focus'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove it from the group',
+			selectedGroupId: 'body_shell',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-41',
+					targetName: 'Body Shell',
+					nodeIds: ['node-41'],
+					nodeId: 'node-41',
+					nodeName: 'Body Shell',
+					nodePath: 'Scene/Body Shell'
+				}
+			]
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'unassign',
+			nodeIds: ['node-41'],
+			materialIds: [],
+			semanticGroup: 'body_shell',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-41',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+		expect(response.message.content).toBe('Removed the selected node from body shell.');
+		expect(response.selectedGroupId).toBe('body_shell');
+	});
+
 	it('defaults semantic mutation scope to highlighted targets when no selection exists', async () => {
 		const { createFooterChatResponse } = await import('./index');
 
@@ -2691,6 +3073,310 @@ describe('createFooterChatResponse', () => {
 		expect(response.presentationRestore).toEqual({
 			highlightedTargetIds: ['material-wheel'],
 			label: 'restore original view'
+		});
+	});
+
+	it('fails open when a semantic tool call succeeds but the follow-up model reply fails', async () => {
+		const { createFooterChatResponse } = await import('./index');
+		const OpenAI = (await import('openai')).default;
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-fail-open'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue(null);
+		generateVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			revision: 12,
+			generatedAt: 'semantic-fail-open',
+			structuralGeneratedAt: 'structural-semantic-fail-open',
+			acceptedGroups: [
+				{
+					id: 'glasshouse',
+					humanLabel: 'glasshouse',
+					category: 'glasshouse',
+					aliases: [],
+					confidence: 1,
+					supports: ['highlight', 'focus', 'isolate', 'tint'],
+					nodeIds: ['node-2'],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			]
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-semantic-fail-open',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'refresh'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockRejectedValueOnce(new OpenAI.APIError('follow-up completion failed'));
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'please refresh the semantic overlay'
+		});
+
+		expect(generateVehicleSemanticOverlayMock).toHaveBeenCalledWith('audi_r8', {
+			force: false
+		});
+		expect(response.message.content).toBe('Applied the requested semantic update.');
+		expect(response.semanticOverlay).toMatchObject({
+			assetId: 'audi_r8',
+			revision: 12
+		});
+	});
+
+	it('promotes selectedNodeId fallback into semantic mutation when selectedNodes is empty', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-selected-node-fallback'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-selected-node-fallback',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'assign',
+											semanticGroup: 'front_lighting'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Updated the semantic grouping for the selected node.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'add the current selection to front lighting',
+			selectedNodeId: 'node-329',
+			selectedNodeName: 'Left Headlight Lens',
+			selectedNodePath: 'Scene/Front/HeadlightLeft/Lens',
+			selectedNodes: []
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: ['node-329'],
+			materialIds: [],
+			semanticGroup: 'front_lighting',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-329',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+		expect(response.message.content).toBe('Updated the semantic grouping for the selected node.');
+	});
+
+	it('keeps the active selection as first-class semantic mutation grounding when query filtering misses', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-selected-first-class'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-selected-first-class',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'assign',
+											scope: 'selected',
+											query: 'front lighting',
+											semanticGroup: 'front_lighting'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Updated the semantic grouping for the selected node.'
+						}
+					}
+				]
+			});
+
+		await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'add this to front lighting',
+			selectedNodes: [
+				{
+					assetId: 'audi_r8',
+					targetType: 'node',
+					targetId: 'node-329',
+					targetName: 'Left Headlight Lens',
+					nodeIds: ['node-329'],
+					nodeId: 'node-329',
+					nodeName: 'Left Headlight Lens',
+					nodePath: 'Scene/Front/HeadlightLeft/Lens'
+				}
+			]
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: ['node-329'],
+			materialIds: [],
+			semanticGroup: 'front_lighting',
+			category: undefined,
+			humanLabel: undefined,
+			aliases: undefined,
+			materialSelections: [
+				{
+					nodeId: 'node-329',
+					materialIndex: undefined,
+					materialName: undefined
+				}
+			]
+		});
+	});
+
+	it('keeps the active highlight as first-class semantic mutation grounding when query filtering misses', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-highlight-first-class'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		mutateVehicleSemanticAssignmentMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			acceptedGroups: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-highlight-first-class',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'assign',
+											scope: 'highlighted',
+											query: 'body shell',
+											semanticGroup: 'wheels'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Added the highlighted target to wheels.'
+						}
+					}
+				]
+			});
+
+		await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'add that to the wheels group',
+			presentation: {
+				highlightedTargets: [
+					{
+						targetId: 'material-wheel',
+						targetType: 'material',
+						targetName: 'Wheel'
+					}
+				]
+			}
+		});
+
+		expect(mutateVehicleSemanticAssignmentMock).toHaveBeenCalledWith('audi_r8', {
+			action: 'assign',
+			nodeIds: [],
+			materialIds: ['material-wheel'],
+			semanticGroup: 'wheels',
+			category: 'wheels',
+			humanLabel: 'wheels',
+			aliases: undefined,
+			materialSelections: undefined
 		});
 	});
 
@@ -3189,9 +3875,9 @@ describe('createFooterChatResponse', () => {
 			assignmentMode: undefined,
 			exclusiveFamily: undefined
 		});
-		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalledWith(
-			expect.objectContaining({
-				assetId: 'audi_r8',
+			expect(writeVehicleSemanticOverlayMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					assetId: 'audi_r8',
 				structuralGeneratedAt: 'structural-semantic-patch',
 				acceptedGroups: [
 					expect.objectContaining({
@@ -3199,9 +3885,89 @@ describe('createFooterChatResponse', () => {
 						humanLabel: 'Plate Assembly'
 					})
 				]
+				})
+			);
+		expect(response.message.content).toBe('Updated the number plate semantic group.');
+		expect(response.selectedGroupId).toBe('number_plate');
+	});
+
+	it('directly renames a semantic group without relying on model asset inference', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-rename'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		patchSemanticGroupDefinitionMock.mockResolvedValue({
+			id: 'front_lighting',
+			humanLabel: 'lighting',
+			aliases: ['front lighting'],
+			category: 'other',
+			supports: ['highlight', 'focus', 'isolate'],
+			assignmentMode: 'overlay'
+		});
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-rename',
+			structuralGeneratedAt: 'structural-semantic-rename',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'front lighting',
+					aliases: ['front lighting'],
+					confidence: 1,
+					category: 'other',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-light'],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+		writeVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-rename-2',
+			structuralGeneratedAt: 'structural-semantic-rename',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'front_lighting',
+					humanLabel: 'lighting',
+					aliases: ['front lighting'],
+					confidence: 1,
+					category: 'other',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-light'],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'rename front lighting -> lighting'
+		});
+
+		expect(createMock).not.toHaveBeenCalled();
+		expect(patchSemanticGroupDefinitionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				semanticGroup: 'front_lighting',
+				humanLabel: 'lighting'
 			})
 		);
-		expect(response.message.content).toBe('Updated the number plate semantic group.');
+		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalled();
+		expect(response.message.content).toBe('Renamed the front lighting semantic group to lighting.');
+		expect(response.selectedGroupId).toBe('front_lighting');
+		expect(response.trace?.route).toBe('direct_edit');
 	});
 
 	it('deletes a semantic group from the active overlay through the semantic group management tool', async () => {
@@ -3284,6 +4050,214 @@ describe('createFooterChatResponse', () => {
 
 		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalled();
 		expect(response.message.content).toBe('Removed the number plate semantic group.');
+		expect(response.trace?.executedToolDomain).toBe('semantics');
+		expect(response.trace?.executedAction).toBe('delete_group');
+		expect(response.trace?.destructiveScope).toBe('group_delete');
+	});
+
+	it('directly deletes the selected semantic group completely without relying on model tool selection', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-semantic-direct-delete'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-direct-delete',
+			structuralGeneratedAt: 'structural-semantic-direct-delete',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'body_shell',
+					humanLabel: 'body shell',
+					aliases: [],
+					confidence: 1,
+					category: 'body_shell',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-shell'],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+		writeVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-semantic-direct-delete-2',
+			structuralGeneratedAt: 'structural-semantic-direct-delete',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'remove the current semantic group completely',
+			selectedGroupId: 'body_shell'
+		});
+
+		expect(createMock).not.toHaveBeenCalled();
+		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalled();
+		expect(response.message.content).toBe('Removed the body shell semantic group.');
+		expect(response.selectedGroupId).toBeNull();
+		expect(response.trace?.route).toBe('direct_edit');
+		expect(response.trace?.executedAction).toBe('delete_group');
+		expect(response.trace?.destructiveScope).toBe('group_delete');
+	});
+
+	it('deletes a semantic group by semanticGroup alias through the semantic group management tool', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'mini_rov_guardian',
+			generatedAt: 'structural-semantic-delete-base'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'mini_rov_guardian',
+			generatedAt: 'semantic-semantic-delete-base',
+			structuralGeneratedAt: 'structural-semantic-delete-base',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [
+				{
+					id: 'base',
+					humanLabel: 'base',
+					aliases: [],
+					confidence: 1,
+					category: 'other',
+					supports: ['highlight', 'focus', 'isolate'],
+					nodeIds: ['node-4'],
+					meshIds: [],
+					materialIds: [],
+					author: 'user'
+				}
+			],
+			discardedSuggestions: []
+		});
+		writeVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'mini_rov_guardian',
+			generatedAt: 'semantic-semantic-delete-base-2',
+			structuralGeneratedAt: 'structural-semantic-delete-base',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-semantic-delete-base',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'delete_group',
+											semanticGroup: 'base'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Removed the base semantic group.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'mini_rov_guardian',
+			message: 'remove the base semantic group'
+		});
+
+		expect(writeVehicleSemanticOverlayMock).toHaveBeenCalled();
+		expect(response.message.content).toBe('Removed the base semantic group.');
+		expect(response.trace?.executedAction).toBe('delete_group');
+		expect(response.trace?.destructiveScope).toBe('group_delete');
+	});
+
+	it('deletes the active semantic overlay through the semantic overlay tool', async () => {
+		const { createFooterChatResponse } = await import('./index');
+
+		deriveVehicleInspectionCapabilitiesMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'structural-overlay-delete'
+		});
+		getVehicleSemanticOverlayStatusMock.mockResolvedValue('fresh');
+		readVehicleSemanticOverlayMock.mockResolvedValue({
+			assetId: 'audi_r8',
+			generatedAt: 'semantic-overlay-delete',
+			structuralGeneratedAt: 'structural-overlay-delete',
+			acceptedMaterials: [],
+			acceptedParts: [],
+			acceptedGroups: [],
+			discardedSuggestions: []
+		});
+		deleteVehicleSemanticOverlayMock.mockResolvedValue(null);
+		createMock
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: null,
+							tool_calls: [
+								{
+									id: 'tool-overlay-delete',
+									type: 'function',
+									function: {
+										name: 'edit_vehicle_semantics',
+										arguments: JSON.stringify({
+											action: 'delete_overlay'
+										})
+									}
+								}
+							]
+						}
+					}
+				]
+			})
+			.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: 'assistant',
+							content: 'Deleted the semantic overlay.'
+						}
+					}
+				]
+			});
+
+		const response = await createFooterChatResponse({
+			assetId: 'audi_r8',
+			message: 'delete the semantic overlay'
+		});
+
+		expect(deleteVehicleSemanticOverlayMock).toHaveBeenCalledWith('audi_r8');
+		expect(response.message.content).toBe('Deleted the semantic overlay.');
+		expect(response.trace?.executedToolDomain).toBe('semantics');
+		expect(response.trace?.executedAction).toBe('delete_overlay');
+		expect(response.trace?.destructiveScope).toBe('overlay_delete');
+		expect(response.trace?.approvalSummary).toBe('Delete semantic overlay for this asset?');
 	});
 
 	it('expands the current selection into a semantic group through the chat tool loop', async () => {

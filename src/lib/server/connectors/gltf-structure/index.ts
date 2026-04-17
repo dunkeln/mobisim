@@ -1,11 +1,13 @@
-import { access, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
 import { getBounds, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { dedup, prune } from '@gltf-transform/functions';
 import type { Material, Mesh, Node, Primitive, Scene } from '@gltf-transform/core';
-import { type VehicleAssetId } from '$lib/vehicles/catalog';
-import { resolveLocalAssetPath } from '$lib/server/connectors/vehicle-registry/storage';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+import { MeshoptDecoder } from 'meshoptimizer';
+import type { VehicleAssetId } from '$lib/vehicles/catalog';
+import { requireVehicleCatalogEntry } from '$lib/vehicles/catalog';
+import { resolveVehicleAssetDownloadUrl } from '$lib/server/connectors/vehicle-registry/storage';
 import type {
 	StructuralAssetSnapshot,
 	StructuralMaterial,
@@ -26,8 +28,17 @@ type CacheEntry = {
 	snapshot: StructuralAssetSnapshot;
 };
 
-const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
+await MeshoptDecoder.ready;
+
+const io = new NodeIO(fetch)
+	.registerExtensions(ALL_EXTENSIONS)
+	.registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
+	.setAllowNetwork(true);
 const structureCache = new Map<VehicleAssetId, CacheEntry>();
+
+function isTestMode(): boolean {
+	return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+}
 
 function toVec3(values: number[]): [number, number, number] {
 	return [values[0] ?? 0, values[1] ?? 0, values[2] ?? 0];
@@ -305,29 +316,44 @@ function deriveStructuralMaterials(
 	});
 }
 
-async function createCacheKey(assetPath: string): Promise<string> {
-	const assetStats = await stat(assetPath);
-	return `${assetPath}:${assetStats.size}:${assetStats.mtimeMs}`;
+async function createCacheKey(assetSource: string): Promise<string> {
+	if (isTestMode()) {
+		const assetStats = await stat(assetSource);
+		return `${assetSource}:${assetStats.size}:${assetStats.mtimeMs}`;
+	}
+
+	try {
+		const response = await fetch(assetSource, { method: 'HEAD' });
+		if (!response.ok) {
+			return assetSource;
+		}
+
+		const etag = response.headers.get('etag')?.trim();
+		const lastModified = response.headers.get('last-modified')?.trim();
+		const contentLength = response.headers.get('content-length')?.trim();
+		return [assetSource, etag, lastModified, contentLength].filter(Boolean).join('|');
+	} catch {
+		return assetSource;
+	}
 }
 
-async function deriveStructuralVersion(assetPath: string): Promise<string> {
-	const assetStats = await stat(assetPath);
-	return `structural:${assetStats.size}:${assetStats.mtimeMs}`;
+async function deriveStructuralVersion(downloadUrl: string): Promise<string> {
+	return `structural:${await createCacheKey(downloadUrl)}`;
 }
 
 export async function deriveStructuralAssetSnapshot(
 	assetId: VehicleAssetId
 ): Promise<StructuralAssetSnapshot> {
-	const assetPath = resolveLocalAssetPath(assetId);
-	await access(assetPath, constants.R_OK);
-
-	const cacheKey = await createCacheKey(assetPath);
+	const assetSource = isTestMode()
+		? resolveLocalTestAssetPath(requireVehicleCatalogEntry(assetId, 'vehicle asset').fileName)
+		: resolveVehicleAssetDownloadUrl(assetId);
+	const cacheKey = await createCacheKey(assetSource);
 	const cached = structureCache.get(assetId);
 	if (cached && cached.cacheKey === cacheKey) {
 		return cached.snapshot;
 	}
 
-	const document = await io.read(assetPath);
+	const document = await io.read(assetSource);
 	await document.transform(dedup(), prune());
 
 	const root = document.getRoot();
@@ -337,8 +363,8 @@ export async function deriveStructuralAssetSnapshot(
 	const nodes = collectNodeSummaries(scenes, meshIds);
 	const snapshot: StructuralAssetSnapshot = {
 		assetId,
-		assetPath,
-		generatedAt: await deriveStructuralVersion(assetPath),
+		assetPath: assetSource,
+		generatedAt: await deriveStructuralVersion(assetSource),
 		scenes: collectSceneSummaries(scenes),
 		nodes,
 		meshes,
@@ -347,4 +373,12 @@ export async function deriveStructuralAssetSnapshot(
 
 	structureCache.set(assetId, { cacheKey, snapshot });
 	return snapshot;
+}
+
+function resolveLocalTestAssetPath(fileName: string): string {
+	if (!fileName.trim()) {
+		throw new Error('Could not resolve test asset path from empty file name');
+	}
+
+	return path.resolve(process.cwd(), 'storage/vehicle-assets', fileName);
 }

@@ -1,7 +1,6 @@
 import type { VehicleNodeSelection } from '$lib/stores/vehicle-node-selection';
 import type { VehicleAssetId } from '$lib/vehicles/catalog';
 import type { VehicleInspectionPatchOperation } from '$lib/contracts/vehicle-inspection-patches';
-import type { SemanticIngressBinding } from '$lib/server/connectors/semantic-ingress/types';
 import type {
 	VehicleSemanticOverlay,
 	VehicleSemanticOverlayStatus
@@ -60,6 +59,11 @@ export type FooterChatTrace = {
 	route: 'presentation_restore' | 'direct_edit' | 'llm';
 	semanticOverlayStatus: 'missing' | 'stale' | 'fresh' | 'unknown';
 	toolCalls: string[];
+	executedToolDomain?: 'presentation' | 'selection' | 'semantics' | 'assistant_ui';
+	executedAction?: string;
+	affectedTargetCount?: number;
+	destructiveScope?: 'none' | 'group_delete' | 'overlay_delete' | 'broad_membership_mutation';
+	approvalSummary?: string;
 	sidebarAction: 'unchanged' | 'updated' | 'cleared';
 	supplementaryListAction: 'unchanged' | 'updated' | 'cleared';
 	historySourceUsed?: HistorySourceUsed;
@@ -100,16 +104,6 @@ export type FooterChatSelectionUpdate = {
 
 export type FooterChatHistoryAction = 'undo' | 'redo' | 'reset' | 'clear_highlights';
 
-export type FooterChatSemanticIngressMutation = {
-	action: 'create' | 'replace' | 'delete';
-	targetType: 'semantic_group' | 'semantic_node';
-	targetId: string;
-	targetLabel?: string;
-	transport: 'rest_sse' | 'stream';
-	ingressId?: string;
-	replacedIngressId?: string;
-};
-
 export type FooterChatResponse = {
 	message: FooterChatMessage;
 	model: string;
@@ -123,8 +117,7 @@ export type FooterChatResponse = {
 	supplementaryList?: FooterChatSupplementaryListState;
 	semanticOverlayStatus?: VehicleSemanticOverlayStatus;
 	semanticOverlay?: VehicleSemanticOverlay | null;
-	semanticIngressBindings?: SemanticIngressBinding[];
-	semanticIngressMutation?: FooterChatSemanticIngressMutation;
+	selectedGroupId?: string | null;
 	trace?: FooterChatTrace;
 };
 

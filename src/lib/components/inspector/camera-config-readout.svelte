@@ -11,21 +11,13 @@
 	let { config = null, moving = false, class: className = '' }: Props = $props();
 </script>
 
-<section
-	class={[
-		'flex min-h-9 w-auto items-center rounded-4xl border border-[color:color-mix(in_oklab,var(--color-boundary-text)_10%,transparent)] bg-[color:color-mix(in_oklab,var(--color-boundary-background)_54%,transparent)] px-3.5 py-1.5 shadow-[inset_0_1px_0_color-mix(in_oklab,var(--color-boundary-text)_9%,transparent),0_10px_24px_color-mix(in_oklab,var(--color-boundary-background)_24%,black)] backdrop-blur-xl',
-		className
-	]}
->
+<div class={['flex h-7 items-center gap-1.5 px-3', className]}>
 	{#if config}
-		<div class="flex flex-wrap items-center gap-2 text-[0.76rem]">
-			<Axis3D class="h-[1.05rem] w-[1.05rem] shrink-0 text-boundary-text/58" />
-			<span class={moving ? 'text-boundary-secondary' : 'text-boundary-text/72'}>
-				{config.azimuthDegrees.toFixed(1)}&deg; &middot; {config.elevationDegrees.toFixed(1)}&deg;
-				&middot; {config.distance.toFixed(2)} units
-			</span>
-		</div>
+		<Axis3D class="h-[14px] w-[14px] shrink-0 text-boundary-text/36" />
+		<span class={['font-mono text-[0.58rem] tabular-nums tracking-[0.04em]', moving ? 'text-boundary-secondary' : 'text-boundary-text/48']}>
+			{config.azimuthDegrees.toFixed(1)}&deg;&thinsp;&middot;&thinsp;{config.elevationDegrees.toFixed(1)}&deg;&thinsp;&middot;&thinsp;{config.distance.toFixed(2)}
+		</span>
 	{:else}
-		<p class="text-[0.76rem] text-shell-subtle">Waiting for viewport camera sync.</p>
+		<span class="font-mono text-[0.58rem] text-boundary-text/28">—</span>
 	{/if}
-</section>
+</div>

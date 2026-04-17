@@ -3,6 +3,7 @@ import { createFooterAudioChatResponse } from '$lib/server/connectors/openai-cha
 import { parseFooterAudioChatFormData } from '$lib/server/connectors/openai-chat/audio-request';
 import {
 	OpenAIChatConfigError,
+	OpenAIChatExecutionError,
 	OpenAIChatInputError,
 	OpenAIChatUpstreamError
 } from '$lib/server/connectors/openai-chat';
@@ -44,6 +45,11 @@ export async function POST({ request, locals }) {
 
 		if (error instanceof OpenAIChatConfigError) {
 			console.error('chat audio config error', error.message);
+			return json({ error: error.message }, { status: 500 });
+		}
+
+		if (error instanceof OpenAIChatExecutionError) {
+			console.error('chat audio execution error', error.message);
 			return json({ error: error.message }, { status: 500 });
 		}
 
