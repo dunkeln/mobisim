@@ -20,7 +20,7 @@ Raw meshes are hard to inspect and harder to operate safely through natural lang
 
 ## What Mobisim Is
 
-Mobisim combines a realistic browser inspection viewport with FRIDAY, a grounded copilot that can inspect, explain, and apply asset-scoped changes through text or voice.
+Mobisim combines a realistic browser inspection viewport with FRIDAY, a grounded copilot that can inspect, explain, and apply asset-scoped changes through voice.
 
 - one active GLB vehicle loaded into a Chrome-first inspection route
 - orbit inspection with click-based grounding
